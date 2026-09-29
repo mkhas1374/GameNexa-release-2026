@@ -1,0 +1,37 @@
+app.post('/api/license/buy', async (req, res) => {
+    const { deviceId, plan, userPhone, userName, gameNetName } = req.body;
+    if (!deviceId || !plan) return res.status(400).json({ error: 'Missing parameters' });
+
+    try {
+        let amount = 0;
+        if (plan === '1_MONTH') amount = 150000;
+        else if (plan === 'THREE_MONTHS') amount = 400000;
+        else if (plan === 'YEARLY') amount = 1500000;
+        
+        const managerId = 'mgr_' + (userPhone || deviceId).substring(0, 20);
+        
+        await pool.query(
+            `INSERT INTO managers (id, username, password_hash, role) 
+             VALUES ($1, $2, 'pending_manual', 'MANAGER') ON CONFLICT (id) DO NOTHING`,
+            [managerId, userPhone || deviceId]
+        );
+
+        const result = await pool.query(
+            `INSERT INTO subscription_payment_requests 
+             (manager_id, plan_id, amount, customer_note, status) 
+             VALUES ($1, $2, $3, $4, 'PENDING') RETURNING id`,
+            [managerId, plan, amount, `Name: ${userName}, GameNet: ${gameNetName}`]
+        );
+
+        res.json({
+            licenseCode: 'PENDING_' + result.rows[0].id,
+            paymentUrl: '', 
+            transactionId: 'TXN_' + result.rows[0].id,
+            amount: amount,
+            message: 'درخواست شما ثبت شد. لطفاً منتظر تأیید مدیر باشید.'
+        });
+    } catch (e) {
+        console.error("License buy error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});

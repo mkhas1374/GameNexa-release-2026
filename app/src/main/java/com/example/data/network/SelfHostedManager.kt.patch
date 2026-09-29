@@ -1,0 +1,43 @@
+--- app/src/main/java/com/example/data/network/SelfHostedManager.kt
++++ app/src/main/java/com/example/data/network/SelfHostedManager.kt
+@@ -741,6 +741,39 @@
+         }
+     }
+ 
++    suspend fun fetchLiveStationsFromCloud() {
++        try {
++            val req = Request.Builder()
++                .url("$SERVER_URL/api/selfhosted/live-stations")
++                .headers(getBaseHeaders())
++                .get()
++                .build()
++            val resp = client.newCall(req).execute()
++            val body = resp.body?.string() ?: ""
++            if (resp.isSuccessful && body.isNotBlank()) {
++                val list = mutableListOf<CloudLiveStation>()
++                if (body.trim().startsWith("[")) {
++                    val array = JSONArray(body)
++                    for (i in 0 until array.length()) {
++                        val obj = array.optJSONObject(i) ?: continue
++                        list.add(parseCloudLiveStation(obj))
++                    }
++                } else if (body.trim().startsWith("{")) {
++                    val obj = JSONObject(body)
++                    val array = obj.optJSONArray("data") ?: obj.optJSONArray("stations")
++                    if (array != null) {
++                        for (i in 0 until array.length()) {
++                            val stObj = array.optJSONObject(i) ?: continue
++                            list.add(parseCloudLiveStation(stObj))
++                        }
++                    }
++                }
++                _allLiveStations.value = list
++            }
++        } catch (e: Exception) {
++            Log.w(TAG, "fetchLiveStationsFromCloud error: ${e.message}")
++        }
++    }
++
+     private suspend fun fetchRecentPaymentsFromCloud() {
+         val req = Request.Builder()
+             .url("$SERVER_URL/api/selfhosted/payments")

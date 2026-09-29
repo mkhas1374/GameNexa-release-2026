@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GameNexa</string>
+
+    <!-- Navigation Tabs -->
+    <string name="nav_club">Club</string>
+    <string name="nav_customers">Customers</string>
+    <string name="nav_hall">Hall</string>
+    <string name="nav_subscription">Subscription</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Admin Roles -->
+    <string name="role_super_manager">Super Manager</string>
+    <string name="role_manager">GameNet Manager</string>
+    <string name="role_deputy">Floor Deputy</string>
+    <string name="role_trial">Trial User</string>
+
+    <!-- Actions & Common Buttons -->
+    <string name="btn_start">Start</string>
+    <string name="btn_pause">Pause</string>
+    <string name="btn_resume">Resume</string>
+    <string name="btn_finish">Finish</string>
+    <string name="btn_cafe">Buffet</string>
+    <string name="btn_retry_connection">Retry Connection</string>
+    <string name="confirm_action">Confirm</string>
+    <string name="cancel_action">Cancel</string>
+    <string name="back">Back</string>
+    <string name="search">Search...</string>
+    <string name="no_items_found">No items found</string>
+
+    <!-- Station & Hall -->
+    <string name="rate_hourly_prefix">Rate: </string>
+    <string name="per_hour_suffix">/h</string>
+    <string name="unit_toman">Toman</string>
+    <string name="label_game_cost">Game Cost</string>
+    <string name="label_overtime_debt">Overtime (Debt)</string>
+    <string name="status_ready">Ready</string>
+    <string name="status_active">Active</string>
+    <string name="status_paused">Paused</string>
+    <string name="status_free">Free</string>
+    <string name="live_report_title">Live Work Report</string>
+    <string name="order_buffet_header">Buffet Orders</string>
+    <string name="server_test_tooltip">Server Connection Test</string>
+
+    <!-- Grace Period & Offline Warning -->
+    <string name="offline_grace_banner_title">Disconnected from Server</string>
+    <string name="offline_grace_banner_message">Your connection to the server is lost. Continuous connection is required to use all app features. If the server connection is not restored, the app will be disabled automatically.</string>
+    <string name="offline_grace_remaining_time">Offline grace time remaining: </string>
+    <string name="offline_blocked_title">Server Disconnected</string>
+    <string name="offline_blocked_message">Your device is not connected to the server and the app cannot be used. Once connection is restored, your subscription will be activated.</string>
+    <string name="trial_online_only_title">Internet Connection Required</string>
+    <string name="trial_online_only_message">The trial version requires a continuous internet connection. Please restore your internet connection.</string>
+
+    <!-- Settings & Sections -->
+    <string name="settings_title">GameNet Settings &amp; Config</string>
+    <string name="settings_subtitle">Tap any category below to configure settings</string>
+    <string name="settings_menu_header">Settings Menu</string>
+    <string name="section_language_title">App Language</string>
+    <string name="section_language_desc">Switch language between Persian and English</string>
+    <string name="section_theme_title">Theme &amp; Appearance</string>
+    <string name="section_theme_desc">Customize colors, night mode, and styling</string>
+    <string name="section_backup_title">Backup &amp; Restore</string>
+    <string name="section_backup_desc">Backup and restore GameNet records safely</string>
+    <string name="section_managers_title">Manager Sales &amp; Access</string>
+    <string name="section_managers_desc">Create manager panel and manage accesses</string>
+    <string name="section_trial_title">24h Trial Management</string>
+    <string name="section_trial_desc">Manage and reset trial devices</string>
+    <string name="section_analytics_title">Business Analytics</string>
+    <string name="section_analytics_desc">Daily, monthly income and performance reports</string>
+    <string name="section_diagnostics_title">Network Health &amp; Diagnostics</string>
+    <string name="section_diagnostics_desc">Check connection status, ping, and server logs</string>
+    <string name="active_language">Active Language</string>
+    <string name="select_language">Select</string>
+    <string name="lang_fa">🇮🇷 فارسی</string>
+    <string name="lang_en">🇬🇧 English</string>
+    <string name="language_selection_title">Default Application Language</string>
+    <string name="language_selection_desc">All titles, messages, and sections will be displayed according to the selected language.</string>
+
+    <!-- Customer Club & Invoices -->
+    <string name="customers_tab_title">Customer Accounts</string>
+    <string name="reservations_tab_title">Reservations</string>
+    <string name="btn_register_customer">Register Customer</string>
+    <string name="btn_register_reservation">Register Reservation</string>
+    <string name="filter_all">All</string>
+    <string name="filter_creditors">Creditors</string>
+    <string name="filter_debtors">Debtors</string>
+    <string name="filter_cleared">Cleared</string>
+    <string name="dialog_delete_customer">Delete Customer</string>
+    <string name="dialog_delete_reservation">Delete Reservation</string>
+
+    <!-- Legacy / Extracted IDs for Full Compatibility -->
+    <string name="ext_no_stations_configured_1">No Stations Configured</string>
+    <string name="ext_go_to_settings_to_configure_th_2">Go to settings to configure the number of stations and pricing.</string>
+    <string name="ext_total_3">Total</string>
+    <string name="ext_ready_4">Ready</string>
+    <string name="ext_active_5">Active</string>
+    <string name="ext_no_stations_in_this_section_6">No stations in this section</string>
+    <string name="ext_overtime_debt_7">Overtime (Debt)</string>
+    <string name="ext_select_8">Select</string>
+    <string name="ext_game_9">Game: </string>
+    <string name="ext_t_10">Toman</string>
+    <string name="ext_remaining_11">Remaining</string>
+    <string name="ext_elapsed_12">Elapsed</string>
+    <string name="ext_total_13">Total: </string>
+    <string name="ext_t_14">Toman</string>
+    <string name="ext_cafe_15">Cafe</string>
+    <string name="ext_no_items_found_16">No items found</string>
+    <string name="ext_trial_version_17">Trial Version</string>
+    <string name="ext_you_need_a_valid_subscription__18">You need a valid subscription to access this feature.</string>
+    <string name="ext_buy_subscription_19">Buy Subscription</string>
+    <string name="ext_close_20">Close</string>
+    <string name="ext_customer_club_loyalty_hub_21">Customer Club &amp; Loyalty Hub</string>
+    <string name="ext_select_a_section_below_to_mana_22">Select a section below to manage rules and members</string>
+    <string name="ext_club_options_menu_23">Club Options Menu</string>
+    <string name="ext_manage_customer_balances_upcom_24">Manage customer balances &amp; upcoming slots</string>
+    <string name="ext_customer_balance_summary_25">Customer Balance Summary</string>
+    <string name="ext_customer_account_registered_su_26">Customer account registered successfully with following balance:</string>
+    <string name="ext_customer_27">Customer:</string>
+    <string name="ext_debt_amount_28">Debt Amount:</string>
+    <string name="ext_toman_29">Toman</string>
+    <string name="ext_credit_amount_30">Credit Amount:</string>
+    <string name="ext_toman_31">Toman</string>
+    <string name="ext_got_it_ok_32">Got it, OK</string>
+    <string name="ext_search_33">Search...</string>
+    <string name="ext_delete_customer_34">Delete Customer</string>
+    <string name="ext_min_35">min</string>
+    <string name="ext_30m_15m_and_5m_alarms_are_sche_36">30m, 15m, and 5m alarms are scheduled</string>
+    <string name="ext_delete_reservation_37">Delete Reservation</string>
+    <string name="ext_edit_customer_38">Edit Customer</string>
+    <string name="ext_yy_39">YY</string>
+    <string name="ext_mm_40">MM</string>
+    <string name="ext_dd_41">DD</string>
+    <string name="ext_hh_42">HH</string>
+    <string name="ext_mm_43">mm</string>
+    <string name="ext_hr_44">hr</string>
+    <string name="ext_min_45">min</string>
+    <string name="ext_invalid_date_time_format_46">Invalid date/time format</string>
+    <string name="ext_trial_version_47">Trial Version</string>
+    <string name="ext_you_need_a_valid_subscription__48">You need a valid subscription to access this feature.</string>
+    <string name="ext_buy_subscription_49">Buy Subscription</string>
+    <string name="ext_close_50">Close</string>
+    <string name="ext_gamenet_settings_config_51">GameNet Settings &amp; Config</string>
+    <string name="ext_tap_any_category_below_to_conf_52">Tap any category below to configure settings</string>
+    <string name="ext_network_health_diagnostics_53">Network Health &amp; Diagnostics</string>
+    <string name="ext_view_detailed_network_logs_and_54">View detailed network logs and latency</string>
+    <string name="ext_test_55">Test</string>
+    <string name="ext_settings_menu_56">Settings Menu</string>
+    <string name="ext__57">Select</string>
+    <string name="ext_active_language_58">Active Language</string>
+    <string name="ext_manager_sales_59">Manager Sales</string>
+    <string name="ext_create_manager_panel_60">Create Manager Panel</string>
+    <string name="ext_access_to_current_managers_61">Access to Current Managers</string>
+    <string name="ext_24h_trial_management_62">24h Trial Management</string>
+    <string name="ext_create_manager_panel_63">Create Manager Panel</string>
+    <string name="ext_register_manager_64">Register Manager</string>
+    <string name="ext_current_managers_65">Current Managers</string>
+    <string name="ext_all_66">All</string>
+    <string name="ext_pending_67">Pending</string>
+    <string name="ext_active_68">Active</string>
+    <string name="ext_search_name_user_gamenet_69">Search name, user, gamenet...</string>
+    <string name="ext_no_managers_found_70">No managers found.</string>
+    <string name="ext_24h_trial_management_71">24h Trial Management</string>
+    <string name="ext_reset_trial_time_72">Reset Trial Time</string>
+    <string name="ext_yes_reset_73">Yes, Reset</string>
+    <string name="ext_cancel_74">Cancel</string>
+    <string name="ext_no_trial_devices_registered_75">No trial devices registered.</string>
+    <string name="ext_reset_extend_76">Reset/Extend</string>
+    <string name="ext_delete_77">Delete</string>
+    <string name="ext_trial_reset_successfully_78">Trial reset successfully!</string>
+    <string name="ext_local_reset_for_current_device_79">Local Reset for Current Device</string>
+    <string name="ext_business_analytics_80">Business Analytics</string>
+    <string name="ext_reset_data_81">Reset Data</string>
+    <string name="ext_average_monthly_income_82">AVERAGE MONTHLY INCOME</string>
+    <string name="ext_30_days_ago_83">30 days ago</string>
+    <string name="ext_15_days_ago_84">15 days ago</string>
+    <string name="ext_today_85">Today</string>
+    <string name="ext_no_data_available_86">No data available.</string>
+</resources>

@@ -1,0 +1,55 @@
+
+services:
+  gamenet_postgres:
+    image: postgres:16
+    container_name: gamenet_postgres
+    environment:
+      POSTGRES_USER: gamenet_admin
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: gamenexa_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gamenet_admin -d gamenexa_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  gamenet_api:
+    build: .
+    container_name: gamenet_api
+    env_file:
+      - .env
+    environment:
+      - PORT=3000
+      - DATABASE_URL=${DATABASE_URL}
+    depends_on:
+      gamenet_postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/v1/time >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  gamenet_nginx:
+    image: nginx:latest
+    container_name: gamenet_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
+    depends_on:
+      gamenet_api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
