@@ -75,12 +75,14 @@ async function runTests() {
             stationIds: [888], startTime: startIso, durationMinutes: 180, controllersCount: 1, isVip: true 
         });
         
-        // Check if normal reservation was superseded
+        // VIP booking is intentionally pending until full payment + Manager confirmation.
+        // Capacity supersession happens atomically at confirmation, not at customer booking time.
         const res = await pool.query('SELECT status FROM reservations WHERE id = $1', [normalId]);
-        if (res.rows[0].status === 'SUPERSEDED_BY_VIP') {
-            console.log("PASS: VIP Supersede"); passed++;
+        const vip = await pool.query('SELECT status FROM reservations WHERE id = $1', [ids[0]]);
+        if (res.rows[0]?.status === 'PAYMENT_PENDING' && vip.rows[0]?.status === 'VIP_PENDING_PAYMENT') {
+            console.log("PASS: VIP remains pending without premature supersession"); passed++;
         } else {
-            console.log("FAIL: VIP Supersede didn't update status"); failed++;
+            console.log("FAIL: VIP pending-state arbitration", res.rows[0], vip.rows[0]); failed++;
         }
     } catch(e) {
         console.log("FAIL: VIP Supersede", e); failed++;
@@ -129,7 +131,7 @@ async function runTests() {
         });
         console.log("FAIL: Full Hall allowed short duration"); failed++;
     } catch(e) {
-        if (e.message.includes('minimum duration')) { console.log("PASS: Full Hall minimum duration enforced"); passed++; }
+        if (e.message === 'FULL_HALL_MINIMUM_DURATION_NOT_MET') { console.log("PASS: Full Hall minimum duration enforced"); passed++; }
         else { console.log("FAIL: Full Hall duration wrong error"); failed++; }
     }
 

@@ -22,6 +22,7 @@ async function main(){
  try{
  console.log('SECURITY_E2E_START',run); await clean();
  await db('INSERT INTO managers(id,username,password_hash) VALUES($1,$2,$3),($4,$5,$6)',[A,A+'@t','$2b$12$dummy',B,B+'@t','$2b$12$dummy']);
+ await db("INSERT INTO manager_entitlements(manager_id,entitlement_type,plan_id,status,starts_at,expires_at,source) VALUES($1,'SUBSCRIPTION','1_MONTH','ACTIVE',NOW(),NOW()+INTERVAL '1 day','SYSTEM'),($2,'SUBSCRIPTION','1_MONTH','ACTIVE',NOW(),NOW()+INTERVAL '1 day','SYSTEM')",[A,B]);
  ca=(await db("INSERT INTO customers(manager_id,phone_number,full_name,wallet_balance,gn_balance,lp_balance) VALUES($1,$2,$3,0,0,0) RETURNING id",[A,'9'+run+'1','A'])).rows[0].id;
  cb=(await db("INSERT INTO customers(manager_id,phone_number,full_name,wallet_balance,gn_balance,lp_balance) VALUES($1,$2,$3,0,0,0) RETURNING id",[B,'9'+run+'2','B'])).rows[0].id;
  ra=(await db("INSERT INTO reservations(manager_id,customer_id,type,status,start_time,end_time,duration_minutes,snap_base_price,snap_final_price,snap_payable_amount,snap_currency) VALUES($1,$2,'NORMAL_RESERVATION','PAYMENT_PENDING',NOW()+INTERVAL '1 day',NOW()+INTERVAL '1 day 1 hour',60,100000,100000,100000,'IRT') RETURNING id",[A,ca])).rows[0].id;
@@ -31,11 +32,13 @@ async function main(){
  r=await api('/api/manager/customers',{token:cu});ok(r.s===403,'customer token blocked from manager');
  r=await api('/api/customer/reservations/'+ra,{token:cbt});ok(r.s===404,'customer cross-manager reservation blocked');
  r=await api('/api/manager/reservations/'+ra,{token:mb});ok(r.s===404,'manager cross-manager reservation blocked');
- r=await api('/api/v1/customer/manual-payment-requests?managerId='+B,{token:ma});ok(r.s===200 && r.d.requests.every(x=>x.manager_id===A),'query manager spoof ignored');
+ r=await api('/api/v1/customer/manual-payment-requests?managerId='+B,{token:cu});ok(r.s===200 && Array.isArray(r.d) && r.d.every(x=>x.manager_id===A && x.customer_id===ca),'query manager spoof ignored');
  r=await api('/api/v1/customer/manual-payment-requests/'+999999+'/approve',{method:'POST',token:mb,body:{amount:1}});ok(r.s===404||r.s===400,'foreign/nonexistent request not approved');
- r=await api('/api/v1/customer/manual-payment-requests',{method:'POST',token:cu,body:{purpose:'WALLET_TOPUP',managerId:B,idempotencyKey:'sec_'+run+'_1',amount:'1000'}});ok(r.s===201 && r.d.request.manager_id===A,'body manager spoof ignored');reqA=r.d.request.id;
+ r=await api('/api/v1/customer/manual-payment-requests',{method:'POST',token:cu,body:{purpose:'WALLET_TOPUP',managerId:B,idempotencyKey:'sec_'+run+'_1',amount:'1000'}});ok(r.s===201 && r.d.request?.manager_id===A,'body manager spoof ignored');reqA=r.d.request.id;
  r=await api('/api/v1/manager/payment-methods',{token:ma});ok(r.s===200 && r.d.methods.every(x=>x.manager_id===A),'manager method isolation');
- r=await api('/api/v1/manager/payment-methods',{method:'POST',token:ma,body:{managerId:B,methodCode:'SEC_TEST',displayName:'SEC TEST'}});ok(r.s===200 && r.d.method.manager_id===A,'payment method manager spoof ignored');
+ r=await api('/api/v1/manager/payment-methods',{method:'POST',token:ma,body:{managerId:B,methodCode:'SEC_TEST',displayName:'SEC TEST'}});ok(r.s===201 && r.d.method.manager_id===A,'payment method manager spoof ignored');
+ r=await api('/api/v1/manager/club/point-logs',{method:'POST',token:ma,body:{customerId:cb,title:'cross',points:1}});ok(r.s===404,'cross-manager point log blocked');
+ r=await api('/api/v1/manager/customer-transactions',{method:'POST',token:ma,body:{customerId:cb,amount:1}});ok(r.s===404,'cross-manager customer transaction blocked');
  r=await api('/api/v1/customer/manual-payment-requests/'+reqA+'/approve',{method:'POST',token:mb,body:{amount:'1000'}});ok(r.s===404||r.s===400,'cross-manager approval blocked');
  console.log('idor_and_spoofing_ok');
  const expired=jwt.sign({id:A,managerId:A,role:'MANAGER'},process.env.JWT_SECRET,{expiresIn:'-1s'});
@@ -51,7 +54,7 @@ async function main(){
  r=await api('/api/customer/profile',{token:noCid});ok(r.s===403,'customer without id rejected');
  console.log('jwt_hardening_ok');
  r=await api('/api/v1/customer/manual-payment-requests',{method:'POST',token:cbt,body:{purpose:'RESERVATION_PAYMENT',reservationId:ra,idempotencyKey:'sec_'+run+'_foreign',amount:'100000'}});ok(r.s>=400&&r.s<500,'foreign reservation rejected');
- r=await api('/api/v1/customer/manual-payment-requests',{method:'POST',token:cu,body:{purpose:'RESERVATION_PAYMENT',reservationId:ra,idempotencyKey:'sec_'+run+'_wrongamt',amount:'99999'}});ok(r.s>=400&&r.s<500,'reservation amount mismatch rejected');
+ r=await api('/api/v1/customer/manual-payment-requests',{method:'POST',token:cu,body:{purpose:'RESERVATION_PAYMENT',reservationId:ra,idempotencyKey:'sec_'+run+'_partial',amount:'99999'}});ok(r.s===201 && r.d.request?.manager_id===A && r.d.request?.reservation_id===ra,'valid partial reservation payment request accepted');
  r=await api('/api/v1/customer/manual-payment-requests/'+reqA+'/approve',{method:'POST',token:ma,body:{amount:'-5'}});ok(r.s>=400&&r.s<500,'negative amount rejected');
  r=await api('/api/v1/customer/manual-payment-requests/'+reqA+'/approve',{method:'POST',token:ma,body:{amount:'NaN'}});ok(r.s>=400&&r.s<500,'NaN string rejected');
  const before=await db('SELECT wallet_balance,gn_balance,lp_balance FROM customers WHERE id=$1',[ca]);

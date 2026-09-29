@@ -11,6 +11,8 @@ const DEFAULT_RESERVATION_CONFIGURATION = {
         normalDurationsMinutes: [60, 120, 180, 240, 300],
         vipDurationsMinutes: [180, 240, 300, 360],
         vipMinDurationMinutes: 180,
+        fullHallMinDurationMinutes: 180,
+        exclusiveFullDayDurationMinutes: 900,
         vipStartTime: '14:00',
         vipEndTime: '24:00',
         vipPrice: 6300000,

@@ -175,6 +175,14 @@ async function bookReservation(params, externalClient = null) {
                     if (normalizedCurrent < startMinutes || durationEnd > normalizedEnd) throw new Error('VIP_TIME_WINDOW_NOT_ALLOWED');
                 }
             }
+        } else if (type === 'FULL_HALL') {
+            const minimum = Number(rules.fullHallMinDurationMinutes ?? 180);
+            if (!Number.isFinite(minimum) || minimum <= 0) throw new Error('FULL_HALL_MINIMUM_DURATION_NOT_CONFIGURED');
+            if (actualDuration < minimum) throw new Error('FULL_HALL_MINIMUM_DURATION_NOT_MET');
+        } else if (type === 'EXCLUSIVE_FULL_DAY') {
+            const required = Number(rules.exclusiveFullDayDurationMinutes ?? 900);
+            if (!Number.isFinite(required) || required <= 0) throw new Error('EXCLUSIVE_FULL_DAY_DURATION_NOT_CONFIGURED');
+            if (actualDuration !== required) throw new Error('EXCLUSIVE_FULL_DAY_DURATION_NOT_ALLOWED');
         } else {
             const allowedNormal = Array.isArray(rules.normalDurationsMinutes) ? rules.normalDurationsMinutes.map(Number) : [];
             if (allowedNormal.length && !allowedNormal.includes(actualDuration)) throw new Error('RESERVATION_DURATION_NOT_ALLOWED');
@@ -298,6 +306,8 @@ async function bookReservation(params, externalClient = null) {
             paymentDeadlineMinutes: Number(rules.paymentDeadlineMinutes ?? 0),
             vipPaymentDeadlineMinutes: Number(rules.vipPaymentDeadlineMinutes ?? 0),
             vipMinDurationMinutes: Number(rules.vipMinDurationMinutes ?? 0),
+            fullHallMinDurationMinutes: Number(rules.fullHallMinDurationMinutes ?? 0),
+            exclusiveFullDayDurationMinutes: Number(rules.exclusiveFullDayDurationMinutes ?? 0),
             vipGnReward: Number(rules.vipReward?.gn ?? 0),
             vipLpReward: Number(rules.vipReward?.lp ?? 0),
             priority: customerTier,

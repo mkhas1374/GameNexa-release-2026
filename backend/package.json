@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npm run test:release",
+    "test:release": "node test_isolation_static.js && node test_financial_mock.js && node test_reservation.js && node test_security_isolated.js && node test_financial.js && node test_subscription_manual.js && node test_sm_auth.js && node test_sm_routes.js && node test_database_integrity.js",
+    "check": "node --check server.js && node --check canonical_routes.js && node --check reservationService.js && node --check financialService.js"
   },
   "keywords": [],
   "author": "",
