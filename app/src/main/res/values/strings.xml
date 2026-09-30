@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GameNexa</string>
+
+    <!-- Navigation Tabs -->
+    <string name="nav_club">باشگاه</string>
+    <string name="nav_customers">مشتریان</string>
+    <string name="nav_hall">سالن</string>
+    <string name="nav_subscription">اشتراک</string>
+    <string name="nav_settings">تنظیمات</string>
+
+    <!-- Admin Roles -->
+    <string name="role_super_manager">Super Manager</string>
+    <string name="role_manager">مدیر مجموعه</string>
+    <string name="role_deputy">معاون سالن</string>
+    <string name="role_trial">کاربر آزمایشی</string>
+
+    <!-- Actions & Common Buttons -->
+    <string name="btn_start">شروع</string>
+    <string name="btn_pause">توقف</string>
+    <string name="btn_resume">ادامه</string>
+    <string name="btn_finish">پایان</string>
+    <string name="btn_cafe">بوفه</string>
+    <string name="btn_retry_connection">تلاش مجدد</string>
+    <string name="confirm_action">تایید</string>
+    <string name="cancel_action">انصراف</string>
+    <string name="back">بازگشت</string>
+    <string name="search">جستجو...</string>
+    <string name="no_items_found">موردی یافت نشد</string>
+
+    <!-- Station & Hall -->
+    <string name="rate_hourly_prefix">نرخ: </string>
+    <string name="per_hour_suffix">/س</string>
+    <string name="unit_toman">تومان</string>
+    <string name="label_game_cost">هزینه بازی</string>
+    <string name="label_overtime_debt">اضافه زمان (بدهی)</string>
+    <string name="status_ready">آماده</string>
+    <string name="status_active">فعال</string>
+    <string name="status_paused">متوقف</string>
+    <string name="status_free">آزاد</string>
+    <string name="live_report_title">گزارش زنده کارکرد</string>
+    <string name="order_buffet_header">سفارشات بوفه</string>
+    <string name="server_test_tooltip">تست اتصال به سرور</string>
+
+    <!-- Grace Period & Offline Warning -->
+    <string name="offline_grace_banner_title">اتصال به سرور قطع می‌باشد</string>
+    <string name="offline_grace_banner_message">اتصال شما با سرور قطع می‌باشد، برای استفاده از تمام قابلیت‌های برنامه الزام به اتصال دائم است. چنانچه اتصال شما به سرور برقرار نشود برنامه به‌طور اتوماتیک غیرفعال خواهد شد.</string>
+    <string name="offline_grace_remaining_time">زمان باقیمانده مهلت آفلاین: </string>
+    <string name="offline_blocked_title">قطع اتصال با سرور</string>
+    <string name="offline_blocked_message">اتصال گوشی شما به سرور برقرار نمی‌باشد و امکان استفاده از نرم‌افزار وجود ندارد، بعد از برقراری اتصال اشتراک شما فعال خواهد شد.</string>
+    <string name="trial_online_only_title">الزام به اتصال اینترنت در نسخه آزمایشی</string>
+    <string name="trial_online_only_message">نسخه آزمایشی کاملاً آنلاین است. لطفاً اتصال اینترنت خود را برقرار کنید.</string>
+
+    <!-- Settings & Sections -->
+    <string name="settings_title">تنظیمات و پیکربندی گیم‌نت</string>
+    <string name="settings_subtitle">برای تنظیمات روی هر بخش کلیک کنید</string>
+    <string name="settings_menu_header">فهرست بخش‌های تنظیمات</string>
+    <string name="section_language_title">زبان برنامه</string>
+    <string name="section_language_desc">تغییر زبان بین فارسی و انگلیسی</string>
+    <string name="section_theme_title">تم و ظاهر</string>
+    <string name="section_theme_desc">شخصی‌سازی رنگ‌ها و حالت شب/روز</string>
+    <string name="section_backup_title">پشتیبان‌گیری و بازیابی</string>
+    <string name="section_backup_desc">ذخیره و بازیابی اطلاعات گیم‌نت</string>
+    <string name="section_managers_title">فروش و مدیریت مدیران</string>
+    <string name="section_managers_desc">ایجاد پنل مدیر و مدیریت دسترسی‌ها</string>
+    <string name="section_trial_title">مدیریت تست ۲۴ ساعته</string>
+    <string name="section_trial_desc">بررسی و ریست زمان تست دستگاه‌ها</string>
+    <string name="section_analytics_title">آمار و تحلیل مالی</string>
+    <string name="section_analytics_desc">درآمد روزانه، ماهانه و گزارش عملکرد</string>
+    <string name="section_diagnostics_title">سلامت شبکه و عیب‌یابی</string>
+    <string name="section_diagnostics_desc">بررسی وضعیت اتصال، پینگ و لاگ سرور</string>
+    <string name="active_language">زبان فعال</string>
+    <string name="select_language">انتخاب</string>
+    <string name="lang_fa">🇮🇷 فارسی</string>
+    <string name="lang_en">🇬🇧 English</string>
+    <string name="language_selection_title">انتخاب زبان پیش‌فرض برنامه</string>
+    <string name="language_selection_desc">تمامی عناوین، پیام‌ها و بخش‌های مختلف بر اساس زبان انتخاب‌شده نمایش داده می‌شوند.</string>
+
+    <!-- Customer Club & Invoices -->
+    <string name="customers_tab_title">حساب مشتریان</string>
+    <string name="reservations_tab_title">رزروها</string>
+    <string name="btn_register_customer">ثبت مشتری جدید</string>
+    <string name="btn_register_reservation">ثبت رزرو جدید</string>
+    <string name="filter_all">همه</string>
+    <string name="filter_creditors">بستانکاران</string>
+    <string name="filter_debtors">بدهکاران</string>
+    <string name="filter_cleared">بی‌حساب</string>
+    <string name="dialog_delete_customer">حذف مشتری</string>
+    <string name="dialog_delete_reservation">حذف رزرو</string>
+
+    <!-- Legacy / Extracted IDs for Full Compatibility -->
+    <string name="ext_no_stations_configured_1">هیچ جایگاهی تعریف نشده است</string>
+    <string name="ext_go_to_settings_to_configure_th_2">برای تنظیم تعداد جایگاه‌ها و تعرفه‌ها به تنظیمات بروید.</string>
+    <string name="ext_total_3">کل</string>
+    <string name="ext_ready_4">آماده</string>
+    <string name="ext_active_5">فعال</string>
+    <string name="ext_no_stations_in_this_section_6">هیچ جایگاهی در این بخش وجود ندارد</string>
+    <string name="ext_overtime_debt_7">اضافه زمان (بدهی)</string>
+    <string name="ext_select_8">انتخاب</string>
+    <string name="ext_game_9">بازی: </string>
+    <string name="ext_t_10">تومان</string>
+    <string name="ext_remaining_11">باقیمانده</string>
+    <string name="ext_elapsed_12">سپری‌شده</string>
+    <string name="ext_total_13">مجموع: </string>
+    <string name="ext_t_14">تومان</string>
+    <string name="ext_cafe_15">بوفه</string>
+    <string name="ext_no_items_found_16">موردی یافت نشد</string>
+    <string name="ext_trial_version_17">نسخه آزمایشی</string>
+    <string name="ext_you_need_a_valid_subscription__18">برای دسترسی به این بخش نیاز به خرید اشتراک دارید.</string>
+    <string name="ext_buy_subscription_19">خرید اشتراک</string>
+    <string name="ext_close_20">بستن</string>
+    <string name="ext_customer_club_loyalty_hub_21">باشگاه مشتریان و وفاداری</string>
+    <string name="ext_select_a_section_below_to_mana_22">یک بخش را برای مدیریت انتخاب کنید</string>
+    <string name="ext_club_options_menu_23">منوی امکانات باشگاه</string>
+    <string name="ext_manage_customer_balances_upcom_24">مدیریت حساب مشتریان و رزروها</string>
+    <string name="ext_customer_balance_summary_25">خلاصه حساب مشتری</string>
+    <string name="ext_customer_account_registered_su_26">حساب مشتری با مشخصات زیر با موفقیت ثبت شد:</string>
+    <string name="ext_customer_27">مشتری:</string>
+    <string name="ext_debt_amount_28">مبلغ بدهی:</string>
+    <string name="ext_toman_29">تومان</string>
+    <string name="ext_credit_amount_30">مبلغ بستانکاری:</string>
+    <string name="ext_toman_31">تومان</string>
+    <string name="ext_got_it_ok_32">متوجه شدم، تایید</string>
+    <string name="ext_search_33">جستجو...</string>
+    <string name="ext_delete_customer_34">حذف مشتری</string>
+    <string name="ext_min_35">دقیقه</string>
+    <string name="ext_30m_15m_and_5m_alarms_are_sche_36">آلارم‌های ۳۰، ۱۵ و ۵ دقیقه تنظیم شده‌اند</string>
+    <string name="ext_delete_reservation_37">حذف رزرو</string>
+    <string name="ext_edit_customer_38">ویرایش مشتری</string>
+    <string name="ext_yy_39">سال</string>
+    <string name="ext_mm_40">ماه</string>
+    <string name="ext_dd_41">روز</string>
+    <string name="ext_hh_42">ساعت</string>
+    <string name="ext_mm_43">دقیقه</string>
+    <string name="ext_hr_44">ساعت</string>
+    <string name="ext_min_45">دقیقه</string>
+    <string name="ext_invalid_date_time_format_46">فرمت تاریخ/ساعت نامعتبر است</string>
+    <string name="ext_trial_version_47">نسخه آزمایشی</string>
+    <string name="ext_you_need_a_valid_subscription__48">برای دسترسی به این قابلیت نیاز به اشتراک معتبر دارید.</string>
+    <string name="ext_buy_subscription_49">خرید اشتراک</string>
+    <string name="ext_close_50">بستن</string>
+    <string name="ext_gamenet_settings_config_51">تنظیمات و پیکربندی گیم‌نت</string>
+    <string name="ext_tap_any_category_below_to_conf_52">برای تنظیمات روی هر بخش کلیک کنید</string>
+    <string name="ext_network_health_diagnostics_53">سلامت شبکه و عیب‌یابی</string>
+    <string name="ext_view_detailed_network_logs_and_54">مشاهده لاگ‌های دقیق شبکه و پینگ</string>
+    <string name="ext_test_55">تست</string>
+    <string name="ext_settings_menu_56">منوی تنظیمات</string>
+    <string name="ext__57">انتخاب</string>
+    <string name="ext_active_language_58">زبان فعال</string>
+    <string name="ext_manager_sales_59">فروش مدیران</string>
+    <string name="ext_create_manager_panel_60">ایجاد پنل مدیر</string>
+    <string name="ext_access_to_current_managers_61">دسترسی به مدیران فعلی</string>
+    <string name="ext_24h_trial_management_62">مدیریت تست ۲۴ ساعته</string>
+    <string name="ext_create_manager_panel_63">ایجاد پنل مدیر</string>
+    <string name="ext_register_manager_64">ثبت مدیر</string>
+    <string name="ext_current_managers_65">مدیران فعلی</string>
+    <string name="ext_all_66">همه</string>
+    <string name="ext_pending_67">در انتظار</string>
+    <string name="ext_active_68">فعال</string>
+    <string name="ext_search_name_user_gamenet_69">جستجوی نام، کاربر، گیم‌نت...</string>
+    <string name="ext_no_managers_found_70">هیچ مدیری یافت نشد.</string>
+    <string name="ext_24h_trial_management_71">مدیریت تست ۲۴ ساعته</string>
+    <string name="ext_reset_trial_time_72">ریست زمان تست</string>
+    <string name="ext_yes_reset_73">بله، ریست شود</string>
+    <string name="ext_cancel_74">انصراف</string>
+    <string name="ext_no_trial_devices_registered_75">دستگاه تستی ثبت نشده است.</string>
+    <string name="ext_reset_extend_76">ریست / تمدید</string>
+    <string name="ext_delete_77">حذف</string>
+    <string name="ext_trial_reset_successfully_78">تست با موفقیت ریست شد!</string>
+    <string name="ext_local_reset_for_current_device_79">ریست محلی برای این دستگاه</string>
+    <string name="ext_business_analytics_80">تحلیل کسب‌وکار</string>
+    <string name="ext_reset_data_81">ریست داده‌ها</string>
+    <string name="ext_average_monthly_income_82">میانگین درآمد ماهانه</string>
+    <string name="ext_30_days_ago_83">۳۰ روز پیش</string>
+    <string name="ext_15_days_ago_84">۱۵ روز پیش</string>
+    <string name="ext_today_85">امروز</string>
+    <string name="ext_no_data_available_86">داده‌ای موجود نیست.</string>
+</resources>

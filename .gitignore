@@ -1,0 +1,48 @@
+*.iml
+.gradle
+.kotlin
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+.env
+debug.keystore
+
+# Large binaries and archives
+*.apk
+*.aab
+*.zip
+*.tar.gz
+*.tar.gz.enc
+*.jar
+*.bin
+*.b64
+*.idsig
+.build-outputs/
+jadx/
+node_modules/
+*.log
+__pycache__/
+
+
+# Signing keys and certificates
+*.jks
+*.keystore
+*.p12
+*.pem
+
+# Local-only release backups
+*.before-*
+*.backup
+
+# Keep the Gradle Wrapper executable JAR
+!gradle/wrapper/gradle-wrapper.jar

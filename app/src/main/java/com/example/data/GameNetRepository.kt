@@ -1,0 +1,1138 @@
+package com.example.data
+
+import com.example.data.network.NetworkClient
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+
+class GameNetRepository(private val db: AppDatabase) {
+    private val stationStateDao = db.stationStateDao()
+
+    suspend fun getAuthoritativeServerTime(): Long? = withContext(Dispatchers.IO) {
+        try {
+            NetworkClient.getApi().getServerTime().serverTime
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    suspend fun getAppSetting(key: String): String? = withContext(Dispatchers.IO) {
+        appSettingDao.getValue(key)
+    }
+
+    suspend fun saveAppSetting(key: String, value: String) = withContext(Dispatchers.IO) {
+        appSettingDao.insert(AppSetting(key = key, value = value))
+    }
+
+    suspend fun getAllAppSettings(): List<AppSetting> = withContext(Dispatchers.IO) {
+        appSettingDao.getAllSync()
+    }
+
+    private val consoleTypeDao = db.consoleTypeDao()
+    private val productDao = db.productDao()
+    private val stationOrderDao = db.stationOrderDao()
+    private val sessionHistoryDao = db.sessionHistoryDao()
+    private val appSettingDao = db.appSettingDao()
+    val customerDao = db.customerDao()
+    private val reservationDao = db.reservationDao()
+    private val licenseCacheDao = db.licenseCacheDao()
+    private val inviteCodeRecordDao = db.inviteCodeRecordDao()
+    private val pointLogDao = db.pointLogDao()
+    private val operatorAuditLogDao = db.operatorAuditLogDao()
+    private val gnLedgerDao = db.gnLedgerDao()
+    private val behaviorRuleDao = db.behaviorRuleDao()
+    private val behaviorLogDao = db.behaviorLogDao()
+    private val referralProgressRecordDao = db.referralProgressRecordDao()
+
+    val allOperatorAuditLogs: Flow<List<OperatorAuditLog>> = operatorAuditLogDao.getAll()
+    val allGnLedgerEntries: Flow<List<GnLedgerEntry>> = gnLedgerDao.getAllLedgerEntries()
+    val allBehaviorRules: Flow<List<BehaviorRule>> = behaviorRuleDao.getAllRules()
+    val allBehaviorLogs: Flow<List<BehaviorLog>> = behaviorLogDao.getAllLogs()
+
+    suspend fun clearAllDataExceptSettings() {
+        withContext(Dispatchers.IO) {
+            val allSettings = appSettingDao.getAllSync()
+            db.clearAllTables()
+            for (setting in allSettings) {
+                appSettingDao.insert(setting)
+            }
+        }
+    }
+
+    fun getGnLedgerForCustomer(customerId: Long): Flow<List<GnLedgerEntry>> = gnLedgerDao.getByCustomerId(customerId)
+
+    suspend fun getGnLedgerEntryByRef(refId: String): GnLedgerEntry? = gnLedgerDao.getByReferenceId(refId)
+
+    suspend fun addGnLedgerEntry(entry: GnLedgerEntry): Long {
+        val id = gnLedgerDao.insert(entry)
+        try {
+            com.example.data.network.SelfHostedManager.addGnLedgerEntry(entry.copy(id = id))
+        } catch (ignored: Exception) {}
+        return id
+    }
+
+    suspend fun updateGnLedgerEntry(entry: GnLedgerEntry) {
+        gnLedgerDao.update(entry)
+        try {
+            com.example.data.network.SelfHostedManager.addGnLedgerEntry(entry)
+        } catch (ignored: Exception) {}
+    }
+
+    suspend fun getAllBehaviorRulesList(): List<BehaviorRule> = behaviorRuleDao.getAllRulesList()
+
+    suspend fun addBehaviorRule(rule: BehaviorRule): Long = behaviorRuleDao.insert(rule)
+
+    suspend fun updateBehaviorRule(rule: BehaviorRule) = behaviorRuleDao.update(rule)
+
+    suspend fun deleteBehaviorRule(rule: BehaviorRule) = behaviorRuleDao.delete(rule)
+
+    fun getBehaviorLogsForCustomer(customerId: Long): Flow<List<BehaviorLog>> = behaviorLogDao.getByCustomerId(customerId)
+
+    suspend fun addBehaviorLog(log: BehaviorLog): Long = behaviorLogDao.insert(log)
+
+    fun getReferralRecordsForReferrer(referrerId: Long): Flow<List<ReferralProgressRecord>> = referralProgressRecordDao.getByReferrerId(referrerId)
+
+    suspend fun getReferralRecordForReferred(referredId: Long): ReferralProgressRecord? = referralProgressRecordDao.getByReferredId(referredId)
+
+    suspend fun addReferralRecord(record: ReferralProgressRecord): Long = referralProgressRecordDao.insert(record)
+
+    suspend fun updateReferralRecord(record: ReferralProgressRecord) = referralProgressRecordDao.update(record)
+
+    suspend fun addOperatorAuditLog(log: OperatorAuditLog): Long {
+        return operatorAuditLogDao.insert(log)
+    }
+
+    suspend fun getRecentAuditLogs(): List<OperatorAuditLog> {
+        return operatorAuditLogDao.getRecentList()
+    }
+
+    suspend fun clearOperatorAuditLogs() {
+        operatorAuditLogDao.clearAll()
+    }
+
+    fun getPointLogs(customerId: Long): Flow<List<PointLog>> {
+        return pointLogDao.getLogsByCustomerId(customerId)
+    }
+
+    fun getAllPointLogs(): Flow<List<PointLog>> {
+        return pointLogDao.getAllLogs()
+    }
+
+    suspend fun addPointLog(log: PointLog) {
+        pointLogDao.insert(log)
+        try {
+            com.example.data.network.SelfHostedManager.addPointLog(log)
+        } catch (ignored: Exception) {}
+    }
+
+    suspend fun getInviteCodeRecord(phone: String, name: String): InviteCodeRecord? {
+        return inviteCodeRecordDao.getRecord(phone, name)
+    }
+
+    suspend fun saveInviteCodeRecord(record: InviteCodeRecord) {
+        inviteCodeRecordDao.insert(record)
+    }
+
+    // Server-sync helpers
+    suspend fun isSyncModeEnabled(): Boolean {
+        return appSettingDao.getValue("server_sync_mode")?.toBoolean() ?: false
+    }
+
+    suspend fun getServerUrl(): String {
+        val current = appSettingDao.getValue("server_url")
+        val secureDefault = "https://api.gamenermayket.ir"
+        saveSetting("server_url", secureDefault)
+        return "$secureDefault/"
+    }
+
+    suspend fun getApi(): com.example.data.network.GameNetApi? {
+        return try {
+            val url = getServerUrl()
+            NetworkClient.getApi(url)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    suspend fun syncAllWithServer(): Boolean {
+        if (!isSyncModeEnabled()) return false
+        val api = getApi() ?: return false
+        var anySyncSucceeded = false
+
+        // 1. Consoles
+        try {
+            val remoteConsoles = api.getConsoleTypes()
+            if (remoteConsoles.isNotEmpty()) {
+                consoleTypeDao.clearAll()
+                for (c in remoteConsoles) {
+                    consoleTypeDao.insert(c)
+                }
+            } else {
+                val localConsoles = consoleTypeDao.getAll().firstOrNull() ?: emptyList()
+                val defaultConsoles = listOf(
+                    ConsoleType("PlayStation 5", 180000L, 220000L, 250000L, 280000L),
+                    ConsoleType("PlayStation 4", 120000L, 140000L, 150000L, 180000L),
+                    ConsoleType("شبیه ساز رانندگی", 220000L, 220000L, 220000L, 220000L),
+                    ConsoleType("Xbox Series X", 180000L, 220000L, 250000L, 280000L)
+                )
+                val consolesToSync = if (localConsoles.isNotEmpty()) localConsoles else defaultConsoles
+                if (localConsoles.isEmpty()) {
+                    for (c in defaultConsoles) consoleTypeDao.insert(c)
+                }
+                for (c in consolesToSync) {
+                    try { api.saveConsoleType(c) } catch (_: Exception) {}
+                }
+            }
+            anySyncSucceeded = true
+        } catch (e: Exception) { e.printStackTrace() }
+
+        // 2. Products
+        try {
+            val remoteProducts = api.getProducts()
+            if (remoteProducts.isNotEmpty()) {
+                productDao.clearAll()
+                for (p in remoteProducts) {
+                    productDao.insert(p)
+                }
+            } else {
+                val localProducts = productDao.getAll().firstOrNull() ?: emptyList()
+                val defaultProducts = listOf(
+                    Product("انرژیزا تی ان تی", 110000L),
+                    Product("هایپ", 130000L),
+                    Product("ردبول", 140000L),
+                    Product("بلوبری", 68000L),
+                    Product("لیموناد", 70000L),
+                    Product("ویتامین سی", 70000L),
+                    Product("کروسان", 50000L),
+                    Product("کیک باباجون", 50000L),
+                    Product("کیک دو قلو", 40000L),
+                    Product("مغز بادام و تخمه", 50000L),
+                    Product("آبمیوه", 30000L),
+                    Product("آبمعدنی", 15000L),
+                    Product("چیپس", 75000L),
+                    Product("رانی", 45000L),
+                    Product("نسکافه و قهوه", 40000L),
+                    Product("چای", 20000L),
+                    Product("اسنک و ساندویچ گرم", 85000L)
+                )
+                val prodsToSync = if (localProducts.isNotEmpty()) localProducts else defaultProducts
+                if (localProducts.isEmpty()) {
+                    for (p in defaultProducts) productDao.insert(p)
+                }
+                for (p in prodsToSync) {
+                    try { api.saveProduct(p) } catch (_: Exception) {}
+                }
+            }
+            anySyncSucceeded = true
+        } catch (e: Exception) { e.printStackTrace() }
+
+        // 3. Stations
+        try {
+            val remoteStations = api.getStations()
+            if (remoteStations.isNotEmpty()) {
+                stationStateDao.clearAll()
+                stationStateDao.insertAll(remoteStations)
+                // Update local setting to match server
+                saveSetting("station_count", remoteStations.size.toString())
+                for (st in remoteStations) {
+                    try {
+                        val orders = api.getOrders(st.id)
+                        if (orders.isNotEmpty()) {
+                            stationOrderDao.insertAll(orders)
+                        }
+                    } catch (ignored: Exception) {}
+                }
+            } else {
+                val localStations = stationStateDao.getAll().firstOrNull() ?: emptyList()
+                if (localStations.isNotEmpty()) {
+                    for (st in localStations) {
+                        try { api.saveStation(st) } catch (_: Exception) {}
+                    }
+                } else {
+                    val firstConsole = consoleTypeDao.getAll().firstOrNull()?.firstOrNull()?.name ?: "PlayStation 5"
+                    recreateStations(10, firstConsole)
+                    val created = stationStateDao.getAll().firstOrNull() ?: emptyList()
+                    for (st in created) {
+                        try { api.saveStation(st) } catch (_: Exception) {}
+                    }
+                }
+            }
+            anySyncSucceeded = true
+        } catch (e: Exception) { e.printStackTrace() }
+
+        // 4. Customers
+        if (!com.example.data.network.NetworkClient.isTrialMode) {
+            try {
+                val remoteCustomers = api.getCustomers()
+                if (remoteCustomers.isNotEmpty()) {
+                    val localCustomers = customerDao.getAllList()
+                    for (remote in remoteCustomers) {
+                        val existing = localCustomers.find { it.phoneNumber == remote.phoneNumber || it.id == remote.id }
+                        if (existing != null) {
+                            customerDao.insert(remote.copy(id = existing.id)) // Update existing to prevent duplicates
+                        } else {
+                            customerDao.insert(remote)
+                        }
+                    }
+                }
+            } catch (e: Exception) { e.printStackTrace() }
+        }
+
+        // 5. Reservations
+        try {
+            val remoteReservations = api.getReservations()
+            if (remoteReservations.isNotEmpty()) {
+                reservationDao.clearAll()
+                for (res in remoteReservations) {
+                    reservationDao.insert(res)
+                }
+            }
+        } catch (e: Exception) { e.printStackTrace() }
+
+        // 6. History
+        try {
+            val remoteHistory = api.getSessionHistory()
+            if (remoteHistory.isNotEmpty()) {
+                for (h in remoteHistory) {
+                    sessionHistoryDao.insert(h)
+                }
+            }
+        } catch (e: Exception) { e.printStackTrace() }
+
+        return anySyncSucceeded
+    }
+
+    // Station States
+    val allStationStates: Flow<List<StationState>> = stationStateDao.getAll()
+    suspend fun getStationStateByIdLocal(id: Int): StationState? = stationStateDao.getById(id)
+    suspend fun getStationStateById(id: Int): StationState? {
+        val local = stationStateDao.getById(id)
+        if (local != null) return local
+        if (isSyncModeEnabled()) {
+            try {
+                val remote = getApi()?.getStations()?.find { it.id == id }
+                if (remote != null) {
+                    stationStateDao.insert(remote)
+                    return remote
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return null
+    }
+
+    suspend fun insertStationState(state: StationState) {
+        stationStateDao.insert(state)
+        try {
+            val orders = getOrdersForStationSync(state.id)
+            val ordersArray = org.json.JSONArray()
+            for (ord in orders) {
+                val p = getProductByName(ord.productName)
+                val pJson = org.json.JSONObject()
+                pJson.put("product_name", ord.productName)
+                pJson.put("quantity", ord.quantity)
+                pJson.put("price", p?.price ?: 0L)
+                ordersArray.put(pJson)
+            }
+            com.example.data.network.SelfHostedManager.syncStationToCloud(state, ordersArray.toString())
+        } catch (ignored: Exception) {}
+        if (isSyncModeEnabled()) {
+            try {
+                getApi()?.saveStation(state)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    suspend fun insertStationStates(states: List<StationState>) {
+        stationStateDao.insertAll(states)
+        try {
+            for (state in states) {
+                val orders = getOrdersForStationSync(state.id)
+                val ordersArray = org.json.JSONArray()
+                for (ord in orders) {
+                    val p = getProductByName(ord.productName)
+                    val pJson = org.json.JSONObject()
+                    pJson.put("product_name", ord.productName)
+                    pJson.put("quantity", ord.quantity)
+                    pJson.put("price", p?.price ?: 0L)
+                    ordersArray.put(pJson)
+                }
+                com.example.data.network.SelfHostedManager.syncStationToCloud(state, ordersArray.toString())
+            }
+        } catch (ignored: Exception) {}
+        if (isSyncModeEnabled()) {
+            try {
+                val api = getApi()
+                for (state in states) {
+                    api?.saveStation(state)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    suspend fun clearAllStationStates() {
+        stationStateDao.clearAll()
+    }
+
+    // Console Types
+    val allConsoleTypes: Flow<List<ConsoleType>> = consoleTypeDao.getAll()
+    suspend fun getConsoleTypeByName(name: String) = consoleTypeDao.getByName(name)
+    suspend fun insertConsoleType(consoleType: ConsoleType) {
+        consoleTypeDao.insert(consoleType)
+        if (isSyncModeEnabled()) {
+            try {
+                getApi()?.saveConsoleType(consoleType)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    suspend fun deleteConsoleType(name: String) {
+        consoleTypeDao.deleteByName(name)
+        if (isSyncModeEnabled()) {
+            try {
+                getApi()?.deleteConsoleType(name)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    suspend fun clearConsoleTypes() = consoleTypeDao.clearAll()
+
+    // Products
+    val allProducts: Flow<List<Product>> = productDao.getAll()
+    suspend fun getProductByName(name: String) = productDao.getByName(name)
+    suspend fun insertProduct(product: Product) {
+        productDao.insert(product)
+        if (isSyncModeEnabled()) {
+            try {
+                getApi()?.saveProduct(product)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    suspend fun deleteProduct(name: String) {
+        productDao.deleteByName(name)
+        if (isSyncModeEnabled()) {
+            try {
+                getApi()?.deleteProduct(name)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    suspend fun clearProducts() = productDao.clearAll()
+
+    // Station Orders
+    fun getOrdersForStation(stationId: Int): Flow<List<StationOrder>> = stationOrderDao.getOrdersForStation(stationId)
+    suspend fun getOrdersForStationSync(stationId: Int): List<StationOrder> {
+        return stationOrderDao.getOrdersForStationSync(stationId)
+    }
+
+    suspend fun syncStationOrdersToCloud(stationId: Int) {
+        try {
+            val state = getStationStateByIdLocal(stationId) ?: return
+            val orders = getOrdersForStationSync(stationId)
+            val ordersArray = org.json.JSONArray()
+            for (ord in orders) {
+                val p = getProductByName(ord.productName)
+                val pJson = org.json.JSONObject()
+                pJson.put("product_name", ord.productName)
+                pJson.put("quantity", ord.quantity)
+                pJson.put("price", p?.price ?: 0L)
+                pJson.put("target_customer_id", ord.targetCustomerId ?: 0L)
+                pJson.put("target_customer_name", ord.targetCustomerName ?: "")
+                ordersArray.put(pJson)
+            }
+            com.example.data.network.SelfHostedManager.syncStationToCloud(state, ordersArray.toString())
+        } catch (ignored: Exception) {}
+    }
+
+    suspend fun insertStationOrder(order: StationOrder) {
+        stationOrderDao.insert(order)
+        syncStationOrdersToCloud(order.stationId)
+        if (isSyncModeEnabled()) {
+            try {
+                getApi()?.saveOrder(order)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    suspend fun deleteStationOrder(id: String, stationId: Int? = null) {
+        stationOrderDao.deleteById(id)
+        if (stationId != null) {
+            syncStationOrdersToCloud(stationId)
+        }
+        if (isSyncModeEnabled()) {
+            try {
+                getApi()?.deleteOrder(id)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    suspend fun clearOrdersForStation(stationId: Int) {
+        stationOrderDao.clearForStation(stationId)
+        syncStationOrdersToCloud(stationId)
+        if (isSyncModeEnabled()) {
+            try {
+                getApi()?.clearOrders(stationId)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // Session History
+    val allHistory: Flow<List<SessionHistory>> = sessionHistoryDao.getAll()
+    suspend fun getAllHistorySync(): List<SessionHistory> {
+        if (isSyncModeEnabled()) {
+            try {
+                val remote = getApi()?.getSessionHistory()
+                if (remote != null) {
+                    sessionHistoryDao.clearAll()
+                    for (h in remote) {
+                        sessionHistoryDao.insert(h)
+                    }
+                    return remote
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return sessionHistoryDao.getAllSync()
+    }
+
+    suspend fun insertSessionHistory(history: SessionHistory) {
+        sessionHistoryDao.insert(history)
+        if (isSyncModeEnabled()) {
+            try {
+                getApi()?.addSessionHistory(history)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    suspend fun clearHistory() {
+        sessionHistoryDao.clearAll()
+        if (isSyncModeEnabled()) {
+            try {
+                getApi()?.clearSessionHistory()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // App Settings
+    suspend fun getSetting(key: String): String? = appSettingDao.getValue(key)
+    suspend fun saveSetting(key: String, value: String) {
+        appSettingDao.insert(AppSetting(key, value))
+        if (isSyncModeEnabled() && key != "server_sync_mode" && key != "server_url") {
+            try {
+                getApi()?.saveSetting(mapOf("key" to key, "value" to value))
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // Pre-populate data if empty
+    suspend fun initializeDatabaseIfEmpty() {
+        // Check if settings has the station count
+        val stationCountSetting = getSetting("station_count")
+        if (stationCountSetting == null) {
+            // Save default setting
+            saveSetting("station_count", "10")
+            saveSetting("notifications_enabled", "true")
+            saveSetting("server_sync_mode", "true")
+            saveSetting("server_url", "https://api.gamenermayket.ir")
+
+            // Initialize console types
+            val defaultConsoles = listOf(
+                ConsoleType("PlayStation 5", 180000L, 220000L, 250000L, 280000L),
+                ConsoleType("PlayStation 4", 120000L, 140000L, 150000L, 180000L),
+                ConsoleType("شبیه ساز رانندگی", 220000L, 220000L, 220000L, 220000L),
+                ConsoleType("Xbox Series X", 180000L, 220000L, 250000L, 280000L)
+            )
+            for (c in defaultConsoles) {
+                insertConsoleType(c)
+            }
+
+            // Initialize products (full buffet menu)
+            val defaultProducts = listOf(
+                Product("انرژیزا تی ان تی", 110000L),
+                Product("هایپ", 130000L),
+                Product("ردبول", 140000L),
+                Product("بلوبری", 68000L),
+                Product("لیموناد", 70000L),
+                Product("ویتامین سی", 70000L),
+                Product("کروسان", 50000L),
+                Product("کیک باباجون", 50000L),
+                Product("کیک دو قلو", 40000L),
+                Product("مغز بادام و تخمه", 50000L),
+                Product("آبمیوه", 30000L),
+                Product("آبمعدنی", 15000L),
+                Product("چیپس", 75000L),
+                Product("رانی", 45000L),
+                Product("نسکافه و قهوه", 40000L),
+                Product("چای", 20000L),
+                Product("اسنک و ساندویچ گرم", 85000L)
+            )
+            for (p in defaultProducts) {
+                insertProduct(p)
+            }
+
+            // Create 10 station states
+            recreateStations(10, defaultConsoles.first().name)
+            
+            saveSetting("gn_payment_cards", "[]")
+            saveSetting("gn_payment_gateways", "[]")
+            saveSetting("gn_payment_cryptos", "[]")
+            saveSetting("gn_contact_sms", "09395773183")
+            saveSetting("gn_contact_bale", "@Real_MimKhas")
+            saveSetting("gn_game_payment_ratio", "0.3")
+            saveSetting("gn_buffet_payment_ratio", "0.5")
+            saveSetting("gn_to_toman_ratio", "1000")
+
+            saveSetting("defaults_v2_applied_v3", "true")
+        } else {
+            // Ensure we have sync settings initialized and securely migrated
+            if (getSetting("server_sync_mode") == null) {
+                saveSetting("server_sync_mode", "true")
+            }
+            val existingUrl = getSetting("server_url")
+            saveSetting("server_url", "https://api.gamenermayket.ir")
+            ensureConsolesAndProductsExist()
+        }
+    }
+
+        suspend fun ensureConsolesAndProductsExist() {
+        val consoles = consoleTypeDao.getAll().firstOrNull() ?: emptyList()
+        if (consoles.isEmpty()) {
+            val defaultConsoles = listOf(
+                ConsoleType("PlayStation 5", 180000L, 220000L, 250000L, 280000L),
+                ConsoleType("PlayStation 4", 120000L, 140000L, 150000L, 180000L),
+                ConsoleType("شبیه ساز رانندگی", 220000L, 220000L, 220000L, 220000L),
+                ConsoleType("Xbox Series X", 180000L, 220000L, 250000L, 280000L)
+            )
+            for (c in defaultConsoles) {
+                insertConsoleType(c)
+            }
+        }
+        val prods = productDao.getAll().firstOrNull() ?: emptyList()
+        if (prods.isEmpty()) {
+            val defaultProducts = listOf(
+                Product("انرژیزا تی ان تی", 110000L),
+                Product("هایپ", 130000L),
+                Product("ردبول", 140000L),
+                Product("بلوبری", 68000L),
+                Product("لیموناد", 70000L),
+                Product("ویتامین سی", 70000L),
+                Product("کروسان", 50000L),
+                Product("کیک باباجون", 50000L),
+                Product("کیک دو قلو", 40000L),
+                Product("مغز بادام و تخمه", 50000L),
+                Product("آبمیوه", 30000L),
+                Product("آبمعدنی", 15000L),
+                Product("چیپس", 75000L),
+                Product("رانی", 45000L),
+                Product("نسکافه و قهوه", 40000L),
+                Product("چای", 20000L),
+                Product("اسنک و ساندویچ گرم", 85000L)
+            )
+            for (p in defaultProducts) {
+                insertProduct(p)
+            }
+        }
+        
+        val hasStations = stationStateDao.getAll().firstOrNull()?.isNotEmpty() == true
+        if (!hasStations) {
+            val count = getSetting("station_count")?.toIntOrNull() ?: 10
+            val firstConsole = consoleTypeDao.getAll().firstOrNull()?.firstOrNull()?.name ?: "PlayStation 5"
+            recreateStations(count, firstConsole)
+        }
+    }
+
+    suspend fun ensureTrialDataExists() {
+        val hasStations = stationStateDao.getAll().firstOrNull()?.isNotEmpty() == true
+        if (!hasStations) {
+            val count = getSetting("station_count")?.toIntOrNull() ?: 10
+            
+            val hasConsoles = consoleTypeDao.getAll().firstOrNull()?.isNotEmpty() == true
+            val defaultConsoles = listOf(
+                ConsoleType("PlayStation 5", 180000L, 220000L, 250000L, 280000L),
+                ConsoleType("PlayStation 4", 120000L, 140000L, 150000L, 180000L),
+                ConsoleType("شبیه ساز رانندگی", 220000L, 220000L, 220000L, 220000L),
+                ConsoleType("Xbox Series X", 180000L, 220000L, 250000L, 280000L)
+            )
+            if (!hasConsoles) {
+                for (c in defaultConsoles) {
+                    insertConsoleType(c)
+                }
+            }
+
+            val hasProducts = productDao.getAll().firstOrNull()?.isNotEmpty() == true
+            if (!hasProducts) {
+                val defaultProducts = listOf(
+                    Product("انرژیزا تی ان تی", 110000L),
+                    Product("هایپ", 130000L),
+                    Product("ردبول", 140000L),
+                    Product("بلوبری", 68000L),
+                    Product("لیموناد", 70000L),
+                    Product("ویتامین سی", 70000L),
+                    Product("کروسان", 50000L),
+                    Product("کیک باباجون", 50000L),
+                    Product("کیک دو قلو", 40000L),
+                    Product("مغز بادام و تخمه", 50000L),
+                    Product("آبمیوه", 30000L),
+                    Product("آبمعدنی", 15000L),
+                    Product("چیپس", 75000L),
+                    Product("رانی", 45000L),
+                    Product("نسکافه و قهوه", 40000L),
+                    Product("چای", 20000L),
+                    Product("اسنک و ساندویچ گرم", 85000L)
+                )
+                for (p in defaultProducts) {
+                    insertProduct(p)
+                }
+            }
+
+            val firstConsole = if (hasConsoles) {
+                consoleTypeDao.getAll().firstOrNull()?.firstOrNull()?.name ?: defaultConsoles.first().name
+            } else {
+                defaultConsoles.first().name
+            }
+            recreateStations(count, firstConsole)
+        }
+    }
+
+    suspend fun recreateStations(count: Int, defaultConsole: String) {
+        // Find existing ones
+        val currentStates = stationStateDao.getAll().firstOrNull() ?: emptyList()
+        val currentMap = currentStates.associateBy { it.id }
+
+        val newStates = ArrayList<StationState>()
+        for (id in 1..count) {
+            val existing = currentMap[id]
+            if (existing != null) {
+                newStates.add(existing)
+            } else {
+                newStates.add(StationState(id = id, consoleType = defaultConsole))
+            }
+        }
+
+        // Clear current states and insert the exact count
+        stationStateDao.clearAll()
+        stationStateDao.insertAll(newStates)
+    }
+
+    // Customers
+    fun getMockTrialCustomers(): List<Customer> {
+        return listOf(
+            Customer(id = 1L, fullName = "مشتری تستی ۱", phoneNumber = "09120000001", credit = 0L, debt = 0L),
+            Customer(id = 2L, fullName = "مشتری تستی ۲", phoneNumber = "09120000002", credit = 50000L, debt = 0L),
+            Customer(id = 3L, fullName = "مشتری تستی ۳", phoneNumber = "09120000003", credit = 0L, debt = 35000L),
+            Customer(id = 4L, fullName = "مشتری تستی ۴", phoneNumber = "09120000004", credit = 0L, debt = 0L)
+        )
+    }
+
+    val allCustomers: Flow<List<Customer>> = flow {
+        if (com.example.data.network.NetworkClient.isTrialMode) {
+            emit(getMockTrialCustomers())
+        } else {
+            customerDao.getAll().collect { emit(it) }
+        }
+    }
+    suspend fun getAllCustomersLocal(): List<Customer> = if (com.example.data.network.NetworkClient.isTrialMode) getMockTrialCustomers() else customerDao.getAllList()
+    suspend fun getCustomerById(id: Long): Customer? {
+        if (com.example.data.network.NetworkClient.isTrialMode) {
+            return getMockTrialCustomers().find { it.id == id }
+        }
+        if (isSyncModeEnabled()) {
+            try {
+                val remote = getApi()?.getCustomers()?.find { it.id == id }
+                if (remote != null) {
+                    customerDao.insert(remote)
+                    return remote
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return customerDao.getById(id)
+    }
+
+    suspend fun insertLocalCustomers(customers: List<Customer>) {
+        if (com.example.data.network.NetworkClient.isTrialMode) return
+        if (customers.isEmpty()) return
+        val existingLocal = customerDao.getAllList()
+        for (cloud in customers) {
+            val trimmedPhone = cloud.phoneNumber.trim()
+            val trimmedName = cloud.fullName.trim()
+
+            val matchByPhone = if (trimmedPhone.isNotBlank()) existingLocal.find { it.phoneNumber.trim() == trimmedPhone } else null
+            val matchById = existingLocal.find { it.id == cloud.id && cloud.id > 0L }
+            val matchByName = if (trimmedName.isNotBlank()) existingLocal.find { it.fullName.trim().equals(trimmedName, ignoreCase = true) } else null
+
+            val targetLocal = matchByPhone ?: matchById ?: matchByName
+            if (targetLocal != null) {
+                val updated = targetLocal.copy(
+                    fullName = if (cloud.fullName.isNotBlank()) cloud.fullName else targetLocal.fullName,
+                    phoneNumber = if (cloud.phoneNumber.isNotBlank()) cloud.phoneNumber else targetLocal.phoneNumber,
+                    password = if (cloud.password.isNotBlank()) cloud.password else targetLocal.password,
+                    debt = cloud.debt,
+                    credit = cloud.credit,
+                    points = cloud.points,
+                    description = if (cloud.description.isNotBlank()) cloud.description else targetLocal.description,
+                    inviteCode = if (cloud.inviteCode.isNotBlank()) cloud.inviteCode else targetLocal.inviteCode,
+                    invitedByCode = if (cloud.invitedByCode.isNotBlank()) cloud.invitedByCode else targetLocal.invitedByCode
+                )
+                customerDao.insert(updated)
+            } else {
+                customerDao.insert(cloud)
+            }
+        }
+
+        // Deduplicate local customers by phone number
+        val allCurrent = customerDao.getAllList()
+        val groupedByPhone = allCurrent.filter { it.phoneNumber.isNotBlank() }.groupBy { it.phoneNumber.trim() }
+        for (entry in groupedByPhone) {
+            val group = entry.value
+            if (group.size > 1) {
+                val sorted = group.sortedByDescending { (if (it.password.isNotBlank()) 10 else 0) + (if (it.credit > 0 || it.debt > 0) 5 else 0) - it.id }
+                val toDelete = sorted.drop(1)
+                for (dupe in toDelete) {
+                    customerDao.delete(dupe)
+                }
+            }
+        }
+    }
+
+    suspend fun insertCustomer(customer: Customer): Long {
+        if (com.example.data.network.NetworkClient.isTrialMode) return -1L
+        val localId = customerDao.insert(customer)
+        val finalCust = if (customer.id == 0L) customer.copy(id = localId) else customer
+        try {
+            com.example.data.network.SelfHostedManager.upsertCustomer(finalCust)
+        } catch (ignored: Exception) {}
+        if (isSyncModeEnabled()) {
+            try {
+                getApi()?.saveCustomer(finalCust)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return localId
+    }
+
+    suspend fun deleteCustomer(customer: Customer) = withContext(Dispatchers.IO) {
+        if (com.example.data.network.NetworkClient.isTrialMode) return@withContext
+        try {
+            customerDao.delete(customer)
+            customerTransactionDao.deleteByCustomerId(customer.id)
+            if (customer.phoneNumber.isNotBlank()) {
+                reservationDao.deleteByPhone(customer.phoneNumber)
+                reservationDao.deleteByPhone(com.example.data.network.SelfHostedManager.normalizePhone(customer.phoneNumber))
+            }
+            pointLogDao.deleteByCustomerId(customer.id)
+            gnLedgerDao.deleteByCustomerId(customer.id)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        try {
+            com.example.data.network.SelfHostedManager.deleteCustomer(customer.id, customer.phoneNumber)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        if (isSyncModeEnabled()) {
+            try {
+                getApi()?.deleteCustomer(customer.id)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    suspend fun deleteCustomersBatch(customers: List<Customer>) = withContext(Dispatchers.IO) {
+        if (com.example.data.network.NetworkClient.isTrialMode) return@withContext
+        customers.forEach { customer ->
+            try {
+                customerDao.delete(customer)
+                customerTransactionDao.deleteByCustomerId(customer.id)
+                if (customer.phoneNumber.isNotBlank()) {
+                    reservationDao.deleteByPhone(customer.phoneNumber)
+                }
+                pointLogDao.deleteByCustomerId(customer.id)
+                gnLedgerDao.deleteByCustomerId(customer.id)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        try {
+            val ids = customers.map { it.id }
+            com.example.data.network.SelfHostedManager.deleteCustomersBatch(ids)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        if (isSyncModeEnabled()) {
+            try {
+                val ids = customers.map { it.id }
+                getApi()?.deleteCustomerBatch(mapOf("customerIds" to ids))
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    suspend fun clearCustomers() {
+        // customerDao.clearAll() // Removed to prevent wiping unsynced local customers
+    }
+
+    // Reservations
+    val allReservations: Flow<List<Reservation>> = reservationDao.getAll()
+    suspend fun getReservationById(id: Long): Reservation? {
+        if (isSyncModeEnabled()) {
+            try {
+                val remote = getApi()?.getReservations()?.find { it.id == id }
+                if (remote != null) {
+                    reservationDao.insert(remote)
+                    return remote
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return reservationDao.getById(id)
+    }
+
+    suspend fun insertReservation(reservation: Reservation): Long {
+        val localId = reservationDao.insert(reservation)
+        // SelfHostedManager will handle the sync explicitly in ViewModel
+        return localId
+    }
+
+    suspend fun deleteReservation(reservation: Reservation) {
+        reservationDao.delete(reservation)
+        if (isSyncModeEnabled()) {
+            try {
+                getApi()?.deleteReservation(reservation.id)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    suspend fun clearReservations() {
+        reservationDao.clearAll()
+    }
+
+    private val customerTransactionDao = db.customerTransactionDao()
+
+    // Customer Transactions
+    val allCustomerTransactions: Flow<List<CustomerTransaction>> = flow {
+        if (com.example.data.network.NetworkClient.isTrialMode) {
+            emit(emptyList())
+        } else {
+            customerTransactionDao.getAll().collect { emit(it) }
+        }
+    }
+    suspend fun getAllCustomerTransactionsLocal(): List<CustomerTransaction> = customerTransactionDao.getAllList()
+
+    fun getTransactionsByCustomerId(customerId: Long): Flow<List<CustomerTransaction>> =
+        customerTransactionDao.getByCustomerId(customerId)
+
+    suspend fun insertCustomerTransaction(transaction: CustomerTransaction): Long =
+        customerTransactionDao.insert(transaction)
+
+    suspend fun updateCustomerTransaction(transaction: CustomerTransaction) =
+        customerTransactionDao.update(transaction)
+
+    suspend fun deleteCustomerTransaction(transaction: CustomerTransaction) =
+        customerTransactionDao.delete(transaction)
+
+    // License Cache
+    suspend fun getLicenseCache(): LicenseCacheEntity? = licenseCacheDao.getLicenseCache()
+    suspend fun saveLicenseCache(cache: LicenseCacheEntity) = licenseCacheDao.saveLicenseCache(cache)
+
+    suspend fun getManagers(): List<com.example.data.network.AdminManagerDto> = withContext(Dispatchers.IO) {
+        val candidatePaths = listOf("api/v1/super-manager/managers")
+        val baseUrl = com.example.data.network.SelfHostedManager.SERVER_URL.trimEnd('/')
+        val client = com.example.data.network.SelfHostedManager.client
+        val headers = com.example.data.network.SelfHostedManager.getBaseHeaders()
+        val moshi = com.squareup.moshi.Moshi.Builder()
+            .add(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
+            .build()
+        val listType = com.squareup.moshi.Types.newParameterizedType(List::class.java, com.example.data.network.AdminManagerDto::class.java)
+        val listAdapter = moshi.adapter<List<com.example.data.network.AdminManagerDto>>(listType)
+
+        for (path in candidatePaths) {
+            try {
+                val req = okhttp3.Request.Builder()
+                    .url("$baseUrl/$path")
+                    .headers(headers)
+                    .get()
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string()?.trim() ?: ""
+                        if (body.startsWith("[")) {
+                            val parsed = listAdapter.fromJson(body)
+                            if (parsed != null) return@withContext parsed
+                        } else if (body.startsWith("{")) {
+                            val jsonObj = org.json.JSONObject(body)
+                            val array = jsonObj.optJSONArray("data") ?: jsonObj.optJSONArray("managers") ?: jsonObj.optJSONArray("items")
+                            if (array != null) {
+                                val parsed = listAdapter.fromJson(array.toString())
+                                if (parsed != null) return@withContext parsed
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        return@withContext com.example.data.network.NetworkClient.getApi().getSuperManagers()
+    }
+
+    suspend fun createManager(req: com.example.data.network.CreateManagerRequestDto): com.example.data.network.ManagerProfileDto = withContext(Dispatchers.IO) {
+        val candidatePaths = listOf("api/v1/super-manager/add-manager")
+        val baseUrl = com.example.data.network.SelfHostedManager.SERVER_URL.trimEnd('/')
+        val client = com.example.data.network.SelfHostedManager.client
+        val headers = com.example.data.network.SelfHostedManager.getBaseHeaders()
+        val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+
+        val jsonObject = org.json.JSONObject().apply {
+            put("phone", req.phone)
+            put("username", if (req.phone.isNotBlank()) req.phone else "admin_${System.currentTimeMillis()}")
+            put("full_name", req.fullName)
+            put("fullName", req.fullName)
+            put("name", req.fullName)
+            put("gamenet_name", req.gameneName)
+            put("gameneName", req.gameneName)
+            put("gameNetName", req.gameneName)
+            put("password", req.password)
+            put("plan_name", if (req.planType.isNotBlank()) req.planType else "پلن ۳ ماهه")
+            put("planType", req.planType)
+            put("plan_type", req.planType)
+            put("amount_paid", req.paymentAmount.toLong())
+            put("paymentAmount", req.paymentAmount)
+            put("payment_amount", req.paymentAmount)
+            put("durationDays", req.durationDays)
+            put("duration_days", req.durationDays)
+            put("maxDevices", req.maxDevices)
+            put("max_devices", req.maxDevices)
+            put("paymentStatus", "PAID")
+            put("payment_status", "PAID")
+            put("status", "ACTIVE")
+        }
+
+        val requestBody = jsonObject.toString().toRequestBody(jsonMediaType)
+        var lastStatusCode = 0
+        var lastErrorMessage = ""
+        val moshi = com.squareup.moshi.Moshi.Builder()
+            .add(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
+            .build()
+        val managerAdapter = moshi.adapter(com.example.data.network.ManagerProfileDto::class.java)
+
+        val defaultStart = System.currentTimeMillis()
+        val defaultEnd = defaultStart + (req.durationDays * 86400000L)
+
+        for (path in candidatePaths) {
+            try {
+                val okReq = okhttp3.Request.Builder()
+                    .url("$baseUrl/$path")
+                    .headers(headers)
+                    .post(requestBody)
+                    .build()
+                client.newCall(okReq).execute().use { resp ->
+                    lastStatusCode = resp.code
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string()?.trim() ?: ""
+                        if (body.startsWith("{")) {
+                            val parsed = managerAdapter.fromJson(body)
+                            val jsonObj = org.json.JSONObject(body)
+                            val stringId = jsonObj.optString("id", jsonObj.optString("manager_id", jsonObj.optString("managerId", "")))
+                            val license = jsonObj.optString("licenseCode", jsonObj.optString("license_code", ""))
+                            val longId = jsonObj.optLong("id", 0L)
+                            
+                            val actDate = jsonObj.optString("activation_date", jsonObj.optString("created_at", ""))
+                            val expDate = jsonObj.optString("expiry_date", jsonObj.optString("expires_at", ""))
+                            
+                            val startMs = parseIsoOrTimestamp(actDate, defaultStart)
+                            val endMs = parseIsoOrTimestamp(expDate, defaultEnd)
+
+                            if (parsed != null) {
+                                return@withContext parsed.copy(
+                                    managerId = if (stringId.isNotBlank()) stringId else parsed.stringId,
+                                    subscriptionStatus = "ACTIVE",
+                                    paymentStatus = "PAID",
+                                    subscriptionStart = if (startMs > 0) startMs else parsed.subscriptionStart,
+                                    subscriptionEnd = if (endMs > 0) endMs else parsed.subscriptionEnd
+                                )
+                            }
+                            throw Exception("Failed to parse manager response")
+                        }
+                        throw Exception("Failed to parse manager response")
+                    } else {
+                        lastErrorMessage = resp.body?.string() ?: ""
+                    }
+                }
+            } catch (e: Exception) {
+                lastErrorMessage = e.message ?: "خطا در شبکه"
+            }
+        }
+
+        // Try Retrofit super manager endpoint as last attempt
+        try {
+            val responseBody = com.example.data.network.NetworkClient.getApi().createSuperManager(req)
+            val jsonStr = responseBody.string().trim()
+            if (jsonStr.startsWith("{")) {
+                val parsed = managerAdapter.fromJson(jsonStr)
+                if (parsed != null) return@withContext parsed
+            }
+            throw Exception("Failed to parse manager response")
+        } catch (_: Exception) {}
+
+        if (lastStatusCode in 200..299) {
+            throw Exception("Failed to parse manager response")
+        }
+
+        throw Exception(if (lastStatusCode == 404) "خطا: مسیر ثبت مدیر در سرور یافت نشد (کد 404). لطفاً از در دسترس بودن /api/v1/super-manager/add-manager در بک‌اند مطمئن شوید." else "خطای سرور ($lastStatusCode): $lastErrorMessage")
+    }
+
+    private fun parseIsoOrTimestamp(value: String, defaultTime: Long): Long {
+        if (value.isBlank()) return defaultTime
+        value.toLongOrNull()?.let { return it }
+        return try {
+            val df = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+            df.parse(value)?.time ?: defaultTime
+        } catch (_: Exception) {
+            defaultTime
+        }
+    }
+    suspend fun updateManagerStatus(id: String, req: com.example.data.network.UpdateManagerRequestDto) {
+        com.example.data.network.NetworkClient.getApi().updateManagerStatus(id, req)
+    }
+
+}
