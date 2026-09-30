@@ -8,6 +8,7 @@ import kotlinx.coroutines.runBlocking
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -15,6 +16,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,6 +26,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -51,9 +57,11 @@ class MainActivity : ComponentActivity() {
 
 
     override fun attachBaseContext(newBase: Context) {
-        val lang = runBlocking(Dispatchers.IO) {
-            val db = com.example.data.AppDatabase.getDatabase(newBase)
-            db.appSettingDao().getValue("language") ?: "fa"
+        val lang = try {
+            val prefs = newBase.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+            prefs.getString("language", "fa") ?: "fa"
+        } catch (e: Exception) {
+            "fa"
         }
         super.attachBaseContext(LocaleHelper.updateLocale(newBase, lang))
     }
@@ -61,10 +69,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
-            hide(WindowInsetsCompat.Type.systemBars())
-            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            show(WindowInsetsCompat.Type.systemBars())
         }
         handlePaymentDeepLink(intent)
         testBackendConnectivity()
@@ -110,14 +116,7 @@ class MainActivity : ComponentActivity() {
                     Surface(
                         modifier = Modifier
                             .fillMaxSize()
-                            .imePadding()
-                            .clickable(
-                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                                indication = null
-                            ) {
-                                focusManager.clearFocus()
-                                keyboardController?.hide()
-                            },
+                            .imePadding(),
                         color = MaterialTheme.colorScheme.background
                     ) {
                         Box(modifier = Modifier.fillMaxSize()) {
@@ -294,9 +293,9 @@ class MainActivity : ComponentActivity() {
                 e.printStackTrace(pw)
                 val stackTraceStr = sw.toString()
 
-                android.util.Log.e(tag, "HTTP STATUS: FAILED")
-                android.util.Log.e(tag, "RESPONSE BODY: None")
-                android.util.Log.e(tag, "EXCEPTION: ${e.message}")
+                android.util.Log.d(tag, "HTTP STATUS: FAILED")
+                android.util.Log.d(tag, "RESPONSE BODY: None")
+                android.util.Log.d(tag, "EXCEPTION: ${e.message}")
                 android.util.Log.e(tag, "EXCEPTION TYPE: ${e.javaClass.name}")
                 android.util.Log.e(tag, "STACKTRACE:\n$stackTraceStr")
             }
@@ -360,15 +359,7 @@ fun AppContent(viewModel: GameNetViewModel) {
     }
 
     Scaffold(
-        modifier = Modifier
-            .fillMaxSize()
-            .clickable(
-                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                indication = null
-            ) {
-                focusManager.clearFocus()
-                keyboardController?.hide()
-            },
+        modifier = Modifier.fillMaxSize(),
         topBar = {
             TopAppBar(
                 title = {
@@ -461,6 +452,8 @@ fun AppContent(viewModel: GameNetViewModel) {
                     CustomBottomNavItem(
                         selected = selectedTab == 0,
                         onClick = {
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
                             if (currentAdminRole == "OPERATOR") {
                                 android.widget.Toast.makeText(context, "شما به عنوان معاون دسترسی به این بخش ندارید", android.widget.Toast.LENGTH_SHORT).show()
                             } else if (isTrialActive || currentAdminRole == "TRIAL_USER") {
@@ -477,6 +470,8 @@ fun AppContent(viewModel: GameNetViewModel) {
                     CustomBottomNavItem(
                         selected = selectedTab == 1,
                         onClick = { 
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
                             selectedTab = 1 
                         },
                         icon = { Icon(Icons.Default.People, contentDescription = "CUSTOMERS_RESERVATIONS") },
@@ -487,6 +482,8 @@ fun AppContent(viewModel: GameNetViewModel) {
                     CustomBottomNavItem(
                         selected = selectedTab == 2,
                         onClick = { 
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
                             selectedTab = 2 
                         },
                         icon = { Icon(Icons.Default.SportsEsports, contentDescription = "MAIN", modifier = Modifier.size(32.dp)) },
@@ -498,6 +495,8 @@ fun AppContent(viewModel: GameNetViewModel) {
                     CustomBottomNavItem(
                         selected = selectedTab == 3,
                         onClick = {
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
                             if (currentAdminRole == "OPERATOR") {
                                 android.widget.Toast.makeText(context, "شما به عنوان معاون دسترسی به این بخش ندارید", android.widget.Toast.LENGTH_SHORT).show()
                             } else {
@@ -512,6 +511,8 @@ fun AppContent(viewModel: GameNetViewModel) {
                     CustomBottomNavItem(
                         selected = selectedTab == 4,
                         onClick = {
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
                             if (currentAdminRole == "OPERATOR") {
                                 android.widget.Toast.makeText(context, "شما به عنوان معاون دسترسی به این بخش ندارید", android.widget.Toast.LENGTH_SHORT).show()
                             } else {
@@ -559,14 +560,7 @@ fun AppContent(viewModel: GameNetViewModel) {
             Surface(
                 modifier = Modifier
                     .fillMaxSize()
-                    .weight(1f)
-                    .clickable(
-                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                        indication = null
-                    ) {
-                        focusManager.clearFocus()
-                        keyboardController?.hide()
-                    },
+                    .weight(1f),
                 color = MaterialTheme.colorScheme.background
             ) {
                 when (selectedTab) {
@@ -632,8 +626,8 @@ fun AppContent(viewModel: GameNetViewModel) {
                                 if (alert.phoneNumber.isNotBlank()) {
                                     Text("📞 شماره تماس: ${alert.phoneNumber}", fontSize = 12.sp)
                                 }
-                                if (alert.amount > 0.0) {
-                                    Text("💰 مبلغ: %,.0f تومان".format(java.util.Locale.US, alert.amount), fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF10B981))
+                                if (alert.amount > 0L) {
+                                    Text("💰 مبلغ: %,d تومان".format(java.util.Locale.US, alert.amount), fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF10B981))
                                 }
                                 if (alert.trackingCode.isNotBlank()) {
                                     Text("🔖 کد پیگیری: ${alert.trackingCode}", fontSize = 11.sp)

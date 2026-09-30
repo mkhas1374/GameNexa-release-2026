@@ -830,7 +830,7 @@ fun StationPauseDialog(
                                     color = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
-                                    text = "هزینه بازی تا الان: %,.0f تومان".format(java.util.Locale.US, gameCost),
+                                    text = "هزینه بازی تا الان: %,d تومان".format(java.util.Locale.US, gameCost),
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -857,7 +857,7 @@ fun StationPauseDialog(
                                     ) {
                                         if (status.initialPrepayment > 0) {
                                             Text(
-                                                text = "(پرداخت: %,.0f)".format(java.util.Locale.US, status.initialPrepayment),
+                                                text = "(پرداخت: %,d)".format(java.util.Locale.US, status.initialPrepayment.toLong()),
                                                 fontSize = 9.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -865,14 +865,14 @@ fun StationPauseDialog(
 
                                         if (status.remainingPrepayment >= 0) {
                                             Text(
-                                                text = "مانده: %,.0f تومان".format(java.util.Locale.US, status.remainingPrepayment),
+                                                text = "مانده: %,d تومان".format(java.util.Locale.US, status.remainingPrepayment.toLong()),
                                                 fontSize = 10.sp,
                                                 fontWeight = FontWeight.ExtraBold,
                                                 color = Color(0xFF2E7D32)
                                             )
                                         } else {
                                             Text(
-                                                text = "بدهکار: %,.0f تومان".format(java.util.Locale.US, -status.remainingPrepayment),
+                                                text = "بدهکار: %,d تومان".format(java.util.Locale.US, (-status.remainingPrepayment).toLong()),
                                                 fontSize = 10.sp,
                                                 fontWeight = FontWeight.ExtraBold,
                                                 color = MaterialTheme.colorScheme.error
@@ -1203,7 +1203,7 @@ fun MultiCustomerPrepaymentDialog(
                 ) {
                     Text(text = "مجموع کل پیش‌پرداخت:", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Text(
-                        text = "%,.0f تومان".format(java.util.Locale.US, totalSum.value),
+                        text = "%,d تومان".format(java.util.Locale.US, totalSum.value),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Black,
                         color = MaterialTheme.colorScheme.primary

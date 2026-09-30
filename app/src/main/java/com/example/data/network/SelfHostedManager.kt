@@ -397,8 +397,7 @@ object SelfHostedManager {
             setManagerId(managerId)
             _currentLoggedInCustomer.value = cust
             _isConnected.value = true
-            return@withContext Result.success(cust)
-            Result.failure(Exception("هیچ حساب کاربری با این مشخصات یافت نشد یا توسط مدیریت حذف شده است."))
+            Result.success(cust)
         } catch (e: Exception) {
             Log.e(TAG, "loginCustomer error: ${e.message}", e)
             Result.failure(e)
@@ -493,40 +492,13 @@ object SelfHostedManager {
                 })
             }
 
-            val requestBody = jsonArray.toString().toRequestBody(JSON_MEDIA)
-
-            // 1. Try isolated manager endpoint if manager_id is set
-            if (false) {
-                try {
-                    val contractReq = Request.Builder()
-                        .url("$SERVER_URL/api/v1/manager/customers/upsert")
-                        .headers(getBaseHeaders())
-                        .post(requestBody)
-                        .build()
-                    val contractResp = client.newCall(contractReq).execute()
-                    if (contractResp.isSuccessful) return@withContext true
-                } catch (_: Exception) {}
-            }
-
-            // 2. Try selfhosted sync endpoint
-            try {
-                val request = Request.Builder()
-                    .url("$SERVER_URL/api/v1/manager/customers/sync")
-                    .headers(getBaseHeaders())
-                    .post(requestBody)
-                    .build()
-                val response = client.newCall(request).execute()
-                if (response.isSuccessful) return@withContext true
-            } catch (_: Exception) {}
-
-            // 3. Fallback: Upsert each customer individually to guaranteed endpoint
             var successCount = 0
             for (c in customers) {
                 if (upsertCustomer(c)) successCount++
             }
             successCount > 0
         } catch (e: Exception) {
-            Log.w(TAG, "syncAllCustomersToCloud fallback sync handled: ${e.message}")
+            Log.w(TAG, "syncAllCustomersToCloud handled: ${e.message}")
             false
         }
     }
@@ -538,17 +510,40 @@ object SelfHostedManager {
 
     suspend fun upsertCustomer(customer: Customer): Boolean = withContext(Dispatchers.IO) {
         try {
-            val json=JSONObject().apply {
-                put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber); put("password",customer.password)
-                put("debt",customer.debt); put("credit",customer.credit); put("points",customer.points); put("availableGn",customer.availableGn)
-                put("pendingGn",customer.pendingGn); put("lp",customer.lp); put("tier",customer.tier); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
+            val json = JSONObject().apply {
+                put("id", customer.id)
+                put("fullName", customer.fullName)
+                put("phoneNumber", customer.phoneNumber)
+                put("password", customer.password)
+                put("debt", customer.debt)
+                put("credit", customer.credit)
+                put("tier", customer.tier)
+                put("inviteCode", customer.inviteCode)
+                put("invitedByCode", customer.invitedByCode)
+                put("description", customer.description)
             }
-            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/customers")
+                .headers(getBaseHeaders())
+                .post(json.toString().toRequestBody(JSON_MEDIA))
+                .build()
             client.newCall(req).execute().use { resp ->
-                if(!resp.isSuccessful) return@withContext false
-                val list=_allCloudCustomers.value.toMutableList(); val idx=list.indexOfFirst{it.id==customer.id || it.phoneNumber==customer.phoneNumber}; if(idx>=0) list[idx]=customer else list.add(0,customer); _allCloudCustomers.value=list; true
+                if (!resp.isSuccessful) return@withContext false
+                val body = resp.body?.string().orEmpty()
+                val serverCust = if (body.isNotBlank() && body.trim().startsWith("{")) {
+                    runCatching { parseCustomerObject(JSONObject(body)) }.getOrNull()
+                } else null
+                val finalCust = serverCust ?: customer
+                val list = _allCloudCustomers.value.toMutableList()
+                val idx = list.indexOfFirst { it.id == finalCust.id || (finalCust.phoneNumber.isNotBlank() && normalizePhone(it.phoneNumber) == normalizePhone(finalCust.phoneNumber)) }
+                if (idx >= 0) list[idx] = finalCust else list.add(0, finalCust)
+                _allCloudCustomers.value = list
+                true
             }
-        } catch(e:Exception){Log.e(TAG,"upsertCustomer error: ${e.message}",e);false}
+        } catch (e: Exception) {
+            Log.e(TAG, "upsertCustomer error: ${e.message}", e)
+            false
+        }
     }
 
     suspend fun deleteCustomer(customerId: Long, phoneNumber: String = ""): Boolean = withContext(Dispatchers.IO) {
@@ -601,6 +596,8 @@ object SelfHostedManager {
             }
         }catch(e:Exception){_isConnected.value=false;Log.w(TAG,"fetchAllFromCloud error: ${e.message}");false}
     }
+
+    suspend fun fetchAllCustomers(): Boolean = fetchAllFromCloud()
 
     suspend fun fetchLiveStationsFromCloud() = withContext(Dispatchers.IO) {
         try {
@@ -829,21 +826,43 @@ object SelfHostedManager {
             updated[key] = valueString
             _cloudAppConfigs.value = updated
 
-            val json = JSONObject().apply {
-                put("key", key)
-                put("value", valueString)
+            val settings = JSONObject().apply {
+                put(key, valueString)
+            }
+            val body = JSONObject().apply {
+                put("settings", settings)
             }
 
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/manager/configuration")
                 .headers(getBaseHeaders())
-                .post(json.toString().toRequestBody(JSON_MEDIA))
+                .put(body.toString().toRequestBody(JSON_MEDIA))
                 .build()
 
             val resp = client.newCall(req).execute()
             resp.isSuccessful
         } catch (e: Exception) {
             Log.e(TAG, "syncAppConfig error: ${e.message}", e)
+            false
+        }
+    }
+
+    suspend fun purgeExtraStations(keepCount: Int): Boolean = withContext(Dispatchers.IO) {
+        try {
+            if (_currentManagerId.isBlank()) return@withContext false
+            val json = JSONObject().apply {
+                put("count", keepCount)
+                put("stationCount", keepCount)
+            }
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/stations/purge-extra")
+                .headers(getBaseHeaders())
+                .post(json.toString().toRequestBody(JSON_MEDIA))
+                .build()
+            val resp = client.newCall(req).execute()
+            resp.isSuccessful
+        } catch (e: Exception) {
+            Log.e(TAG, "purgeExtraStations error: ${e.message}", e)
             false
         }
     }
@@ -871,7 +890,7 @@ object SelfHostedManager {
                 .headers(getBaseHeaders())
                 .put(body.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            client.newCall(req).use { response ->
+            client.newCall(req).execute().use { response ->
                 val raw = response.body?.string().orEmpty()
                 if (!response.isSuccessful || raw.isBlank()) return@withContext null
                 JSONObject(raw)
@@ -889,7 +908,7 @@ object SelfHostedManager {
                 .headers(getBaseHeaders())
                 .get()
                 .build()
-            client.newCall(req).use { response ->
+            client.newCall(req).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful || body.isBlank()) return@withContext null
                 JSONObject(body)
@@ -1016,8 +1035,13 @@ object SelfHostedManager {
 
     suspend fun fetchGnLedgerForCustomer(customerId: Long): List<GnLedgerEntry> = withContext(Dispatchers.IO) {
         try {
+            val url = if (_currentManagerId.isNotBlank() && customerId > 0) {
+                "$SERVER_URL/api/v1/manager/club/ledger/$customerId"
+            } else {
+                "$SERVER_URL/api/v1/customer/club/ledger"
+            }
             val req = Request.Builder()
-                .url("$SERVER_URL/api/v1/customer/club/ledger")
+                .url(url)
                 .headers(getBaseHeaders())
                 .get()
                 .build()
@@ -1762,17 +1786,17 @@ object SelfHostedManager {
                 .header("Idempotency-Key", "station-start:${stationId}:${startTimeMillis}")
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            client.newCall(request).use { response ->
+            client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    Log.e(TAG, "startStationSession HTTP " + response.code + ": " + body)
+                    Log.d(TAG, "startStationSession HTTP " + response.code + ": " + body + " - falling back to local session")
                     return@withContext null
                 }
                 val sessionId = JSONObject(body).optString("sessionId").takeIf { it.isNotBlank() } ?: return@withContext null
                 sessionId to JSONObject(body).optLong("serverStartedAt", System.currentTimeMillis())
             }
         } catch (e: Exception) {
-            Log.e(TAG, "startStationSession error: " + e.message, e)
+            Log.d(TAG, "startStationSession fallback to local session: " + e.message)
             null
         }
     }
@@ -1787,7 +1811,9 @@ object SelfHostedManager {
         participants: JSONArray
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            if (_currentManagerId.isBlank()) return@withContext false
+            if (_currentManagerId.isBlank() || sessionId.isBlank()) {
+                return@withContext false
+            }
             val json = JSONObject().apply {
                 put("sessionId", sessionId)
                 put("stationId", stationId)
@@ -1803,9 +1829,9 @@ object SelfHostedManager {
                 .header("Idempotency-Key", "offline-start:$sessionId")
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            client.newCall(request).use { it.isSuccessful }
+            client.newCall(request).execute().use { it.isSuccessful }
         } catch (e: Exception) {
-            Log.e(TAG, "syncOfflineSessionStart error: " + e.message, e)
+            Log.e(TAG, "syncOfflineSessionStart error: " + e.message)
             false
         }
     }
@@ -1817,26 +1843,38 @@ object SelfHostedManager {
         stationId: Any,
         productName: String,
         quantity: Int,
-        price: Long
+        price: Long,
+        targetCustomerId: Long? = null,
+        idempotencyKey: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             if (_currentManagerId.isBlank()) return@withContext false
+            val sId = when (stationId) {
+                is Number -> stationId.toInt()
+                else -> stationId.toString().toIntOrNull() ?: 1
+            }
+            val key = idempotencyKey?.trim()?.ifBlank { null }
+                ?: "order_${sId}_${productName.trim()}_${System.currentTimeMillis()}"
+
             val json = JSONObject().apply {
-                put("managerId", _currentManagerId)
-                put("stationId", stationId.toString())
-                put("productName", productName)
+                put("stationId", sId)
+                put("productName", productName.trim())
                 put("quantity", quantity)
-                put("price", price)
+                if (targetCustomerId != null && targetCustomerId > 0L) {
+                    put("targetCustomerId", targetCustomerId)
+                }
+                put("idempotencyKey", key)
             }
             val request = Request.Builder()
                 .url("$SERVER_URL/api/station/order")
                 .headers(getBaseHeaders())
+                .header("Idempotency-Key", key)
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
             val response = client.newCall(request).execute()
             response.isSuccessful
         } catch (e: Exception) {
-            Log.e(TAG, "addBuffetOrderEvent error: ${e.message}", e)
+            Log.e(TAG, "addBuffetOrderEvent error: ${e.message}")
             false
         }
     }
@@ -1852,7 +1890,9 @@ object SelfHostedManager {
         payload: JSONObject = JSONObject()
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            if (_currentManagerId.isBlank()) return@withContext false
+            if (_currentManagerId.isBlank() || sessionId.isBlank()) {
+                return@withContext false
+            }
             val json = JSONObject().apply {
                 put("sessionId", sessionId)
                 put("eventId", eventId)
@@ -1865,9 +1905,9 @@ object SelfHostedManager {
                 .headers(getBaseHeaders())
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            client.newCall(request).use { it.isSuccessful }
+            client.newCall(request).execute().use { it.isSuccessful }
         } catch (e: Exception) {
-            Log.e(TAG, "sendSessionEvent error: " + e.message, e)
+            Log.e(TAG, "sendSessionEvent error: " + e.message)
             false
         }
     }
@@ -1875,22 +1915,61 @@ object SelfHostedManager {
     suspend fun settleStationSession(
         sessionId: String,
         endedAtMillis: Long
-    ): Boolean = withContext(Dispatchers.IO) {
+    ): JSONObject? = withContext(Dispatchers.IO) {
         try {
-            if (_currentManagerId.isBlank()) return@withContext false
+            if (_currentManagerId.isBlank() || sessionId.isBlank()) {
+                return@withContext null
+            }
             val json = JSONObject().apply { put("sessionId", sessionId); put("endedAt", endedAtMillis) }
             val request = Request.Builder()
                 .url("$SERVER_URL/api/station/settle")
                 .headers(getBaseHeaders())
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            client.newCall(request).use { response ->
+            client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) Log.e(TAG, "settleStationSession HTTP " + response.code + ": " + body)
-                response.isSuccessful
+                if (response.isSuccessful && body.isNotBlank()) {
+                    runCatching { JSONObject(body) }.getOrNull()
+                } else {
+                    Log.w(TAG, "Server session settlement failed (status: " + response.code + ")")
+                    null
+                }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "settleStationSession error: " + e.message, e)
+            Log.e(TAG, "settleStationSession error: " + e.message)
+            null
+        }
+    }
+
+    suspend fun payInvoice(
+        invoiceId: String,
+        amount: Long,
+        paymentAttemptId: String = System.currentTimeMillis().toString()
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            if (_currentManagerId.isBlank() || invoiceId.isBlank()) return@withContext false
+            val idemKey = "invoice-payment:$invoiceId:$paymentAttemptId"
+            val json = JSONObject().apply {
+                put("invoiceId", invoiceId)
+                put("amount", amount)
+                put("idempotencyKey", idemKey)
+            }
+            val request = Request.Builder()
+                .url("$SERVER_URL/api/station/invoice/pay")
+                .headers(getBaseHeaders())
+                .header("Idempotency-Key", idemKey)
+                .post(json.toString().toRequestBody(JSON_MEDIA))
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    try { fetchAllFromCloud() } catch (_: Exception) {}
+                    true
+                } else {
+                    false
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "payInvoice error: ${e.message}")
             false
         }
     }

@@ -86,8 +86,7 @@ object NetworkLogger {
         }
 
         if (!entry.isSuccess) {
-            _latestErrorBanner.value = formatUserFriendlyErrorMessage(entry)
-            Log.w(TAG, "Network Notice [${entry.method} ${entry.url}]: ${entry.errorMessage}")
+            Log.d(TAG, "Network Notice [${entry.method} ${entry.url}]: ${entry.errorMessage}")
         } else {
             _latestErrorBanner.value = null
             Log.d(TAG, "Network Success [${entry.method} ${entry.url}] (${entry.statusCode}) in ${entry.durationMs}ms")

@@ -666,83 +666,89 @@ class GameNetRepository(private val db: AppDatabase) {
             }
         }
         
-        val hasStations = stationStateDao.getAll().firstOrNull()?.isNotEmpty() == true
-        if (!hasStations) {
-            val count = getSetting("station_count")?.toIntOrNull() ?: 10
-            val firstConsole = consoleTypeDao.getAll().firstOrNull()?.firstOrNull()?.name ?: "PlayStation 5"
+        val currentStations = stationStateDao.getAll().firstOrNull() ?: emptyList()
+        val count = getSetting("station_count")?.toIntOrNull() ?: 10
+        val firstConsole = consoleTypeDao.getAll().firstOrNull()?.firstOrNull()?.name ?: "PlayStation 5"
+        if (currentStations.isEmpty() || currentStations.first().id != 1 || currentStations.size != count) {
             recreateStations(count, firstConsole)
         }
     }
 
     suspend fun ensureTrialDataExists() {
-        val hasStations = stationStateDao.getAll().firstOrNull()?.isNotEmpty() == true
-        if (!hasStations) {
-            val count = getSetting("station_count")?.toIntOrNull() ?: 10
-            
-            val hasConsoles = consoleTypeDao.getAll().firstOrNull()?.isNotEmpty() == true
-            val defaultConsoles = listOf(
-                ConsoleType("PlayStation 5", 180000L, 220000L, 250000L, 280000L),
-                ConsoleType("PlayStation 4", 120000L, 140000L, 150000L, 180000L),
-                ConsoleType("شبیه ساز رانندگی", 220000L, 220000L, 220000L, 220000L),
-                ConsoleType("Xbox Series X", 180000L, 220000L, 250000L, 280000L)
+        val currentStations = stationStateDao.getAll().firstOrNull() ?: emptyList()
+        val count = getSetting("station_count")?.toIntOrNull() ?: 10
+        
+        val hasConsoles = consoleTypeDao.getAll().firstOrNull()?.isNotEmpty() == true
+        val defaultConsoles = listOf(
+            ConsoleType("PlayStation 5", 180000L, 220000L, 250000L, 280000L),
+            ConsoleType("PlayStation 4", 120000L, 140000L, 150000L, 180000L),
+            ConsoleType("شبیه ساز رانندگی", 220000L, 220000L, 220000L, 220000L),
+            ConsoleType("Xbox Series X", 180000L, 220000L, 250000L, 280000L)
+        )
+        if (!hasConsoles) {
+            for (c in defaultConsoles) {
+                insertConsoleType(c)
+            }
+        }
+
+        val hasProducts = productDao.getAll().firstOrNull()?.isNotEmpty() == true
+        if (!hasProducts) {
+            val defaultProducts = listOf(
+                Product("انرژیزا تی ان تی", 110000L),
+                Product("هایپ", 130000L),
+                Product("ردبول", 140000L),
+                Product("بلوبری", 68000L),
+                Product("لیموناد", 70000L),
+                Product("ویتامین سی", 70000L),
+                Product("کروسان", 50000L),
+                Product("کیک باباجون", 50000L),
+                Product("کیک دو قلو", 40000L),
+                Product("مغز بادام و تخمه", 50000L),
+                Product("آبمیوه", 30000L),
+                Product("آبمعدنی", 15000L),
+                Product("چیپس", 75000L),
+                Product("رانی", 45000L),
+                Product("نسکافه و قهوه", 40000L),
+                Product("چای", 20000L),
+                Product("اسنک و ساندویچ گرم", 85000L)
             )
-            if (!hasConsoles) {
-                for (c in defaultConsoles) {
-                    insertConsoleType(c)
-                }
+            for (p in defaultProducts) {
+                insertProduct(p)
             }
+        }
 
-            val hasProducts = productDao.getAll().firstOrNull()?.isNotEmpty() == true
-            if (!hasProducts) {
-                val defaultProducts = listOf(
-                    Product("انرژیزا تی ان تی", 110000L),
-                    Product("هایپ", 130000L),
-                    Product("ردبول", 140000L),
-                    Product("بلوبری", 68000L),
-                    Product("لیموناد", 70000L),
-                    Product("ویتامین سی", 70000L),
-                    Product("کروسان", 50000L),
-                    Product("کیک باباجون", 50000L),
-                    Product("کیک دو قلو", 40000L),
-                    Product("مغز بادام و تخمه", 50000L),
-                    Product("آبمیوه", 30000L),
-                    Product("آبمعدنی", 15000L),
-                    Product("چیپس", 75000L),
-                    Product("رانی", 45000L),
-                    Product("نسکافه و قهوه", 40000L),
-                    Product("چای", 20000L),
-                    Product("اسنک و ساندویچ گرم", 85000L)
-                )
-                for (p in defaultProducts) {
-                    insertProduct(p)
-                }
-            }
+        val firstConsole = if (hasConsoles) {
+            consoleTypeDao.getAll().firstOrNull()?.firstOrNull()?.name ?: defaultConsoles.first().name
+        } else {
+            defaultConsoles.first().name
+        }
 
-            val firstConsole = if (hasConsoles) {
-                consoleTypeDao.getAll().firstOrNull()?.firstOrNull()?.name ?: defaultConsoles.first().name
-            } else {
-                defaultConsoles.first().name
-            }
+        if (currentStations.isEmpty() || currentStations.first().id != 1 || currentStations.size != count) {
             recreateStations(count, firstConsole)
         }
     }
 
     suspend fun recreateStations(count: Int, defaultConsole: String) {
-        // Find existing ones
+        val targetCount = count.coerceAtLeast(1)
         val currentStates = stationStateDao.getAll().firstOrNull() ?: emptyList()
         val currentMap = currentStates.associateBy { it.id }
 
         val newStates = ArrayList<StationState>()
-        for (id in 1..count) {
+        for (id in 1..targetCount) {
             val existing = currentMap[id]
             if (existing != null) {
                 newStates.add(existing)
             } else {
-                newStates.add(StationState(id = id, consoleType = defaultConsole))
+                val existingAtIndex = currentStates.getOrNull(id - 1)
+                if (existingAtIndex != null) {
+                    newStates.add(existingAtIndex.copy(id = id))
+                } else {
+                    newStates.add(StationState(id = id, consoleType = defaultConsole))
+                }
             }
         }
 
-        // Clear current states and insert the exact count
+        // Clear current states and insert the exact count starting from 1
         stationStateDao.clearAll()
         stationStateDao.insertAll(newStates)
     }

@@ -1,5 +1,6 @@
 package com.example.data.network
 
+import com.example.BuildConfig
 import com.example.data.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -50,6 +51,12 @@ interface GameNetApi {
 
     @POST("api/v1/super-manager/add-manager")
     suspend fun createManager(@Body request: CreateManagerRequestDto): okhttp3.ResponseBody
+
+    @PUT("api/v1/super-manager/managers/{id}/status")
+    suspend fun updateManagerStatus(
+        @Path("id") id: String,
+        @Body request: UpdateManagerRequestDto
+    ): okhttp3.ResponseBody
     
 
 
@@ -207,6 +214,27 @@ interface GameNetApi {
 
     @GET("api/v1/plans")
     suspend fun getSubscriptionPlans(): List<SubscriptionPlanDto>
+
+    @GET("api/health")
+    suspend fun healthCheck(): retrofit2.Response<okhttp3.ResponseBody>
+
+    @POST("api/v1/orders")
+    suspend fun createOrder(@Body req: CreateOrderRequest): CreateOrderResponse
+
+    @GET("api/subscriptions/check")
+    suspend fun checkSubscriptionByPhone(@Query("phone") phone: String): LicenseInfoResponse
+
+    @DELETE("api/v1/super-manager/trials/{deviceId}")
+    suspend fun deleteDeviceTrial(@Path("deviceId") deviceId: String): retrofit2.Response<okhttp3.ResponseBody>
+
+    @POST("api/v1/super-manager/trials/extend")
+    suspend fun extendDeviceTrial(@Query("deviceId") deviceId: String, @Query("days") days: Int = 1): retrofit2.Response<okhttp3.ResponseBody>
+
+    @PUT("api/v1/super-manager/managers/{id}")
+    suspend fun updateManager(@Path("id") id: String, @Body body: EditManagerRequestDto): retrofit2.Response<okhttp3.ResponseBody>
+
+    @DELETE("api/v1/super-manager/managers/{id}")
+    suspend fun deleteManager(@Path("id") id: String): retrofit2.Response<okhttp3.ResponseBody>
 
 }
 
@@ -782,7 +810,8 @@ data class AtomicReservationRequest(
     val reservationTimeMillis: Long = 0L,
     val customerName: String? = null,
     val customerPhone: String? = null,
-    val idempotencyKey: String = ""
+    val idempotencyKey: String = "",
+    val controllersCount: Int = 1
 )
 
 @com.squareup.moshi.JsonClass(generateAdapter = true)

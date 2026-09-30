@@ -2130,7 +2130,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                         Spacer(Modifier.height(4.dp))
                         Text("رمز عبور: $password", fontSize = 16.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(4.dp))
-                        Text("Manager ID: \${createdLicenseCode?.removePrefix("ACTIVE_") ?: "-"}", fontSize = 11.sp)
+                        Text("Manager ID: ${createdLicenseCode?.removePrefix("ACTIVE_") ?: "-"}", fontSize = 11.sp)
                         Spacer(Modifier.height(8.dp))
                         Button(onClick = { createdLicenseCode = null; currentTab = "list_managers" }) {
                             Text("مشاهده لیست مدیران")

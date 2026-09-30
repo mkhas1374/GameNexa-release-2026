@@ -826,7 +826,7 @@ fun TransferGnSection(viewModel: GameNetViewModel) {
     val amount = transferAmountText.toDoubleOrNull() ?: 0.0
     val netAmount = (amount * (1.0 - feeRate)).coerceAtLeast(0.0)
     val feeAmount = amount * feeRate
-    val formatter = remember { DecimalFormat("#,###.##") }
+    val formatter = remember { DecimalFormat("#,###") }
 
     Column(
         modifier = Modifier

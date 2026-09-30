@@ -21,6 +21,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -99,13 +102,6 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
         modifier = Modifier
             .fillMaxSize()
             .imePadding()
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                focusManager.clearFocus()
-                keyboardController?.hide()
-            }
             .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
         // دو گزینه اصلی در تب اشتراک: ۱. خرید و تمدید اشتراک | ۲. اطلاعات اشتراک فعلی
@@ -528,6 +524,12 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
                                 Color(0xFFDC2626),
                                 Color(0xFFFEE2E2),
                                 Icons.Default.SignalWifiBad
+                            )
+                            else -> Quadruple(
+                                if (lang == "fa") "در حال بررسی وضعیت..." else "Checking...",
+                                Color(0xFF4B5563),
+                                Color(0xFFF3F4F6),
+                                Icons.Default.Sync
                             )
                         }
 

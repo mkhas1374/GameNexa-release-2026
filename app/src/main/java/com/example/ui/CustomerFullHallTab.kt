@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.data.network.AtomicReservationRequest
@@ -102,11 +103,13 @@ fun CustomerFullHallTab(viewModel: GameNetViewModel) {
             Text("حداقل مدت VIP: ${minVip} دقیقه")
             if (vipPrice > 0) Text("قیمت تنظیم‌شده VIP: ${vipPrice}")
 
-            if (messages.optString("vip").isNotBlank()) {
-                Card(Modifier.fillMaxWidth()) { Text(messages.optString("vip"), Modifier.padding(12.dp)) }
+            val vipMsg = ReservationMessageFormatter.sanitize("vip", messages.optString("vip"))
+            if (vipMsg.isNotBlank()) {
+                Card(Modifier.fillMaxWidth()) { Text(vipMsg, Modifier.padding(12.dp)) }
             }
-            if (messages.optString("vipPaymentDeadline").isNotBlank()) {
-                Card(Modifier.fillMaxWidth()) { Text(messages.optString("vipPaymentDeadline"), Modifier.padding(12.dp)) }
+            val vipPaymentMsg = ReservationMessageFormatter.sanitize("vipPaymentDeadline", messages.optString("vipPaymentDeadline"))
+            if (vipPaymentMsg.isNotBlank()) {
+                Card(Modifier.fillMaxWidth()) { Text(vipPaymentMsg, Modifier.padding(12.dp)) }
             }
 
             OutlinedButton(
@@ -163,7 +166,7 @@ fun CustomerFullHallTab(viewModel: GameNetViewModel) {
                         lastReservationAmount = selectedPrice.toLong()
                     }
                 },
-                Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Default.Event, null)
                 Spacer(Modifier.width(8.dp))

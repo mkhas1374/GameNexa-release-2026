@@ -628,18 +628,18 @@ fun CustomerHistoryTab(viewModel: GameNetViewModel) {
                                             appendLine("ایستگاه: ${trans.stationName} (${trans.title})")
                                             appendLine("مدت زمان بازی: ${trans.playMinutes} دقیقه")
                                             appendLine("--------------------------------")
-                                            appendLine("🎮 هزینه بازی: %,.0f تومان".format(Locale.US, trans.gameCost))
+                                            appendLine("🎮 هزینه بازی: %,d تومان".format(Locale.US, trans.gameCost))
                                             appendLine("--------------------------------")
                                             appendLine("🍿 اقلام بوفه و خوراکی:")
                                             appendLine(buffetListLines)
-                                            appendLine("مجموع بوفه: %,.0f تومان".format(Locale.US, trans.foodCost))
+                                            appendLine("مجموع بوفه: %,d تومان".format(Locale.US, trans.foodCost))
                                             appendLine("--------------------------------")
-                                            appendLine("💰 جمع کل نهایی: %,.0f تومان".format(Locale.US, trans.amount))
+                                            appendLine("💰 جمع کل نهایی: %,d تومان".format(Locale.US, trans.amount))
                                             if (trans.paidAmount > 0) {
-                                                appendLine("💳 مبلغ پرداختی: %,.0f تومان".format(Locale.US, trans.paidAmount))
+                                                appendLine("💳 مبلغ پرداختی: %,d تومان".format(Locale.US, trans.paidAmount))
                                             }
                                             if (trans.status == "DEBTOR") {
-                                                appendLine("⚠️ وضعیت: بدهی مانده %,.0f تومان".format(Locale.US, (trans.amount - trans.paidAmount).toDouble().coerceAtLeast(0.0)))
+                                                appendLine("⚠️ وضعیت: بدهی مانده %,d تومان".format(Locale.US, (trans.amount - trans.paidAmount).coerceAtLeast(0L)))
                                             } else if (trans.status == "REVIEWED") {
                                                 appendLine("✅ وضعیت: تسویه کامل")
                                             }
@@ -835,6 +835,7 @@ fun CustomerHistoryTab(viewModel: GameNetViewModel) {
 
 @Composable
 fun CustomerReservationTab(viewModel: GameNetViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val stationStates by viewModel.stationStates.collectAsState()
     val reservations by viewModel.reservations.collectAsState()
     val currentCustomerAuth by SelfHostedManager.currentLoggedInCustomer.collectAsState()
@@ -944,7 +945,7 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
         ) {
             val stationsList = buildList {
                 val cloud = customerStations
-                if (cloud != null) {
+                if (cloud != null && cloud.length() > 0) {
                     for (i in 0 until cloud.length()) {
                         val s = cloud.optJSONObject(i) ?: continue
                         val id = s.optLong("id", 0L).toInt()
@@ -955,6 +956,11 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
                                 s.optBoolean("has_prior_reservation", false)
                             )
                         )
+                    }
+                }
+                if (isEmpty()) {
+                    for (st in stationStates) {
+                        add(Triple(st.id, st.consoleType, false))
                     }
                 }
             }
@@ -1095,12 +1101,12 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
                 }
 
                 val policyMessages = listOf(
-                    messages.optString("cancel24"),
-                    messages.optString("cancel15"),
-                    messages.optString("cancel5"),
-                    messages.optString("cancel2"),
-                    messages.optString("lateCancellation"),
-                    messages.optString("noShow")
+                    ReservationMessageFormatter.sanitize("cancel24", messages.optString("cancel24")),
+                    ReservationMessageFormatter.sanitize("cancel15", messages.optString("cancel15")),
+                    ReservationMessageFormatter.sanitize("cancel5", messages.optString("cancel5")),
+                    ReservationMessageFormatter.sanitize("cancel2", messages.optString("cancel2")),
+                    ReservationMessageFormatter.sanitize("lateCancellation", messages.optString("lateCancellation")),
+                    ReservationMessageFormatter.sanitize("noShow", messages.optString("noShow"))
                 ).filter { it.isNotBlank() }
                 if (policyMessages.isNotEmpty()) {
                     Card(
@@ -1113,8 +1119,8 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
                     }
                 }
 
-                val paymentMessage = messages.optString("payment").ifBlank { messages.optString("vipPaymentDeadline") }
-                val arrivalMessage = messages.optString("arrival")
+                val paymentMessage = ReservationMessageFormatter.sanitize("payment", messages.optString("payment").ifBlank { messages.optString("vipPaymentDeadline") })
+                val arrivalMessage = ReservationMessageFormatter.sanitize("arrival", messages.optString("arrival"))
                 if (paymentMessage.isNotBlank() || arrivalMessage.isNotBlank()) {
                     Card(
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)),
@@ -1134,7 +1140,7 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
                             if (selectedStartMillis > 0L) timeInMillis = selectedStartMillis
                         }
                         DatePickerDialog(
-                            LocalContext.current,
+                            context,
                             { _, year, month, day ->
                                 val picked = Calendar.getInstance(tz).apply {
                                     set(Calendar.YEAR, year)
@@ -1146,7 +1152,7 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
                                     set(Calendar.MILLISECOND, 0)
                                 }
                                 TimePickerDialog(
-                                    LocalContext.current,
+                                    context,
                                     { _, hour, minute ->
                                         picked.set(Calendar.HOUR_OF_DAY, hour)
                                         picked.set(Calendar.MINUTE, minute)

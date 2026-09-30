@@ -1,0 +1,8 @@
+{
+  "name": "GameNexa",
+  "description": "Comprehensive GameNet Management & Customer Application",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

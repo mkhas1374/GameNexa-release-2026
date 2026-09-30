@@ -359,5 +359,60 @@ data class PointLog(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+data class NonFinancialPerk(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val title: String,
+    val description: String = "",
+    val isActive: Boolean = true,
+    val startDate: String = "",
+    val endDate: String = ""
+)
+
+data class ClubLevel(
+    val id: String,
+    val name: String,
+    val requiredPoints: Long,
+    val gameDiscountPercent: Long = 0L,
+    val buffetDiscountPercent: Long = 0L,
+    val fixedDiscountToman: Long = 0L,
+    val freePlayHours: Long = 0L,
+    val customRewards: List<String> = emptyList(),
+    val rewardsText: String = "",
+    val validityDays: Int = 30,
+    val graceDays: Int = 7,
+    
+    // New Loyalty Level Parameters
+    val reachGnBonus: Long = 0L,
+    val gameGnPercent: Long = 0L,
+    val buffetGnPercent: Long = 0L,
+    val maxGnPaymentPercent: Long = 0L,
+    val inviteGnReward: Long = 0L,
+    val accessSpecialEvents: Boolean = false,
+    val minVisitDays: Int = 0,
+    val retainLpPoints: Long = 0L,
+    val maxAbsenceWithoutPenaltyDays: Int = 20,
+    
+    val nonFinancialPerks: List<NonFinancialPerk> = emptyList()
+)
+
+data class AbsenceStatusInfo(
+    val absentDays: Int,
+    val statusText: String,
+    val isPenaltyActive: Boolean,
+    val currentStage: Int,
+    val baseGnBalance: Long,
+    val baseLpBalance: Long,
+    val totalGnPenalized: Long,
+    val totalLpPenalized: Long,
+    val nextPenaltyDaysLeft: Int
+)
+
+data class ScoringRule(
+    val id: String,
+    val title: String,
+    val points: Long
+)
+
+
 
 

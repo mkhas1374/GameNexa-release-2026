@@ -87,6 +87,8 @@ object CryptoManager {
                     cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
                     val decryptedBytes = cipher.doFinal(cipherBytes)
                     String(decryptedBytes, Charsets.UTF_8)
+                } else {
+                    throw IllegalStateException("Secret key unavailable")
                 }
             } else {
                 throw IllegalStateException("Invalid secure storage payload")

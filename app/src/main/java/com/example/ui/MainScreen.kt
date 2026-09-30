@@ -26,6 +26,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -63,8 +65,8 @@ fun MainScreen(
     val ordersMap by viewModel.stationOrdersMap.collectAsState()
     val lang by viewModel.language.collectAsState()
     val appTheme by viewModel.appTheme.collectAsState()
-    val serverClockWarningVisible by viewModel.serverClockWarningVisible.collectAsState()
-    val serverClockMillis by viewModel.serverClockMillis.collectAsState()
+    val showServerClockWarning by viewModel.serverClockWarningVisible.collectAsState()
+    val serverClockTime by viewModel.serverClockMillis.collectAsState()
 
     HallWeatherOverlay(
         themeName = appTheme,
@@ -116,8 +118,8 @@ fun MainScreen(
             val currentRole by viewModel.currentAdminRole.collectAsState()
             val isTrialMode = isTrialActive || currentRole == "TRIAL_USER" || viewModel.isTrialUser
 
-            val visibleStations = remember(stations, isTrialMode) {
-                if (isTrialMode) stations.take(2) else stations
+            val visibleStations = remember(stations) {
+                stations
             }
 
             val totalCount by remember(visibleStations) { derivedStateOf { visibleStations.size } }
@@ -271,6 +273,14 @@ fun MainScreen(
                     }
                 }
             }
+        }
+
+        if (showServerClockWarning) {
+            ServerClockWarningOverlay(
+                serverTimeMillis = serverClockTime ?: System.currentTimeMillis(),
+                lang = lang,
+                onDismiss = { viewModel.dismissServerClockWarning() }
+            )
         }
     }
 }
@@ -1982,7 +1992,7 @@ fun SubscriptionWarningBanner(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = if (lang == "fa") "نسخه تست ۲۴ ساعته (محدود به ۲ جایگاه)" else "24h Trial Version (Limited to 2 stations)",
+                    text = if (lang == "fa") "نسخه تست ۲۴ ساعته" else "24h Trial Version",
                     color = Color.White,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
@@ -2050,13 +2060,5 @@ fun SubscriptionWarningBanner(
                 )
             }
         }
-    }
-
-    if (serverClockWarningVisible) {
-        ServerClockWarningOverlay(
-            serverTimeMillis = serverClockMillis ?: System.currentTimeMillis(),
-            lang = lang,
-            onDismiss = { viewModel.dismissServerClockWarning() }
-        )
     }
 }

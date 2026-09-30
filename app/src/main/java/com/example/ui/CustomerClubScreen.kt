@@ -18,6 +18,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,9 +35,7 @@ import com.example.ui.LicenseState
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.data.Customer
-import com.example.data.BehaviorRule
-import com.example.data.PointLog
+import com.example.data.*
 import com.example.data.ReferralRule
 import com.example.data.network.SelfHostedManager
 import kotlinx.coroutines.launch

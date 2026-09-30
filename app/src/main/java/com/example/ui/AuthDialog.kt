@@ -11,10 +11,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -32,6 +36,7 @@ fun AuthDialog(
     val authState by viewModel.authState.collectAsState()
     val language by viewModel.language.collectAsState()
     val isFa = language == "fa"
+    val focusManager = LocalFocusManager.current
 
     var selectedTab by remember { mutableStateOf(0) } // 0: Login, 1: Register
 
@@ -53,7 +58,10 @@ fun AuthDialog(
     val isLoading = authState is AuthState.Authenticating
 
     Dialog(onDismissRequest = {
-        if (!isLoading) onDismiss()
+        if (!isLoading) {
+            focusManager.clearFocus()
+            onDismiss()
+        }
     }) {
         Card(
             shape = RoundedCornerShape(20.dp),
@@ -86,7 +94,12 @@ fun AuthDialog(
                         color = MaterialTheme.colorScheme.primary
                     )
                     IconButton(
-                        onClick = { if (!isLoading) onDismiss() },
+                        onClick = {
+                            if (!isLoading) {
+                                focusManager.clearFocus()
+                                onDismiss()
+                            }
+                        },
                         enabled = !isLoading,
                         modifier = Modifier.size(32.dp).testTag("close_auth_dialog_button")
                     ) {
@@ -108,6 +121,7 @@ fun AuthDialog(
                     Tab(
                         selected = selectedTab == 0,
                         onClick = {
+                            focusManager.clearFocus()
                             selectedTab = 0
                             localErrorMessage = null
                             localSuccessMessage = null
@@ -123,6 +137,7 @@ fun AuthDialog(
                     Tab(
                         selected = selectedTab == 1,
                         onClick = {
+                            focusManager.clearFocus()
                             selectedTab = 1
                             localErrorMessage = null
                             localSuccessMessage = null
@@ -233,6 +248,7 @@ fun AuthDialog(
 
                     Button(
                         onClick = {
+                            focusManager.clearFocus()
                             if (loginUsername.isBlank() || loginPassword.isBlank()) {
                                 localErrorMessage = if (isFa) "لطفاً نام کاربری و رمز عبور را وارد کنید." else "Please enter username and password."
                                 return@Button
@@ -345,6 +361,7 @@ fun AuthDialog(
 
                     Button(
                         onClick = {
+                            focusManager.clearFocus()
                             if (regUsername.trim().length < 3) {
                                 localErrorMessage = if (isFa) "نام کاربری باید حداقل ۳ کاراکتر باشد." else "Username must be at least 3 characters."
                                 return@Button

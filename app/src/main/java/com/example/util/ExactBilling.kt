@@ -10,8 +10,8 @@ object ExactBilling {
         BigDecimal.valueOf(ratePerHour).multiply(BigDecimal.valueOf(elapsedMillis)).divide(MILLIS_PER_HOUR, 10, RoundingMode.DOWN)
 
     fun formatToman(value: BigDecimal): String {
-        val formatter = java.text.DecimalFormat("#,##0.##########")
-        formatter.roundingMode = RoundingMode.DOWN
-        return "${formatter.format(value.stripTrailingZeros())} تومان"
+        val longVal = value.setScale(0, RoundingMode.DOWN).toLong()
+        val formatter = java.text.DecimalFormat("#,##0")
+        return "${formatter.format(longVal)} تومان"
     }
 }

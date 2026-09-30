@@ -68,13 +68,18 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
         if (showReservationDialog) {
             val arr = SelfHostedManager.fetchManagerStations()
             managerStations = buildList {
-                if (arr != null) {
+                if (arr != null && arr.length() > 0) {
                     for (i in 0 until arr.length()) {
                         val s = arr.optJSONObject(i) ?: continue
                         val id = s.optLong("id", 0L)
                         if (id > 0L && s.optBoolean("active", true) && s.optBoolean("reservable", true)) {
                             add(id to s.optString("name").ifBlank { "ایستگاه $id" })
                         }
+                    }
+                }
+                if (isEmpty()) {
+                    for (st in viewModel.stationStates.value) {
+                        add(st.id.toLong() to "ایستگاه ${st.id}")
                     }
                 }
             }
@@ -1286,7 +1291,7 @@ fun CustomerTransactionCard(
                                     }
                                     appendLine("💰 جمع کل نهایی: %,.0f تومان".format(java.util.Locale.US, if (hasDiscount) finalAmount else origTotal))
                                     if (transaction.paidAmount > 0) {
-                                        appendLine("💳 مبلغ پرداختی: %,.0f تومان".format(java.util.Locale.US, transaction.paidAmount))
+                                        appendLine("💳 مبلغ پرداختی: %,d تومان".format(java.util.Locale.US, transaction.paidAmount))
                                     }
                                     if (remainingDebt > 0) {
                                         appendLine("⚠️ مانده بدهی: %,.0f تومان".format(java.util.Locale.US, remainingDebt))
@@ -1746,7 +1751,7 @@ fun CustomerCard(
                                     color = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
-                                    text = String.format(java.util.Locale.US, "%,.0f", customer.points),
+                                    text = String.format(java.util.Locale.US, "%,d", customer.points),
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = MaterialTheme.colorScheme.primary
@@ -1778,7 +1783,7 @@ fun CustomerCard(
                                     color = if (customer.debt > 0) Color(0xFFC62828) else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Text(
-                                    text = String.format(java.util.Locale.US, "%,.0f", customer.debt),
+                                    text = String.format(java.util.Locale.US, "%,d", customer.debt),
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = if (customer.debt > 0) Color(0xFFC62828) else MaterialTheme.colorScheme.onSurface
@@ -1810,7 +1815,7 @@ fun CustomerCard(
                                     color = if (customer.credit > 0) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Text(
-                                    text = String.format(java.util.Locale.US, "%,.0f", customer.credit),
+                                    text = String.format(java.util.Locale.US, "%,d", customer.credit),
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = if (customer.credit > 0) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurface
@@ -1823,7 +1828,7 @@ fun CustomerCard(
                     val allCustomersList by viewModel.customers.collectAsState()
                     val invitedPeople = remember(allCustomersList, customer.inviteCode) {
                         if (customer.inviteCode.isBlank() || customer.inviteCode.equals("null", ignoreCase = true)) emptyList()
-                        else allCustomersList.filter { normalizeInviteCode(it.invitedByCode) == normalizeInviteCode(customer.inviteCode) }
+                        else allCustomersList.filter { viewModel.normalizeInviteCode(it.invitedByCode) == viewModel.normalizeInviteCode(customer.inviteCode) }
                     }
 
                     if (invitedPeople.isNotEmpty()) {
@@ -1870,8 +1875,8 @@ fun CustomerCard(
                                             modifier = Modifier.fillMaxWidth(),
                                             horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
-                                            Text(text = "بدهی: ${String.format(java.util.Locale.US, "%,.0f", invited.debt)}", fontSize = 9.sp, color = Color(0xFFC62828))
-                                            Text(text = "اعتبار: ${String.format(java.util.Locale.US, "%,.0f", invited.credit)}", fontSize = 9.sp, color = Color(0xFF2E7D32))
+                                            Text(text = "بدهی: ${String.format(java.util.Locale.US, "%,d", invited.debt)}", fontSize = 9.sp, color = Color(0xFFC62828))
+                                            Text(text = "اعتبار: ${String.format(java.util.Locale.US, "%,d", invited.credit)}", fontSize = 9.sp, color = Color(0xFF2E7D32))
                                         }
                                     }
                                 }
@@ -1895,7 +1900,7 @@ fun CustomerCard(
                     ) {
                         Badge(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)) {
                             Text(
-                                text = "🏆 امتیاز کل: ${String.format(Locale.US, "%,.0f", customer.points)}",
+                                text = "🏆 امتیاز کل: ${String.format(Locale.US, "%,d", customer.points)}",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary,
@@ -1933,7 +1938,7 @@ fun CustomerCard(
                                     color = if (customer.debt > 0) Color(0xFFC62828) else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Text(
-                                    text = String.format(Locale.US, "%,.0f", customer.debt),
+                                    text = String.format(Locale.US, "%,d", customer.debt),
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = if (customer.debt > 0) Color(0xFFC62828) else MaterialTheme.colorScheme.onSurface
@@ -1965,7 +1970,7 @@ fun CustomerCard(
                                     color = if (customer.credit > 0) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Text(
-                                    text = String.format(Locale.US, "%,.0f", customer.credit),
+                                    text = String.format(Locale.US, "%,d", customer.credit),
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = if (customer.credit > 0) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurface
@@ -2048,7 +2053,7 @@ fun PointHistoryDialog(
                     fontSize = 14.sp
                 )
                 Text(
-                    text = "واحد امتیازها: GN | مجموع: ${String.format(Locale.US, "%,.0f", customer.points)} GN",
+                    text = "واحد امتیازها: GN | مجموع: ${String.format(Locale.US, "%,d", customer.points)} GN",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -2167,7 +2172,7 @@ fun PointHistoryDialog(
                                         )
                                     }
                                     Text(
-                                        text = "${if (log.points >= 0) "+" else ""}${String.format(Locale.US, "%,.0f", log.points)} GN",
+                                        text = "${if (log.points >= 0) "+" else ""}${String.format(Locale.US, "%,d", log.points)} GN",
                                         fontWeight = FontWeight.ExtraBold,
                                         fontSize = 12.sp,
                                         color = if (log.points >= 0) Color(0xFF2E7D32) else Color(0xFFC62828)
