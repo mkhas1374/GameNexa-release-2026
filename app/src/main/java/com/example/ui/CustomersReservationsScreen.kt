@@ -3208,13 +3208,13 @@ fun DebtorGroupCard(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { expanded = !expanded },
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.1f)
         ),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.3f))
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(8.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -3228,7 +3228,7 @@ fun DebtorGroupCard(
                     Text(
                         text = customerName,
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 15.sp,
+                        fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     if (isGuest) {
@@ -3275,7 +3275,7 @@ fun DebtorGroupCard(
                     Text(
                         text = "%,d تومان".format(Locale.US, totalDebt),
                         fontWeight = FontWeight.Black,
-                        fontSize = 14.sp,
+                        fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.error
                     )
                 }
@@ -3284,7 +3284,7 @@ fun DebtorGroupCard(
             AnimatedVisibility(visible = expanded || isEditing) {
                 Column(
                     modifier = Modifier.padding(top = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
