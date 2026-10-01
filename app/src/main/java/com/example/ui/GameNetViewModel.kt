@@ -1995,8 +1995,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         _showAuthDialog.value = false
     }
 
-    init {
-        viewModelScope.launch {
+    private val initializationJob = viewModelScope.launch {
             _licenseState.collect { state ->
                 when (state) {
                     is LicenseState.Active -> {
@@ -2996,9 +2995,11 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     }
                 } else if (segment.payerCustomerId != null && (segment.payerCustomerId != 0L || !segment.payerCustomerName.isNullOrBlank())) {
                     val pid = segment.payerCustomerId
-                    customerGameCostMap[pid] = (customerGameCostMap[pid] ?: 0L) + segCost
-                    if (!segment.payerCustomerName.isNullOrBlank()) {
-                        customerNameMap[pid] = segment.payerCustomerName
+                    if (pid != null) {
+                        customerGameCostMap[pid] = (customerGameCostMap[pid] ?: 0L) + segCost
+                        if (!segment.payerCustomerName.isNullOrBlank()) {
+                            customerNameMap[pid] = segment.payerCustomerName
+                        }
                     }
                 } else if (segment.customerIds.isNotEmpty()) {
                     val count = segment.customerIds.size
@@ -3036,9 +3037,11 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 val itemStr = "${order.quantity} × ${order.productName} (%,d تومان)".format(Locale.US, orderTotal)
                 if (order.targetCustomerId != null && (order.targetCustomerId != 0L || !order.targetCustomerName.isNullOrBlank())) {
                     val tid = order.targetCustomerId
-                    customerBuffetCostMap[tid] = (customerBuffetCostMap[tid] ?: 0L) + orderTotal
-                    if (!order.targetCustomerName.isNullOrBlank()) {
-                        customerNameMap[tid] = order.targetCustomerName
+                    if (tid != null) {
+                        customerBuffetCostMap[tid] = (customerBuffetCostMap[tid] ?: 0L) + orderTotal
+                        if (!order.targetCustomerName.isNullOrBlank()) {
+                            customerNameMap[tid] = order.targetCustomerName
+                        }
                     }
                     customerBuffetMap.getOrPut(tid) { mutableListOf() }.add(itemStr)
                 } else {
