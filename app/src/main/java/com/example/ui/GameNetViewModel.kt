@@ -835,7 +835,6 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    }
 
     fun toEnglishDigits(text: String): String {
         var result = text
