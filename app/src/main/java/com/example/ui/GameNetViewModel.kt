@@ -4294,7 +4294,11 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
         if (isSuper) {
             try {
-                NetworkClient.getApi(_serverUrl.value).checkAuth()
+                // Validate Super Manager using the exact authenticated OkHttp client.
+                // This guarantees both Authorization and X-Manager-ID are present.
+                if (!SelfHostedManager.checkAuthenticatedManagerSession()) {
+                    throw IllegalStateException("Super Manager authentication rejected by server")
+                }
                 _isServerConnected.value = true
                 _isSubscribed.value = true
                 _isAdminAuthenticated.value = true
