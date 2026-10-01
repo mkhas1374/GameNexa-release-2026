@@ -1724,11 +1724,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         repository.customerDao.getAll(),
         isTrialModeFlow
     ) { dbList, isTrial ->
-        if (isTrial) {
-            repository.getMockTrialCustomers()
-        } else {
-            dbList
-        }
+        dbList
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _adminBroadcastMessage = MutableStateFlow<String?>(null)
