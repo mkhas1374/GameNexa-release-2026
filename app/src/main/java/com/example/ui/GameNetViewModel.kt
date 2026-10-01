@@ -2571,6 +2571,19 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun exactPrepaymentDurationMillis(prepayment: Long, hourlyRate: Long, fallbackMinutes: Int = 0): Long {
+        if (prepayment <= 0L || hourlyRate <= 0L) return fallbackMinutes.coerceAtLeast(0).toLong() * 60_000L
+        return try {
+            java.math.BigDecimal.valueOf(prepayment)
+                .multiply(java.math.BigDecimal.valueOf(3_600_000L))
+                .divide(java.math.BigDecimal.valueOf(hourlyRate), 0, java.math.RoundingMode.DOWN)
+                .longValueExact()
+                .coerceAtLeast(0L)
+        } catch (_: ArithmeticException) {
+            0L
+        }
+    }
+
     fun updateStationCustomerPrepayments(
         stationId: Int,
         prepaymentsMap: Map<Long, Long>,
@@ -2841,13 +2854,14 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 queueOrSendSessionEvent(sessionId, "RESUME", now, org.json.JSONObject())
             }
 
-            if (station.prepaymentAmount > 0L && station.durationLimitMinutes > 1) {
+            if (station.prepaymentAmount > 0L) {
                 val elapsed = station.elapsedPlayingTimeMillis
-                val durationMillis = station.durationLimitMinutes * 60L * 1000L
-                val remainingMillis = durationMillis - elapsed
-                val warningTime = now + remainingMillis - (60 * 1000)
-                if (warningTime > now) {
-                    scheduleAlarm(stationId, warningTime)
+                val hourlyRate = getHourlyRate(station.consoleType, station.controllerCount)
+                val durationMillis = exactPrepaymentDurationMillis(station.prepaymentAmount, hourlyRate, station.durationLimitMinutes)
+                if (durationMillis > 60_000L) {
+                    val remainingMillis = durationMillis - elapsed
+                    val warningTime = now + remainingMillis - 60_000L
+                    if (warningTime > now) scheduleAlarm(stationId, warningTime)
                 }
             }
         }
