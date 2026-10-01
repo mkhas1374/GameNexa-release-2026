@@ -73,12 +73,6 @@ android {
       }
     }
 
-    create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
-      storePassword = "android"
-      keyAlias = "androiddebugkey"
-      keyPassword = "android"
-    }
   }
 
   buildTypes {
@@ -90,7 +84,8 @@ android {
       signingConfig = signingConfigs.getByName("release")
     }
     debug {
-      signingConfig = signingConfigs.getByName("debugConfig")
+      // Use AGP's standard debug signing configuration; CI/Android Studio provide the debug keystore.
+      signingConfig = signingConfigs.getByName("debug")
     }
   }
   compileOptions {
