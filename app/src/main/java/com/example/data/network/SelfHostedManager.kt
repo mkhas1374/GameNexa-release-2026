@@ -1036,6 +1036,30 @@ object SelfHostedManager {
         upsertCustomer(customer)
     }
 
+    suspend fun checkAuthenticatedManagerSession(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url("$SERVER_URL/api/v1/auth/check")
+                .headers(getBaseHeaders())
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    _isConnected.value = true
+                    NetworkLogger.dismissErrorBanner()
+                    true
+                } else {
+                    Log.w(TAG, "Authenticated manager session rejected: HTTP " + response.code)
+                    false
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Authenticated manager session check failed: " + e.message)
+            _isConnected.value = false
+            false
+        }
+    }
+
     suspend fun testServerConnection(): ConnectionTestResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
         val targetUrl = BASE_URL.removeSuffix("/")
