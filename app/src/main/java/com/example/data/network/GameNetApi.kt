@@ -5,12 +5,32 @@ import com.example.data.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.OkHttpClient
+import okhttp3.Dns
+import java.net.Inet4Address
+import java.net.InetAddress
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.*
 import java.util.concurrent.TimeUnit
+
+object GameNexaDns : Dns {
+    private const val PRODUCTION_HOST = "api.gamenermayket.ir"
+    private const val KNOWN_IPV4_FALLBACK = "87.248.152.3"
+
+    override fun lookup(hostname: String): List<InetAddress> {
+        if (!hostname.equals(PRODUCTION_HOST, ignoreCase = true)) return Dns.SYSTEM.lookup(hostname)
+        val addresses = runCatching { Dns.SYSTEM.lookup(hostname) }.getOrDefault(emptyList())
+        val ipv4 = addresses.filterIsInstance<Inet4Address>()
+        val fallback = runCatching { InetAddress.getByName(KNOWN_IPV4_FALLBACK) }.getOrNull()
+        return buildList {
+            addAll(ipv4)
+            if (fallback != null && none { it.hostAddress == fallback.hostAddress }) add(fallback)
+            if (isEmpty()) addAll(addresses)
+        }
+    }
+}
 
 data class ServerClockResponse(
     @com.squareup.moshi.Json(name = "serverTime") val serverTime: Long
@@ -890,6 +910,7 @@ object NetworkClient {
             }
 
             val okHttpClientBuilder = OkHttpClient.Builder()
+                .dns(GameNexaDns)
                 .connectTimeout(60, TimeUnit.SECONDS)
                 .readTimeout(60, TimeUnit.SECONDS)
                 .writeTimeout(60, TimeUnit.SECONDS)

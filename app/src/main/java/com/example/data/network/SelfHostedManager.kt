@@ -154,6 +154,7 @@ object SelfHostedManager {
     }
 
     val client = OkHttpClient.Builder()
+        .dns(GameNexaDns)
         .connectTimeout(60, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
