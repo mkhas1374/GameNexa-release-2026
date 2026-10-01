@@ -1023,13 +1023,13 @@ fun CustomerTransactionCard(
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                             if (hasDiscount) {
                                 Text(
-                                    text = "%,d".format(Locale.US, origTotal),
+                                    text = "%,.0f".format(Locale.US, origTotal),
                                     style = TextStyle(textDecoration = TextDecoration.LineThrough, color = MaterialTheme.colorScheme.onSurfaceVariant),
                                     fontSize = 11.sp
                                 )
                             }
                             Text(
-                                text = "%,d تومان".format(Locale.US, if (hasDiscount) finalAmount else origTotal),
+                                text = "%,.0f تومان".format(Locale.US, if (hasDiscount) finalAmount else origTotal),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (transaction.status == "DEBTOR") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
@@ -1044,7 +1044,7 @@ fun CustomerTransactionCard(
                     } else {
                         Column(horizontalAlignment = Alignment.End) {
                             Text(
-                                text = "%,d تومان".format(Locale.US, if (hasDiscount) finalAmount else origTotal),
+                                text = "%,.0f تومان".format(Locale.US, if (hasDiscount) finalAmount else origTotal),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (transaction.status == "DEBTOR") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
@@ -1090,7 +1090,7 @@ fun CustomerTransactionCard(
                                     color = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
-                                    text = "%,d تومان".format(java.util.Locale.US, origGameCost),
+                                    text = "%,.0f تومان".format(java.util.Locale.US, origGameCost),
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -1128,7 +1128,7 @@ fun CustomerTransactionCard(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Text(
-                                        text = "%,d تومان".format(java.util.Locale.US, origFoodCost),
+                                        text = "%,.0f تومان".format(java.util.Locale.US, origFoodCost),
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -1144,19 +1144,19 @@ fun CustomerTransactionCard(
                                 if (gameDiscPct > 0) {
                                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                         Text("✨ تخفیف بازی (%$gameDiscPct):", fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
-                                        Text("- %,d تومان".format(java.util.Locale.US, gameDiscount), fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
+                                        Text("- %,.0f تومان".format(java.util.Locale.US, gameDiscount), fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
                                     }
                                 }
                                 if (buffetDiscPct > 0 && origFoodCost > 0) {
                                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                         Text("✨ تخفیف بوفه (%$buffetDiscPct):", fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
-                                        Text("- %,d تومان".format(java.util.Locale.US, foodDiscount), fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
+                                        Text("- %,.0f تومان".format(java.util.Locale.US, foodDiscount), fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
                                     }
                                 }
                                 if (fixedDiscTom > 0) {
                                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                         Text("✨ تخفیف ثابت:", fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
-                                        Text("- %,d تومان".format(java.util.Locale.US, fixedDiscTom), fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
+                                        Text("- %,.0f تومان".format(java.util.Locale.US, fixedDiscTom), fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
                                     }
                                 }
                             }
@@ -1220,7 +1220,7 @@ fun CustomerTransactionCard(
             val remainingDebt = (activeTotal - transaction.paidAmount.toDouble()).coerceAtLeast(0.0)
             if (transaction.status == "DEBTOR") {
                 Text(
-                    text = "بدهی مانده: %,d تومان".format(Locale.US, remainingDebt),
+                    text = "بدهی مانده: %,.0f تومان".format(Locale.US, remainingDebt),
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.error
@@ -1265,7 +1265,7 @@ fun CustomerTransactionCard(
                                     appendLine("--------------------------------")
                                     appendLine("🎮 دستگاه: ${transaction.stationName}")
                                     appendLine("⏱ زمان بازی: ${transaction.title}")
-                                    appendLine("💵 هزینه بازی: %,d تومان".format(java.util.Locale.US, origGameCost))
+                                    appendLine("💵 هزینه بازی: %,.0f تومان".format(java.util.Locale.US, origGameCost))
                                     appendLine("--------------------------------")
                                     if (origFoodCost > 0) {
                                         val items = transaction.buffetDetails.split(Regex("(?<=\\))\\s*,\\s*|\\n")).map { it.trim() }.filter { it.isNotBlank() }
@@ -1273,19 +1273,19 @@ fun CustomerTransactionCard(
                                             appendLine("🍔 سفارشات بوفه:")
                                             items.forEach { appendLine("   • $it") }
                                         }
-                                        appendLine("💵 جمع بوفه: %,d تومان".format(java.util.Locale.US, origFoodCost))
+                                        appendLine("💵 جمع بوفه: %,.0f تومان".format(java.util.Locale.US, origFoodCost))
                                         appendLine("--------------------------------")
                                     }
                                     if (hasDiscount) {
-                                        appendLine("✨ تخفیف باشگاه: %,d تومان".format(java.util.Locale.US, (origTotal - finalAmount)))
+                                        appendLine("✨ تخفیف باشگاه: %,.0f تومان".format(java.util.Locale.US, (origTotal - finalAmount)))
                                         appendLine("--------------------------------")
                                     }
-                                    appendLine("💰 جمع کل نهایی: %,d تومان".format(java.util.Locale.US, if (hasDiscount) finalAmount else origTotal))
+                                    appendLine("💰 جمع کل نهایی: %,.0f تومان".format(java.util.Locale.US, if (hasDiscount) finalAmount else origTotal))
                                     if (transaction.paidAmount > 0) {
                                         appendLine("💳 مبلغ پرداختی: %,d تومان".format(java.util.Locale.US, transaction.paidAmount))
                                     }
                                     if (remainingDebt > 0) {
-                                        appendLine("⚠️ مانده بدهی: %,d تومان".format(java.util.Locale.US, remainingDebt))
+                                        appendLine("⚠️ مانده بدهی: %,.0f تومان".format(java.util.Locale.US, remainingDebt))
                                     } else {
                                         appendLine("✅ وضعیت: تسویه کامل")
                                     }
