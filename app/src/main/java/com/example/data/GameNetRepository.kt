@@ -675,58 +675,34 @@ class GameNetRepository(private val db: AppDatabase) {
     }
 
     suspend fun ensureTrialDataExists() {
-        val hasStations = stationStateDao.getAll().firstOrNull()?.isNotEmpty() == true
-        if (!hasStations) {
-            val count = getSetting("station_count")?.toIntOrNull() ?: 10
-            
-            val hasConsoles = consoleTypeDao.getAll().firstOrNull()?.isNotEmpty() == true
-            val defaultConsoles = listOf(
-                ConsoleType("PlayStation 5", 180000L, 220000L, 250000L, 280000L),
-                ConsoleType("PlayStation 4", 120000L, 140000L, 150000L, 180000L),
-                ConsoleType("شبیه ساز رانندگی", 220000L, 220000L, 220000L, 220000L),
-                ConsoleType("Xbox Series X", 180000L, 220000L, 250000L, 280000L)
-            )
-            if (!hasConsoles) {
-                for (c in defaultConsoles) {
-                    insertConsoleType(c)
-                }
-            }
+        // Trial is isolated from paid Manager defaults: exactly two PS5 stations.
+        consoleTypeDao.clearAll()
+        consoleTypeDao.insert(ConsoleType("PlayStation 5", 180000L, 220000L, 250000L, 280000L))
 
-            val hasProducts = productDao.getAll().firstOrNull()?.isNotEmpty() == true
-            if (!hasProducts) {
-                val defaultProducts = listOf(
-                    Product("انرژیزا تی ان تی", 110000L),
-                    Product("هایپ", 130000L),
-                    Product("ردبول", 140000L),
-                    Product("بلوبری", 68000L),
-                    Product("لیموناد", 70000L),
-                    Product("ویتامین سی", 70000L),
-                    Product("کروسان", 50000L),
-                    Product("کیک باباجون", 50000L),
-                    Product("کیک دو قلو", 40000L),
-                    Product("مغز بادام و تخمه", 50000L),
-                    Product("آبمیوه", 30000L),
-                    Product("آبمعدنی", 15000L),
-                    Product("چیپس", 75000L),
-                    Product("رانی", 45000L),
-                    Product("نسکافه و قهوه", 40000L),
-                    Product("چای", 20000L),
-                    Product("اسنک و ساندویچ گرم", 85000L)
-                )
-                for (p in defaultProducts) {
-                    insertProduct(p)
-                }
-            }
+        stationStateDao.clearAll()
+        stationStateDao.insertAll(listOf(
+            StationState(id = 1, consoleType = "PlayStation 5"),
+            StationState(id = 2, consoleType = "PlayStation 5")
+        ))
 
-            val firstConsole = if (hasConsoles) {
-                consoleTypeDao.getAll().firstOrNull()?.firstOrNull()?.name ?: defaultConsoles.first().name
-            } else {
-                defaultConsoles.first().name
-            }
-            recreateStations(count, firstConsole)
+        if (productDao.getAll().firstOrNull()?.isEmpty() != false) {
+            listOf(
+                Product("انرژیزا تی ان تی", 110000L),
+                Product("هایپ", 130000L),
+                Product("آبمعدنی", 15000L)
+            ).forEach { insertProduct(it) }
+        }
+
+        // Trial customer state lives in Room and survives process recreation/reload.
+        if (customerDao.getAllList().isEmpty()) {
+            customerDao.insertAll(listOf(
+                Customer(id = 1L, fullName = "مشتری تستی ۱", phoneNumber = "09120000001"),
+                Customer(id = 2L, fullName = "مشتری تستی ۲", phoneNumber = "09120000002", credit = 50000L),
+                Customer(id = 3L, fullName = "مشتری تستی ۳", phoneNumber = "09120000003", debt = 35000L),
+                Customer(id = 4L, fullName = "مشتری تستی ۴", phoneNumber = "09120000004")
+            ))
         }
     }
-
     suspend fun recreateStations(count: Int, defaultConsole: String) {
         // Find existing ones
         val currentStates = stationStateDao.getAll().firstOrNull() ?: emptyList()
@@ -749,25 +725,16 @@ class GameNetRepository(private val db: AppDatabase) {
 
     // Customers
     fun getMockTrialCustomers(): List<Customer> {
-        return listOf(
-            Customer(id = 1L, fullName = "مشتری تستی ۱", phoneNumber = "09120000001", credit = 0L, debt = 0L),
-            Customer(id = 2L, fullName = "مشتری تستی ۲", phoneNumber = "09120000002", credit = 50000L, debt = 0L),
-            Customer(id = 3L, fullName = "مشتری تستی ۳", phoneNumber = "09120000003", credit = 0L, debt = 35000L),
-            Customer(id = 4L, fullName = "مشتری تستی ۴", phoneNumber = "09120000004", credit = 0L, debt = 0L)
-        )
+        // Compatibility only; Trial UI now reads the persistent Room customer table.
+        return emptyList()
     }
-
     val allCustomers: Flow<List<Customer>> = flow {
-        if (com.example.data.network.NetworkClient.isTrialMode) {
-            emit(getMockTrialCustomers())
-        } else {
-            customerDao.getAll().collect { emit(it) }
-        }
+        customerDao.getAll().collect { emit(it) }
     }
-    suspend fun getAllCustomersLocal(): List<Customer> = if (com.example.data.network.NetworkClient.isTrialMode) getMockTrialCustomers() else customerDao.getAllList()
+    suspend fun getAllCustomersLocal(): List<Customer> = customerDao.getAllList()
     suspend fun getCustomerById(id: Long): Customer? {
         if (com.example.data.network.NetworkClient.isTrialMode) {
-            return getMockTrialCustomers().find { it.id == id }
+            return customerDao.getById(id)
         }
         if (isSyncModeEnabled()) {
             try {
