@@ -1,15 +1,16 @@
 package com.example
 
-import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import com.example.MainActivity
 import androidx.compose.ui.test.junit4.createComposeRule
 import org.robolectric.shadows.ShadowLooper
 
-@RunWith(AndroidJUnit4::class)
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class MainActivityTest {
     @Test
     fun testActivityStartup() {
