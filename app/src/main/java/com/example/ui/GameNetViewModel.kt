@@ -803,7 +803,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                             if (serverFullName.isNotBlank()) encryptSetting("enc_manager_fullname", serverFullName)
                             if (serverGameNetName.isNotBlank()) encryptSetting("enc_gamenet_name", serverGameNetName)
                             
-                            if (_isSubscribed.value) {
+                            if (_isSubscribed.value && _currentAdminRole.value != "TRIAL_USER") {
                                 flushPendingSessionStarts()
                                 flushSessionOutbox()
                                 flushPendingBuffetOrders()
