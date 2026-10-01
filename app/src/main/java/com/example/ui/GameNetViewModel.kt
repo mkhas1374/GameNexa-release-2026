@@ -946,6 +946,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
             // No local fallback: customer authentication is server-authoritative.
 
+        }
+    }
+
     fun logout() {
         _isAdminAuthenticated.value = false
         _isCustomerAuthenticated.value = false

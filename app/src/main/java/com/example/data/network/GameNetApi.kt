@@ -1,5 +1,6 @@
 package com.example.data.network
 
+import com.example.BuildConfig
 import com.example.data.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -44,6 +45,10 @@ interface GameNetApi {
 
     @POST("api/v1/super-manager/managers")
     suspend fun createSuperManager(@Body request: CreateManagerRequestDto): okhttp3.ResponseBody
+
+    @PUT("api/v1/super-manager/managers/{id}")
+    suspend fun updateManagerStatus(@Path("id") id: String, @Body request: UpdateManagerRequestDto): retrofit2.Response<okhttp3.ResponseBody>
+
 
     @POST("api/v1/super-manager/create-manager")
     suspend fun createSuperManagerAlt(@Body request: CreateManagerRequestDto): okhttp3.ResponseBody

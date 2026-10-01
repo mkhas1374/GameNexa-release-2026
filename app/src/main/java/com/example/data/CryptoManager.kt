@@ -87,6 +87,8 @@ object CryptoManager {
                     cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
                     val decryptedBytes = cipher.doFinal(cipherBytes)
                     String(decryptedBytes, Charsets.UTF_8)
+                } else {
+                    throw IllegalStateException("Android Keystore unavailable")
                 }
             } else {
                 throw IllegalStateException("Invalid secure storage payload")

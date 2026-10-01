@@ -820,7 +820,7 @@ object SelfHostedManager {
                 .headers(getBaseHeaders())
                 .put(body.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            client.newCall(req).use { response ->
+            client.newCall(req).execute().use { response ->
                 val raw = response.body?.string().orEmpty()
                 if (!response.isSuccessful || raw.isBlank()) return@withContext null
                 JSONObject(raw)
@@ -838,7 +838,7 @@ object SelfHostedManager {
                 .headers(getBaseHeaders())
                 .get()
                 .build()
-            client.newCall(req).use { response ->
+            client.newCall(req).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful || body.isBlank()) return@withContext null
                 JSONObject(body)
@@ -1714,7 +1714,7 @@ object SelfHostedManager {
                 .header("Idempotency-Key", "station-start:${stationId}:${startTimeMillis}")
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            client.newCall(request).use { response ->
+            client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     Log.e(TAG, "startStationSession HTTP " + response.code + ": " + body)
@@ -1755,7 +1755,7 @@ object SelfHostedManager {
                 .header("Idempotency-Key", "offline-start:$sessionId")
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            client.newCall(request).use { it.isSuccessful }
+            client.newCall(request).execute().use { it.isSuccessful }
         } catch (e: Exception) {
             Log.e(TAG, "syncOfflineSessionStart error: " + e.message, e)
             false
@@ -1823,7 +1823,7 @@ object SelfHostedManager {
                 .headers(getBaseHeaders())
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            client.newCall(request).use { it.isSuccessful }
+            client.newCall(request).execute().use { it.isSuccessful }
         } catch (e: Exception) {
             Log.e(TAG, "sendSessionEvent error: " + e.message, e)
             false
@@ -1842,7 +1842,7 @@ object SelfHostedManager {
                 .headers(getBaseHeaders())
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            client.newCall(request).use { response ->
+            client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) Log.e(TAG, "settleStationSession HTTP " + response.code + ": " + body)
                 response.isSuccessful
