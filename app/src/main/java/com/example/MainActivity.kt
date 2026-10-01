@@ -988,7 +988,7 @@ private fun IranTehranClock(
 
     Surface(
         modifier = modifier
-            .windowInsetsPadding(WindowInsets.statusBars)
+            .windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility)
             .height(38.dp),
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 2.dp
