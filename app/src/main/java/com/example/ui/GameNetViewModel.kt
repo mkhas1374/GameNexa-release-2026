@@ -26,7 +26,6 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 import java.io.File
-import java.security.MessageDigest
 
 sealed class AuthState {
     object Unauthenticated : AuthState()
@@ -71,23 +70,6 @@ sealed class LicenseState {
 }
 
 class GameNetViewModel(application: Application) : AndroidViewModel(application) {
-    @Volatile private var stableTrialDeviceId: String? = null
-
-    private suspend fun initializeStableTrialDeviceId() = withContext(Dispatchers.IO) {
-        if (!stableTrialDeviceId.isNullOrBlank()) return@withContext
-        val context = getApplication<Application>()
-        val appSetId = runCatching {
-            val info = com.google.android.gms.appset.AppSet.getClient(context).appSetIdInfo
-            com.google.android.gms.tasks.Tasks.await(info).id
-        }.getOrNull()?.trim().orEmpty()
-        if (appSetId.isNotBlank()) {
-            val digest = MessageDigest.getInstance("SHA-256")
-                .digest(appSetId.toByteArray(Charsets.UTF_8))
-                .joinToString("") { "%02x".format(it) }
-            stableTrialDeviceId = "DEV_APPSET_$digest"
-        }
-    }
-
     private val db = AppDatabase.getDatabase(application)
     val repository = GameNetRepository(db)
     private suspend fun encryptSetting(key: String, value: String) {
@@ -4244,12 +4226,14 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
      * app signing key, user and device, so the production signing key must remain
      * stable across releases for the Trial to remain one-per-device.
      */
-    fun getTrialDeviceId(): String {
-        stableTrialDeviceId?.let { return it }
-        val id = getDeviceId()
-        stableTrialDeviceId = id
-        return id
-    }
+    /**
+     * Trial identity is deliberately based on the platform ANDROID_ID only.
+     * ANDROID_ID is stable across uninstall/reinstall only when the app keeps the
+     * same signing key; therefore release/validation builds must never use an
+     * ephemeral signing certificate. The server remains the authority for the
+     * one-trial-per-device rule.
+     */
+    fun getTrialDeviceId(): String = getDeviceId()
 
     fun getTrialDeviceFingerprint(): String = getTrialDeviceId()
 
@@ -5412,23 +5396,39 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             if (currentToken.isBlank()) return@launch
 
             try {
-                // The Manager identity header is held in process memory. Rehydrate it
-                // immediately before auth validation so process recreation or another
-                // flow cannot cause a false 403 identity mismatch.
+                // Rehydrate the Manager identity immediately before validation.
                 val savedManagerId = decryptSetting("enc_manager_id")
                     .ifBlank { decryptSetting("enc_user_id") }
-                if (savedManagerId.isNotBlank()) {
-                    SelfHostedManager.setManagerId(savedManagerId)
-                }
+                if (savedManagerId.isNotBlank()) SelfHostedManager.setManagerId(savedManagerId)
+
                 val api = NetworkClient.getApi(_serverUrl.value)
                 api.checkAuth()
                 _isServerConnected.value = true
             } catch (e: Exception) {
                 if (e is retrofit2.HttpException && (e.code() == 401 || e.code() == 403)) {
-                    // Revoked session on server -> clean logout
+                    // A Super Manager has a dedicated server-side authority check that does
+                    // not depend on the generic Manager entitlement middleware. Retry it
+                    // before ever destroying a valid Super Manager session.
+                    val role = decryptSetting("enc_admin_role")
+                    if (role == "SUPER_MANAGER") {
+                        try {
+                            val superCheck = NetworkClient.getApi(_serverUrl.value).pingSuperManager()
+                            if (superCheck.isSuccessful) {
+                                _isServerConnected.value = true
+                                _isSubscribed.value = true
+                                _isAdminAuthenticated.value = true
+                                _currentAdminRole.value = "SUPER_MANAGER"
+                                NetworkClient.isTrialMode = false
+                                return@launch
+                            }
+                        } catch (_: Exception) {
+                            // Fall through to normal revoked-session handling.
+                        }
+                    }
+                    // Both checks failed: the server has actually rejected the session.
                     logout()
                 }
-                // Offline network error -> do NOT logout, keep offline session intact
+                // Transport/offline errors never destroy a valid local session.
             }
         }
     }
