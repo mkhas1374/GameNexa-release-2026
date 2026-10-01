@@ -4941,6 +4941,34 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         _isServerConnected.value = false
     }
 
+    fun checkSubscriptionByPhone(phone: String, onResult: (LicenseInfoResponse?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val cleanPhone = phone.trim()
+            if (cleanPhone.length < 10) {
+                withContext(Dispatchers.Main) { onResult(null) }
+                return@launch
+            }
+            try {
+                val api = NetworkClient.getApi(_serverUrl.value)
+                val response = api.checkSubscription(
+                    deviceId = getDeviceId(),
+                    userPhone = cleanPhone
+                )
+                val info = LicenseInfoResponse(
+                    exists = response.valid,
+                    deviceId = getDeviceId(),
+                    lastActiveAt = response.activatedAt,
+                    hasPassword = response.hasPasswordRaw ?: false,
+                    licenseCode = response.licenseCode ?: response.license_code ?: "",
+                    message = response.message
+                )
+                withContext(Dispatchers.Main) { onResult(info) }
+            } catch (_: Exception) {
+                withContext(Dispatchers.Main) { onResult(null) }
+            }
+        }
+    }
+
     fun setLicensePassword(licenseCode: String, password: String, onResult: (Boolean) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
