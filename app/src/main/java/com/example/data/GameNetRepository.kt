@@ -158,6 +158,10 @@ class GameNetRepository(private val db: AppDatabase) {
 
     suspend fun syncAllWithServer(): Boolean {
         if (!isSyncModeEnabled()) return false
+        // Never perform Manager cloud synchronization before a server-authenticated
+        // Manager session exists. This prevents startup 401s and false Offline state.
+        if (com.example.data.network.NetworkClient.authToken.isNullOrBlank() ||
+            com.example.data.network.SelfHostedManager.currentManagerId.isBlank()) return false
         val api = getApi() ?: return false
         var anySyncSucceeded = false
 
@@ -544,7 +548,9 @@ class GameNetRepository(private val db: AppDatabase) {
     suspend fun getSetting(key: String): String? = appSettingDao.getValue(key)
     suspend fun saveSetting(key: String, value: String) {
         appSettingDao.insert(AppSetting(key, value))
-        if (isSyncModeEnabled() && key != "server_sync_mode" && key != "server_url") {
+        if (isSyncModeEnabled() && key != "server_sync_mode" && key != "server_url" &&
+            !com.example.data.network.NetworkClient.authToken.isNullOrBlank() &&
+            com.example.data.network.SelfHostedManager.currentManagerId.isNotBlank()) {
             try {
                 getApi()?.saveSetting(mapOf("key" to key, "value" to value))
             } catch (e: Exception) {

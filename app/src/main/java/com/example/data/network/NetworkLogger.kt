@@ -65,11 +65,12 @@ object NetworkLogger {
 
         _status.update { current ->
             val total = current.totalRequests + 1
-            if (entry.isSuccess) {
+            val transportFailure = entry.statusCode == null || entry.statusCode == -1
+            if (entry.isSuccess || !transportFailure) {
                 current.copy(
                     isConnected = true,
                     totalRequests = total,
-                    successfulRequests = current.successfulRequests + 1,
+                    successfulRequests = current.successfulRequests + if (entry.isSuccess) 1 else 0,
                     lastSuccessTimestamp = entry.id
                 )
             } else if (entry.statusCode != null && entry.statusCode >= 100) {
@@ -88,8 +89,8 @@ object NetworkLogger {
                 current.copy(
                     isConnected = false,
                     totalRequests = total,
-                    failedRequests = current.failedRequests + 1,
-                    lastErrorTimestamp = entry.id,
+                    failedRequests = current.failedRequests + if (transportFailure) 1 else 0,
+                    lastErrorTimestamp = if (transportFailure) entry.id else current.lastErrorTimestamp,
                     lastErrorMessage = userMsg,
                     lastErrorType = entry.errorType
                 )

@@ -798,6 +798,18 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 val finalRole = if (isSuper) "SUPER_MANAGER" else serverRole
                 val finalManagerId = serverManagerId
                 val now = System.currentTimeMillis()
+
+                // Establish the complete authenticated Manager session BEFORE publishing
+                // Authenticated to the UI. This prevents early 401s and false logout/offline.
+                NetworkClient.isTrialMode = false
+                encryptSetting("enc_session_type", "ADMIN")
+                encryptSetting("enc_admin_role", finalRole)
+                encryptSetting("enc_manager_id", finalManagerId)
+                encryptSetting("enc_user_id", finalManagerId)
+                encryptSetting("enc_auth_phone", cleanUser)
+                encryptSetting("enc_auth_token", serverToken)
+                NetworkClient.authToken = serverToken
+                SelfHostedManager.setManagerId(finalManagerId)
                 
                 withContext(Dispatchers.Main) {
                     _currentAdminRole.value = finalRole
