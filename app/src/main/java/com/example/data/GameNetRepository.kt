@@ -676,8 +676,8 @@ class GameNetRepository(private val db: AppDatabase) {
 
         stationStateDao.clearAll()
         stationStateDao.insertAll(listOf(
-            StationState(id = 1, consoleType = "PlayStation 5"),
-            StationState(id = 2, consoleType = "PlayStation 5")
+            StationState(id = 1, controllerCount = 4, consoleType = "PlayStation 5"),
+            StationState(id = 2, controllerCount = 4, consoleType = "PlayStation 5")
         ))
 
         if (productDao.getAll().firstOrNull()?.isEmpty() != false) {
