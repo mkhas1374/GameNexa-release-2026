@@ -5307,6 +5307,14 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             if (currentToken.isBlank()) return@launch
 
             try {
+                // The Manager identity header is held in process memory. Rehydrate it
+                // immediately before auth validation so process recreation or another
+                // flow cannot cause a false 403 identity mismatch.
+                val savedManagerId = decryptSetting("enc_manager_id")
+                    .ifBlank { decryptSetting("enc_user_id") }
+                if (savedManagerId.isNotBlank()) {
+                    SelfHostedManager.setManagerId(savedManagerId)
+                }
                 val api = NetworkClient.getApi(_serverUrl.value)
                 api.checkAuth()
                 _isServerConnected.value = true
