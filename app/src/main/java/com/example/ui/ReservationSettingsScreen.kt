@@ -186,7 +186,6 @@ fun ReservationSettingsScreen(managerId: String, onNavigateBack: () -> Unit) {
         if (template.isBlank()) return ""
         var out = template
         out = out.replace("({duration})", "مدت انتخابی")
-            .replace("({payment_deadline})", vipPaymentDeadline.toIntOrNull()?.toString() ?: "0")
             .replace("({minutes_before_arrival})", arrivalWarningMinutes.toIntOrNull()?.toString() ?: "0")
         return out
     }
