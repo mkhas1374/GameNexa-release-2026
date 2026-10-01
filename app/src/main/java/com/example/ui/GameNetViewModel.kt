@@ -4292,8 +4292,30 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             // Continue into the common server verification path below.
         }
 
-        val isTrial = (planType.equals("TRIAL", ignoreCase = true) || 
-                      savedRole.equals("TRIAL_USER", ignoreCase = true) || 
+        if (isSuper) {
+            try {
+                NetworkClient.getApi(_serverUrl.value).checkAuth()
+                _isServerConnected.value = true
+                _isSubscribed.value = true
+                _isAdminAuthenticated.value = true
+                _isCustomerAuthenticated.value = false
+                _currentAdminRole.value = "SUPER_MANAGER"
+                NetworkClient.isTrialMode = false
+                encryptSetting("enc_session_type", "ADMIN")
+                encryptSetting("enc_admin_role", "SUPER_MANAGER")
+                encryptSetting("enc_license_status", "ACTIVE")
+                encryptSetting("enc_plan_type", "SUPER_MANAGER")
+                encryptSetting("enc_expire_time", Long.MAX_VALUE.toString())
+                val serverNow = System.currentTimeMillis()
+                _licenseState.value = LicenseState.Active("SUPER_MANAGER", Long.MAX_VALUE, serverNow, "SUPER_MANAGER_LIFETIME", true, serverNow)
+                return
+            } catch (_: Exception) {
+                _isServerConnected.value = false
+            }
+        }
+
+        val isTrial = !isSuper && (planType.equals("TRIAL", ignoreCase = true) ||
+                      savedRole.equals("TRIAL_USER", ignoreCase = true) ||
                       licenseStatus.equals("TRIAL", ignoreCase = true) ||
                       _currentAdminRole.value == "TRIAL_USER")
 
@@ -5127,9 +5149,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             val planType = decryptSetting("enc_plan_type")
             val licenseStatus = decryptSetting("enc_license_status")
             val savedRole = decryptSetting("enc_admin_role")
-            val isTrial = planType.equals("TRIAL", ignoreCase = true) || 
-                          savedRole.equals("TRIAL_USER", ignoreCase = true) || 
-                          licenseStatus.equals("TRIAL", ignoreCase = true)
+            val isTrial = savedRole != "SUPER_MANAGER" && (planType.equals("TRIAL", ignoreCase = true) ||
+                          savedRole.equals("TRIAL_USER", ignoreCase = true) ||
+                          licenseStatus.equals("TRIAL", ignoreCase = true))
             val savedManagerId = decryptSetting("enc_manager_id").ifBlank { decryptSetting("enc_user_id") }
 
             if (isTrial) {

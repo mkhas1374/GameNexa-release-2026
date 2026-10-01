@@ -310,6 +310,15 @@ app.get('/api/v1/time', rateLimit({ windowMs: 60_000, max: 60 }), (req, res) => 
 const normalizeTrialIdentity = (value) => String(value || '').trim().slice(0, 255);
 
 app.post('/api/v1/trial/start', rateLimit({ windowMs: 60_000, max: 5 }), async (req, res) => {
+    const authHeader = String(req.headers.authorization || '');
+    if (/^Bearer\s+\S+$/i.test(authHeader)) {
+        try {
+            const decoded = jwt.verify(authHeader.slice(7).trim(), JWT_SECRET, { algorithms: ['HS256'] });
+            if (['MANAGER', 'SUPER_MANAGER'].includes(decoded?.role)) {
+                return res.status(403).json({ success:false, trialActive:false, isExpired:false, code:'MANAGER_TRIAL_FORBIDDEN', message:'Authenticated Manager cannot activate Trial.' });
+            }
+        } catch (_) {}
+    }
     const deviceId = normalizeTrialIdentity(req.body?.deviceId || req.body?.device_id);
     const deviceFingerprint = normalizeTrialIdentity(req.body?.deviceFingerprint || req.body?.device_fingerprint);
     const deviceName = normalizeTrialIdentity(req.body?.deviceName || req.body?.device_name || 'Android');
