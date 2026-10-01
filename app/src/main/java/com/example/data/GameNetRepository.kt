@@ -121,6 +121,7 @@ class GameNetRepository(private val db: AppDatabase) {
 
     suspend fun addPointLog(log: PointLog) {
         pointLogDao.insert(log)
+        if (com.example.data.network.NetworkClient.isTrialMode) return
         try {
             com.example.data.network.SelfHostedManager.addPointLog(log)
         } catch (ignored: Exception) {}
