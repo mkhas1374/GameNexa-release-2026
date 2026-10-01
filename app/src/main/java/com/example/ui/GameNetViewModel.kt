@@ -794,6 +794,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                             encryptSetting("enc_auth_phone", cleanUser)
                             encryptSetting("enc_auth_token", serverToken)
                             com.example.data.network.NetworkClient.authToken = serverToken
+                            // Establish Manager identity before any authenticated post-login verification request.
+                            SelfHostedManager.setManagerId(finalManagerId)
                             encryptSetting("enc_license_status", "UNKNOWN")
                             encryptSetting("enc_plan_type", "")
                             encryptSetting("enc_expire_time", "0")
@@ -802,7 +804,6 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                             if (serverGameNetName.isNotBlank()) encryptSetting("enc_gamenet_name", serverGameNetName)
                             
                             if (_isSubscribed.value) {
-                                SelfHostedManager.setManagerId(finalManagerId)
                                 flushPendingSessionStarts()
                                 flushSessionOutbox()
                                 flushPendingBuffetOrders()
