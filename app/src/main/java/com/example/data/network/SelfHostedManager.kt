@@ -340,6 +340,33 @@ object SelfHostedManager {
         return false
     }
 
+    suspend fun restoreCustomerSession(managerId: String, token: String): Customer? = withContext(Dispatchers.IO) {
+        val mid = managerId.trim()
+        val authToken = token.trim()
+        if (mid.isBlank() || authToken.isBlank()) return@withContext null
+        try {
+            setManagerId(mid)
+            NetworkClient.authToken = authToken
+            val request = Request.Builder()
+                .url("$SERVER_URL/api/v1/customer/profile")
+                .headers(getBaseHeaders().newBuilder().set("Authorization", "Bearer $authToken").build())
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body?.string().orEmpty()
+                if (body.isBlank()) return@withContext null
+                val customer = parseCustomerObject(JSONObject(body))
+                if (customer.id <= 0L) return@withContext null
+                _currentLoggedInCustomer.value = customer
+                _isConnected.value = true
+                customer
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     suspend fun loginCustomer(phoneNumberOrUsername: String, passwordText: String): Result<Customer> = withContext(Dispatchers.IO) {
         try {
             val cleanInput = toEnglishDigits(phoneNumberOrUsername.trim())

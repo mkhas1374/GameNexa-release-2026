@@ -925,6 +925,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 }
                 encryptSetting("enc_session_type", "CUSTOMER")
                 encryptSetting("enc_customer_phone", cloudCust.phoneNumber.ifBlank { cleanPhone })
+                encryptSetting("enc_manager_id", SelfHostedManager.currentManagerId)
+                encryptSetting("enc_auth_token", com.example.data.network.NetworkClient.authToken ?: "")
                 fetchCustomerAppConfigsFromCloud()
                 withContext(Dispatchers.Main) {
                     onResult(true, "ورود با موفقیت انجام شد.")
@@ -956,6 +958,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         _isCustomerAuthenticated.value = false
         SelfHostedManager.setCurrentCustomer(null)
         SelfHostedManager.setManagerId("")
+        NetworkClient.authToken = null
         viewModelScope.launch(Dispatchers.IO) {
             encryptSetting("enc_session_type", "")
             encryptSetting("enc_customer_phone", "")
@@ -2087,21 +2090,17 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
-        // Initial setup for device ID and one-time licensing check on cold start
-        viewModelScope.launch {
-            _deviceId.value = getDeviceId()
-            // Wait for settings to load
-            delay(300)
-            verifyLicenseStatus()
-            fetchSubscriptionPlans()
-            fetchAdminBroadcastMessage()
-        }
-
-        // Initialize and load settings & saved auth session
+        // Cold-start initialization is intentionally serialized. Settings and the persisted
+        // server-authenticated session must be loaded before license checks or cloud syncs;
+        // running these concurrently could send the first requests without the restored token.
         viewModelScope.launch(Dispatchers.IO) {
             repository.initializeDatabaseIfEmpty()
             loadSettings()
+            _deviceId.value = getDeviceId()
             loadSavedAuthSession()
+            verifyLicenseStatus()
+            fetchSubscriptionPlans()
+            fetchAdminBroadcastMessage()
             observeAllOrders()
         }
 
@@ -4964,28 +4963,49 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     // ==============================================================
 
     suspend fun loadSavedAuthSession() {
+        // Restore the bearer token before any session-specific cloud request.
+        var token = decryptSetting("enc_auth_token")
+        if (token.isNotBlank()) {
+            NetworkClient.authToken = token
+        } else {
+            NetworkClient.authToken = null
+        }
+
         val sessionType = decryptSetting("enc_session_type")
         if (sessionType == "CUSTOMER") {
+            // Customer authentication is server-authoritative. A cached phone/customer record
+            // must never restore an authenticated session by itself after app restart.
             val custPhone = decryptSetting("enc_customer_phone")
-            if (custPhone.isNotBlank()) {
-                var matched = customers.value.find { it.phoneNumber == custPhone }
-                    ?: SelfHostedManager.allCloudCustomers.value.find { it.phoneNumber == custPhone }
-                
-                if (matched == null) {
-                    try {
-                        matched = repository.getAllCustomersLocal().find { it.phoneNumber == custPhone }
-                    } catch (e: Exception) {}
+            val managerId = decryptSetting("enc_manager_id")
+            if (custPhone.isNotBlank() && managerId.isNotBlank() && token.isNotBlank()) {
+                try {
+                    val restored = SelfHostedManager.restoreCustomerSession(managerId, token)
+                    if (restored != null) {
+                        SelfHostedManager.setCurrentCustomer(restored)
+                        _isCustomerAuthenticated.value = true
+                        _isAdminAuthenticated.value = false
+                        fetchCustomerAppConfigsFromCloud()
+                    } else {
+                        throw IllegalStateException("Customer session rejected by server")
+                    }
+                } catch (_: Exception) {
+                    SelfHostedManager.setCurrentCustomer(null)
+                    NetworkClient.authToken = null
+                    token = ""
+                    encryptSetting("enc_session_type", "")
+                    encryptSetting("enc_customer_phone", "")
+                    encryptSetting("enc_manager_id", "")
+                    encryptSetting("enc_auth_token", "")
+                    _isCustomerAuthenticated.value = false
+                    _isAdminAuthenticated.value = false
                 }
-                
-                if (matched != null) {
-                    SelfHostedManager.setCurrentCustomer(matched)
-                } else {
-                    // Create a dummy so the UI has the phone number to match against when Flow emits
-                    SelfHostedManager.setCurrentCustomer(Customer(fullName = "مشتری", phoneNumber = custPhone, availableGn = 0L))
-                }
-                _isCustomerAuthenticated.value = true
-                _isAdminAuthenticated.value = false
-                fetchCustomerAppConfigsFromCloud()
+            } else {
+                SelfHostedManager.setCurrentCustomer(null)
+                _isCustomerAuthenticated.value = false
+                NetworkClient.authToken = null
+                token = ""
+                encryptSetting("enc_session_type", "")
+                encryptSetting("enc_auth_token", "")
             }
         } else if (sessionType == "ADMIN") {
             val planType = decryptSetting("enc_plan_type")
@@ -4994,21 +5014,38 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             val isTrial = planType.equals("TRIAL", ignoreCase = true) || 
                           savedRole.equals("TRIAL_USER", ignoreCase = true) || 
                           licenseStatus.equals("TRIAL", ignoreCase = true)
-            val effectiveRole = if (savedRole == "SUPER_MANAGER") "SUPER_MANAGER" else if (isTrial) "TRIAL_USER" else savedRole.ifBlank { "SUPER_MANAGER" }
-            _currentAdminRole.value = effectiveRole
-            _isAdminAuthenticated.value = true
-            _isCustomerAuthenticated.value = false
             val savedManagerId = decryptSetting("enc_manager_id").ifBlank { decryptSetting("enc_user_id") }
-            if (savedManagerId.isNotBlank()) {
+
+            if (isTrial) {
+                // Trial mode is validated by the dedicated server trial endpoint below and
+                // intentionally does not require a Manager JWT.
+                _currentAdminRole.value = "TRIAL_USER"
+                _isAdminAuthenticated.value = true
+                _isCustomerAuthenticated.value = false
+            } else if (savedManagerId.isNotBlank() && token.isNotBlank() &&
+                savedRole in setOf("MANAGER", "GAMENET_MANAGER", "SUPER_MANAGER")) {
+                // A paid Manager session may be restored only when the persisted server
+                // credentials are present. Subscription/entitlement validation follows.
+                _currentAdminRole.value = savedRole
+                _isAdminAuthenticated.value = true
+                _isCustomerAuthenticated.value = false
                 SelfHostedManager.setManagerId(savedManagerId)
-                viewModelScope.launch(Dispatchers.IO) {
-                    SelfHostedManager.fetchAllFromCloud()
-                        repository.syncAllWithServer()
-                }
+                SelfHostedManager.fetchAllFromCloud()
+                repository.syncAllWithServer()
+            } else {
+                // Never treat a partial/corrupt local session as an authenticated Manager.
+                _isAdminAuthenticated.value = false
+                _isCustomerAuthenticated.value = false
+                SelfHostedManager.setManagerId("")
+                encryptSetting("enc_session_type", "")
+                encryptSetting("enc_admin_role", "")
+                encryptSetting("enc_manager_id", "")
+                encryptSetting("enc_auth_token", "")
+                NetworkClient.authToken = null
+                token = ""
             }
         }
 
-        val token = decryptSetting("enc_auth_token")
         val userId = decryptSetting("enc_user_id")
         val username = decryptSetting("enc_auth_username")
         val phone = decryptSetting("enc_auth_phone")

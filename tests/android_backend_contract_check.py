@@ -59,4 +59,24 @@ if missing:
         print('  ', item)
     sys.exit(1)
 
+# Authentication/session restoration invariants. These are intentionally static so CI
+# catches regressions where a cached local record accidentally becomes an auth grant.
+view_model = (ROOT / 'app' / 'src' / 'main' / 'java' / 'com' / 'example' / 'ui' / 'GameNetViewModel.kt').read_text(errors='ignore')
+self_hosted = (ROOT / 'app' / 'src' / 'main' / 'java' / 'com' / 'example' / 'data' / 'network' / 'SelfHostedManager.kt').read_text(errors='ignore')
+security_contracts = {
+    'customer_server_restore': 'restoreCustomerSession(managerId, token)' in view_model and 'suspend fun restoreCustomerSession' in self_hosted,
+    'customer_token_persisted': 'encryptSetting("enc_auth_token", com.example.data.network.NetworkClient.authToken ?: "")' in view_model,
+    'logout_clears_bearer': 'NetworkClient.authToken = null' in view_model[view_model.find('fun logout()'):view_model.find('fun logoutAdmin()')],
+    'manager_restore_requires_credentials': 'savedManagerId.isNotBlank() && token.isNotBlank()' in view_model,
+    'no_blank_role_super_manager_fallback': 'savedRole.ifBlank { "SUPER_MANAGER" }' not in view_model,
+    'serialized_cold_start': 'loadSettings()\n            _deviceId.value = getDeviceId()\n            loadSavedAuthSession()\n            verifyLicenseStatus()' in view_model,
+}
+failed_security = [name for name, ok in security_contracts.items() if not ok]
+if failed_security:
+    print('FAIL: Android session-security invariants')
+    for item in failed_security:
+        print('  ', item)
+    sys.exit(1)
+
+print('PASS: Android session restoration is server-authoritative and cold-start ordering is serialized')
 print(f'PASS: {len(retrofit)} Retrofit contracts and {len(raw_paths)} raw API paths have backend matches')
