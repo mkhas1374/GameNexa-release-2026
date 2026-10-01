@@ -963,7 +963,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             encryptSetting("enc_customer_phone", "")
             encryptSetting("enc_admin_role", "")
             encryptSetting("enc_manager_id", "")
-            repository.clearAllDataExceptSettings()
+            // Authentication logout must not erase business data; Room data remains available after re-login.
         }
     }
 
@@ -2421,6 +2421,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         customerPrepaymentsMap: Map<Long, Long> = emptyMap()
     ) {
         viewModelScope.launch(Dispatchers.IO) {
+            if (isTrialUser && stationId !in 1..2) return@launch
             val station = repository.getStationStateByIdLocal(stationId)
                 ?: stationStates.value.find { it.id == stationId }
                 ?: return@launch
@@ -3222,6 +3223,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     fun updateStationConsole(stationId: Int, consoleName: String) {
         viewModelScope.launch(Dispatchers.IO) {
+            if (isTrialUser && !consoleName.equals("PlayStation 5", ignoreCase = true)) return@launch
             val station = repository.getStationStateByIdLocal(stationId)
                 ?: stationStates.value.find { it.id == stationId }
                 ?: return@launch
@@ -5371,7 +5373,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             NetworkClient.authToken = null
             _authState.value = AuthState.Unauthenticated
 
-            repository.clearAllDataExceptSettings()
+            // Authentication logout must not erase business data; Room data remains available after re-login.
 
             withContext(Dispatchers.Main) {
                 onComplete?.invoke()
