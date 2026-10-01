@@ -671,15 +671,15 @@ class GameNetRepository(private val db: AppDatabase) {
     }
 
     suspend fun ensureTrialDataExists() {
-        // Trial is isolated from paid Manager defaults: exactly two PS5 stations.
-        consoleTypeDao.clearAll()
-        consoleTypeDao.insert(ConsoleType("PlayStation 5", 180000L, 220000L, 250000L, 280000L))
-
-        stationStateDao.clearAll()
-        stationStateDao.insertAll(listOf(
-            StationState(id = 1, controllerCount = 4, consoleType = "PlayStation 5"),
-            StationState(id = 2, controllerCount = 4, consoleType = "PlayStation 5")
-        ))
+        // Trial must never destroy or overwrite paid Manager-local data.
+        // If the fresh installation has no stations yet, create the two Trial stations;
+        // otherwise the existing Manager stations remain untouched.
+        if (stationStateDao.getAll().firstOrNull()?.isEmpty() != false) {
+            stationStateDao.insertAll(listOf(
+                StationState(id = 1, controllerCount = 4, consoleType = "PlayStation 5"),
+                StationState(id = 2, controllerCount = 4, consoleType = "PlayStation 5")
+            ))
+        }
 
         if (productDao.getAll().firstOrNull()?.isEmpty() != false) {
             listOf(

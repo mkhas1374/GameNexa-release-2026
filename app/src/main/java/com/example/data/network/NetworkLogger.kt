@@ -82,6 +82,9 @@ object NetworkLogger {
                 )
             } else {
                 val userMsg = formatUserFriendlyErrorMessage(entry)
+                // An HTTP error proves that the network path and server responded.
+                // Do not mark the device Offline for 4xx/5xx responses; only transport
+                // failures (timeouts, DNS, refused sockets, etc.) are connectivity failures.
                 current.copy(
                     isConnected = false,
                     totalRequests = total,

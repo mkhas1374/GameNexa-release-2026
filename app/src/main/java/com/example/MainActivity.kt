@@ -983,10 +983,10 @@ private fun IranTehranClock(
             timeZone = TimeZone.getTimeZone("Asia/Tehran")
         }
     }
-    val dateFormatter = remember {
-        SimpleDateFormat("yyyy/MM/dd", Locale.US).apply {
-            timeZone = TimeZone.getTimeZone("Asia/Tehran")
-        }
+    val dateText = remember(liveServerTime) {
+        com.example.util.JalaliCalendarHelper.formatJalaliDateTime(
+            liveServerTime, includeTime = false
+        )
     }
 
     Surface(
@@ -1002,7 +1002,7 @@ private fun IranTehranClock(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = dateFormatter.format(Date(liveServerTime)),
+                text = dateText,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,
                 fontSize = 12.sp,

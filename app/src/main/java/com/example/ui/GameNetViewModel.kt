@@ -257,6 +257,11 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             repository.saveSetting("active_session_start_" + stationId, "")
             return true
         }
+        if (sessionId.isBlank()) {
+            repository.saveSetting("active_session_" + stationId, "")
+            repository.saveSetting("active_session_start_" + stationId, "")
+            return true
+        }
         val settled = SelfHostedManager.settleStationSession(sessionId, endedAtMillis)
         if (settled) {
             repository.saveSetting("active_session_" + stationId, "")
@@ -1745,7 +1750,12 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         isTrialModeFlow
     ) { dbList, isTrial ->
         if (isTrial) dbList
-        else dbList.filterNot { it.description == "__GN_TRIAL_TEST_CONTACT__" }
+        else dbList.filterNot {
+            it.description == "__GN_TRIAL_TEST_CONTACT__" ||
+            (it.phoneNumber in setOf(
+                "09120000001", "09120000002", "09120000003", "09120000004"
+            ) && it.fullName.startsWith("مشتری تستی"))
+        }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _adminBroadcastMessage = MutableStateFlow<String?>(null)
@@ -4214,28 +4224,19 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         return finalDeviceId
     }
 
-    /** Device identity used only for the server-authoritative 24h Trial.
-     * App Set ID survives normal app reinstall/update cycles and is not coupled
-     * to the signing key, unlike ANDROID_ID on modern Android versions.
+    /**
+     * Canonical device identity for the server-authoritative 24h Trial.
+     *
+     * Do not use app-local random IDs or App Set ID here: those can reset when a
+     * sideloaded app is removed/replaced. ANDROID_ID is scoped by Android to the
+     * app signing key, user and device, so the production signing key must remain
+     * stable across releases for the Trial to remain one-per-device.
      */
     fun getTrialDeviceId(): String {
         stableTrialDeviceId?.let { return it }
-        val context = getApplication<Application>()
-        val appSetId = runCatching {
-            val info = com.google.android.gms.appset.AppSet.getClient(context).appSetIdInfo
-            com.google.android.gms.tasks.Tasks.await(info).id
-        }.getOrNull()?.trim().orEmpty()
-        if (appSetId.isNotBlank()) {
-            val digest = MessageDigest.getInstance("SHA-256")
-                .digest(appSetId.toByteArray(Charsets.UTF_8))
-                .joinToString("") { "%02x".format(it) }
-            val id = "DEV_APPSET_$digest"
-            stableTrialDeviceId = id
-            return id
-        }
-        val fallback = getDeviceId()
-        stableTrialDeviceId = fallback
-        return fallback
+        val id = getDeviceId()
+        stableTrialDeviceId = id
+        return id
     }
 
     fun getTrialDeviceFingerprint(): String = getTrialDeviceId()
