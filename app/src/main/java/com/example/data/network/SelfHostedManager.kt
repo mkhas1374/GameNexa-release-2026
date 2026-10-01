@@ -445,7 +445,7 @@ object SelfHostedManager {
             val managerId = currentManagerId.trim()
             val normPhone = normalizePhone(phone)
             if (managerId.isBlank()) return@withContext Result.failure(Exception("شناسه مدیر برای ثبت‌نام مشتری مشخص نشده است."))
-            if (passwordText.trim().length < 4) return@withContext Result.failure(Exception("رمز عبور باید حداقل ۴ کاراکتر باشد."))
+            if (passwordText.trim().length < 4) return@withContext Result.failure(Exception("رمز عبور باید حداقل 4 کاراکتر باشد."))
             
             val json = JSONObject().apply {
                 put("full_name", fullName.trim())

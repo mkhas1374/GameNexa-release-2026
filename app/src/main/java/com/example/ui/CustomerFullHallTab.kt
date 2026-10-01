@@ -70,7 +70,7 @@ fun CustomerFullHallTab(viewModel: GameNetViewModel) {
     }
 
     val startLabel = if (selectedStartMillis <= 0L) "زمان شروع را انتخاب کنید" else
-        SimpleDateFormat("yyyy/MM/dd - HH:mm", Locale("fa", "IR")).apply {
+        SimpleDateFormat("yyyy/MM/dd - HH:mm", Locale.US).apply {
             timeZone = TimeZone.getTimeZone("Asia/Tehran")
         }.format(Date(selectedStartMillis))
 

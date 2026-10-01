@@ -217,7 +217,7 @@ fun UnifiedEntryScreen(
                             if (isTrialActive) {
                                 viewModel.activateFreeTrial { success, msg -> showTrialMessage = msg }
                             } else if (isTrialUsed) {
-                                showTrialMessage = "شما قبلاً از تست ۲۴ ساعته استفاده کرده‌اید."
+                                showTrialMessage = "شما قبلاً از تست 24 ساعته استفاده کرده‌اید."
                             } else {
                                 viewModel.activateFreeTrial { success, msg ->
                                     showTrialMessage = msg
@@ -230,7 +230,7 @@ fun UnifiedEntryScreen(
                         )
                     ) {
                         Text(
-                            text = if (isTrialActive) "ورود به تست ($remainingTrialText باقیمانده)" else if (isTrialUsed) "تست ۲۴ ساعته (استفاده شده)" else "اجرای تست ۲۴ ساعته",
+                            text = if (isTrialActive) "ورود به تست ($remainingTrialText باقیمانده)" else if (isTrialUsed) "تست 24 ساعته (استفاده شده)" else "اجرای تست 24 ساعته",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold
                         )

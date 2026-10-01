@@ -38,7 +38,7 @@ import androidx.compose.ui.unit.sp
  */
 @Composable
 fun SubscriptionLockScreen(
-    reason: String = "مهلت تست ۲۴ ساعته به پایان رسید.",
+    reason: String = "مهلت تست 24 ساعته به پایان رسید.",
     deviceId: String,
     onRenewSubscription: () -> Unit = {},
     onActivateCode: (String) -> Unit = {},

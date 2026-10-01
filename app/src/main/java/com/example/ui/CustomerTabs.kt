@@ -288,12 +288,12 @@ fun CustomerWalletTab(viewModel: GameNetViewModel) {
                     )
                 }
                 Text(
-                    text = "• امکان پرداخت تا ۳۰٪ از هزینه بازی سالن با موجودی GN (قابل تغییر توسط مدیر)",
+                    text = "• امکان پرداخت تا 30٪ از هزینه بازی سالن با موجودی GN (قابل تغییر توسط مدیر)",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "• امکان پرداخت تا ۵۰٪ از هزینه بوفه و کافه با موجودی GN (قابل تغییر توسط مدیر)",
+                    text = "• امکان پرداخت تا 50٪ از هزینه بوفه و کافه با موجودی GN (قابل تغییر توسط مدیر)",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -902,7 +902,7 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
         if (selectedDuration <= 0) "انتخاب نشده" else if (selectedDuration % 60 == 0) "${selectedDuration / 60} ساعت" else "$selectedDuration دقیقه"
     }
     val selectedStartLabel = remember(selectedStartMillis) {
-        if (selectedStartMillis <= 0L) "زمان شروع را انتخاب کنید" else SimpleDateFormat("yyyy/MM/dd - HH:mm", Locale("fa", "IR")).apply { timeZone = TimeZone.getTimeZone("Asia/Tehran") }.format(Date(selectedStartMillis))
+        if (selectedStartMillis <= 0L) "زمان شروع را انتخاب کنید" else SimpleDateFormat("yyyy/MM/dd - HH:mm", Locale.US).apply { timeZone = TimeZone.getTimeZone("Asia/Tehran") }.format(Date(selectedStartMillis))
     }
 
     LaunchedEffect(selectedStationId, selectedDuration, selectedPlayerCount, selectedStartMillis) {
@@ -1441,7 +1441,7 @@ fun CustomerClubRulesTab(viewModel: GameNetViewModel) {
                         Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFFE65100), modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "به ازای هر ${decimalFormat.format(lpTomanRate)} تومان پرداخت در گیم‌نت ⬅️ ۱ امتیاز LP تعلق می‌گیرد.",
+                            text = "به ازای هر ${decimalFormat.format(lpTomanRate)} تومان پرداخت در گیم‌نت ⬅️ 1 امتیاز LP تعلق می‌گیرد.",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFFE65100)

@@ -108,7 +108,7 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
             }
             .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
-        // دو گزینه اصلی در تب اشتراک: ۱. خرید و تمدید اشتراک | ۲. اطلاعات اشتراک فعلی
+        // دو گزینه اصلی در تب اشتراک: 1. خرید و تمدید اشتراک | 2. اطلاعات اشتراک فعلی
         Surface(
             shape = RoundedCornerShape(16.dp),
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -122,7 +122,7 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
                     .padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // گزینه ۱: خرید و تمدید اشتراک
+                // گزینه 1: خرید و تمدید اشتراک
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = if (selectedOptionTab == 0) MaterialTheme.colorScheme.primary else Color.Transparent,
@@ -146,7 +146,7 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (lang == "fa") "۱. خرید و تمدید اشتراک" else "1. Buy / Renew",
+                            text = if (lang == "fa") "1. خرید و تمدید اشتراک" else "1. Buy / Renew",
                             fontSize = 12.5.sp,
                             fontWeight = if (selectedOptionTab == 0) FontWeight.Bold else FontWeight.Medium,
                             color = if (selectedOptionTab == 0) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
@@ -154,7 +154,7 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
                     }
                 }
 
-                // گزینه ۲: اطلاعات اشتراک فعلی
+                // گزینه 2: اطلاعات اشتراک فعلی
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = if (selectedOptionTab == 1) MaterialTheme.colorScheme.primary else Color.Transparent,
@@ -178,7 +178,7 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (lang == "fa") "۲. اطلاعات اشتراک فعلی" else "2. Current Subscription",
+                            text = if (lang == "fa") "2. اطلاعات اشتراک فعلی" else "2. Current Subscription",
                             fontSize = 12.5.sp,
                             fontWeight = if (selectedOptionTab == 1) FontWeight.Bold else FontWeight.Medium,
                             color = if (selectedOptionTab == 1) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
@@ -190,7 +190,7 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
 
         when (selectedOptionTab) {
             0 -> {
-                // ==================== گزینه ۱: خرید و تمدید اشتراک ====================
+                // ==================== گزینه 1: خرید و تمدید اشتراک ====================
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -472,7 +472,7 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
             }
 
             1 -> {
-                // ==================== گزینه ۲: اطلاعات اشتراک فعلی ====================
+                // ==================== گزینه 2: اطلاعات اشتراک فعلی ====================
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(12.dp),

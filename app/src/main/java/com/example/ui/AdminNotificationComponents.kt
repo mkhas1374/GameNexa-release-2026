@@ -595,7 +595,7 @@ private fun AdminNotificationCard(
                 }
 
                 Text(
-                    text = SimpleDateFormat("HH:mm - yyyy/MM/dd", Locale("fa")).format(Date(item.timestamp)),
+                    text = SimpleDateFormat("HH:mm - yyyy/MM/dd", Locale.US).format(Date(item.timestamp)),
                     fontSize = 10.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

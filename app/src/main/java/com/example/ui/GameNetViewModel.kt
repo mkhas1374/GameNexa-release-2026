@@ -462,7 +462,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     id = notifId,
                     type = "RESERVATION",
                     title = "درخواست رزرو نوبت میز",
-                    description = "رزرو برای ${r.fullName} به مدت ${r.durationMinutes} دقیقه در تاریخ ${SimpleDateFormat("yyyy/MM/dd HH:mm", Locale("fa")).format(Date(r.reservationTimeMillis))}",
+                    description = "رزرو برای ${r.fullName} به مدت ${r.durationMinutes} دقیقه در تاریخ ${SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.US).format(Date(r.reservationTimeMillis))}",
                     customerName = r.fullName,
                     phoneNumber = r.phoneNumber,
                     timestamp = r.reservationTimeMillis,
@@ -1134,7 +1134,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             repository.saveSetting("policy_lp_toman_rate", rate.toString())
             SelfHostedManager.syncAppConfig("policy_lp_toman_rate", rate.toString())
-            logOperatorActivity("تغییر نرخ LP", "بروزرسانی نرخ اعطای LP به $rate تومان برای ۱ LP")
+            logOperatorActivity("تغییر نرخ LP", "بروزرسانی نرخ اعطای LP به $rate تومان برای 1 LP")
         }
     }
 
@@ -1155,8 +1155,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             val defaultRules = listOf(
                 ReferralRule(
                     id = "ref_rule_gaming_100k",
-                    title = "هزینه کردن حداقل ۱۰۰,۰۰۰ تومان در بازی کردن توسط دوست",
-                    description = "اعطای ۱۰۰ GN به معرف پس از اینکه دوست دعوت‌شده حداقل ۱۰۰,۰۰۰ تومان بازی کند.",
+                    title = "هزینه کردن حداقل 100,000 تومان در بازی کردن توسط دوست",
+                    description = "اعطای 100 GN به معرف پس از اینکه دوست دعوت‌شده حداقل 100,000 تومان بازی کند.",
                     type = "GAMING_SPEND",
                     requiredAmount = 100000L,
                     rewardGn = 100L,
@@ -1164,8 +1164,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 ),
                 ReferralRule(
                     id = "ref_rule_buffet_50k",
-                    title = "خرید حداقل ۵۰,۰۰۰ تومان بوفه توسط دوست",
-                    description = "اعطای ۵۰ GN به معرف پس از خرید حداقل ۵۰,۰۰۰ تومان بوفه توسط دوست.",
+                    title = "خرید حداقل 50,000 تومان بوفه توسط دوست",
+                    description = "اعطای 50 GN به معرف پس از خرید حداقل 50,000 تومان بوفه توسط دوست.",
                     type = "BUFFET_SPEND",
                     requiredAmount = 50000L,
                     rewardGn = 50L,
@@ -1174,7 +1174,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 ReferralRule(
                     id = "ref_rule_first_visit",
                     title = "ثبت اولین بازی و حضور دوست در سالن",
-                    description = "اعطای ۳۰ GN به معرف به محض اولین حضور دوست.",
+                    description = "اعطای 30 GN به معرف به محض اولین حضور دوست.",
                     type = "FIRST_VISIT",
                     requiredAmount = 1L,
                     rewardGn = 30L,
@@ -1684,7 +1684,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         if (expiresAt == null || expiresAt == Long.MAX_VALUE) return
         val delayMs = expiresAt - System.currentTimeMillis()
         if (delayMs <= 0) {
-            val msg = if (role == "MANAGER" || role == "GAMENET_MANAGER") "اعتبار اشتراک مدیریت به پایان رسید." else "مهلت تست ۲۴ ساعته به پایان رسید."
+            val msg = if (role == "MANAGER" || role == "GAMENET_MANAGER") "اعتبار اشتراک مدیریت به پایان رسید." else "مهلت تست 24 ساعته به پایان رسید."
             _accessState.value = AppAccessState.Denied(msg)
             _licenseState.value = LicenseState.Expired(msg)
             _isSubscribed.value = false
@@ -1696,7 +1696,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             if (currentRole == "SUPER_MANAGER") {
                 return@launch
             }
-            val msg = if (currentRole == "MANAGER" || currentRole == "GAMENET_MANAGER") "اعتبار اشتراک مدیریت به پایان رسید." else "مهلت تست ۲۴ ساعته به پایان رسید."
+            val msg = if (currentRole == "MANAGER" || currentRole == "GAMENET_MANAGER") "اعتبار اشتراک مدیریت به پایان رسید." else "مهلت تست 24 ساعته به پایان رسید."
             _accessState.value = AppAccessState.Denied(msg)
             _licenseState.value = LicenseState.Expired(msg)
             _isSubscribed.value = false
@@ -1772,7 +1772,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             ClubLevel(
                 id = "silver", name = "نقره‌ای", requiredPoints = 1200L,
                 gameDiscountPercent = 3L, buffetDiscountPercent = 0L, fixedDiscountToman = 0L, freePlayHours = 0L,
-                rewardsText = "تخفیف ۳٪ روی بازی و دسترسی به رویدادهای ویژه",
+                rewardsText = "تخفیف 3٪ روی بازی و دسترسی به رویدادهای ویژه",
                 reachGnBonus = 50L, gameGnPercent = 15L, buffetGnPercent = 5L, maxGnPaymentPercent = 30L, inviteGnReward = 100L,
                 accessSpecialEvents = true, validityDays = 30, minVisitDays = 5, retainLpPoints = 800L, graceDays = 7,
                 maxAbsenceWithoutPenaltyDays = 20,
@@ -1781,7 +1781,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             ClubLevel(
                 id = "gold", name = "طلایی", requiredPoints = 4000L,
                 gameDiscountPercent = 5L, buffetDiscountPercent = 5L, fixedDiscountToman = 0L, freePlayHours = 0L,
-                rewardsText = "تخفیف ۵٪ بازی و بوفه + نیم ساعت بازی رایگان",
+                rewardsText = "تخفیف 5٪ بازی و بوفه + نیم ساعت بازی رایگان",
                 reachGnBonus = 150L, gameGnPercent = 20L, buffetGnPercent = 10L, maxGnPaymentPercent = 30L, inviteGnReward = 100L,
                 accessSpecialEvents = true, validityDays = 30, minVisitDays = 8, retainLpPoints = 3200L, graceDays = 7,
                 maxAbsenceWithoutPenaltyDays = 20,
@@ -1790,7 +1790,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             ClubLevel(
                 id = "diamond", name = "الماسی", requiredPoints = 12000L,
                 gameDiscountPercent = 10L, buffetDiscountPercent = 10L, fixedDiscountToman = 0L, freePlayHours = 1L,
-                rewardsText = "تخفیف ۱۰٪ بازی و بوفه + ۱ ساعت بازی رایگان",
+                rewardsText = "تخفیف 10٪ بازی و بوفه + 1 ساعت بازی رایگان",
                 reachGnBonus = 300L, gameGnPercent = 30L, buffetGnPercent = 15L, maxGnPaymentPercent = 30L, inviteGnReward = 100L,
                 accessSpecialEvents = true, validityDays = 30, minVisitDays = 12, retainLpPoints = 10000L, graceDays = 7,
                 maxAbsenceWithoutPenaltyDays = 20,
@@ -1802,7 +1802,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     fun getDefaultScoringRules(): List<ScoringRule> {
         return listOf(
             ScoringRule("invite", "دعوت مخاطب جدید", 50L),
-            ScoringRule("spending", "هزینه کردن در گیم نت (به ازای هر ۱۰۰۰ تومان)", 1L),
+            ScoringRule("spending", "هزینه کردن در گیم نت (به ازای هر 1000 تومان)", 1L),
             ScoringRule("playing", "هر یک ساعت بازی", 20L),
             ScoringRule("signup_gift", "هدیه ثبت نام در برنامه", 0L),
             ScoringRule("debt", "بدهی پرداخت‌نشده (روزانه)", -10L),
@@ -1917,7 +1917,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             repository.saveSetting("gn_toman_price_per_10", pricePer10.toString())
             repository.saveSetting("gn_points_per_game_hour", pointsPerHour.toString())
             SelfHostedManager.setGnRatios(pricePer10, pointsPerHour)
-            logOperatorActivity("تغییر نسبت‌های GN", "قیمت ۱۰ امتیاز GN: $pricePer10 تومان | نرخ تبدیل: $pointsPerHour امتیاز = ۱ ساعت بازی")
+            logOperatorActivity("تغییر نسبت‌های GN", "قیمت 10 امتیاز GN: $pricePer10 تومان | نرخ تبدیل: $pointsPerHour امتیاز = 1 ساعت بازی")
         }
     }
 
@@ -2062,8 +2062,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 val isTrial = (currentRole == "TRIAL_USER" || (state is LicenseState.Active && state.planType == "TRIAL")) && currentRole != "SUPER_MANAGER" && currentRole != "MANAGER"
                 if (isTrial && state is LicenseState.Active && state.planType == "TRIAL") {
                     if (now >= state.expiresAt) {
-                        _accessState.value = AppAccessState.Denied("مهلت تست ۲۴ ساعته به پایان رسید.")
-                        _licenseState.value = LicenseState.Expired("مهلت تست ۲۴ ساعته به پایان رسید.")
+                        _accessState.value = AppAccessState.Denied("مهلت تست 24 ساعته به پایان رسید.")
+                        _licenseState.value = LicenseState.Expired("مهلت تست 24 ساعته به پایان رسید.")
                     }
                 }
 
@@ -2082,7 +2082,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                             _isGracePeriodExpired.value = true
                             _isSubscribed.value = false
                             _isAdminAuthenticated.value = false
-                            _licenseState.value = LicenseState.ConnectionRequired("بیش از ۲۴ ساعت است که ارتباط با سرور قطع است. اطلاعات آفلاین حفظ شده و پس از اتصال مجدد باید دوباره وارد شوید.")
+                            _licenseState.value = LicenseState.ConnectionRequired("بیش از 24 ساعت است که ارتباط با سرور قطع است. اطلاعات آفلاین حفظ شده و پس از اتصال مجدد باید دوباره وارد شوید.")
                             encryptSetting("enc_auth_token", "")
                             encryptSetting("enc_manager_id", "")
                             SelfHostedManager.setManagerId("")
@@ -2572,7 +2572,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 // Calculate duration limit based on price
                 val hourlyRate = getHourlyRate(station.consoleType, station.controllerCount)
                 if (hourlyRate > 0L) {
-                    durationMinutes = ((prepayment / hourlyRate) * 60L).toInt()
+                    val exactMillis = exactPrepaymentDurationMillis(prepayment, hourlyRate, 0)
+                    durationMinutes = ((exactMillis + 59_999L) / 60_000L).coerceAtLeast(1L).toInt()
                 }
             }
 
@@ -2627,7 +2628,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             if (totalSum > 0L) {
                 val hourlyRate = getHourlyRate(station.consoleType, station.controllerCount)
                 if (hourlyRate > 0L) {
-                    durationMinutes = ((totalSum / hourlyRate) * 60L).toInt()
+                    val exactMillis = exactPrepaymentDurationMillis(totalSum, hourlyRate, 0)
+                    durationMinutes = ((exactMillis + 59_999L) / 60_000L).coerceAtLeast(1L).toInt()
                 }
             }
 
@@ -2649,7 +2651,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             if (prepaymentAmount > 0L) {
                 val hourlyRate = getHourlyRate(station.consoleType, station.controllerCount)
                 if (hourlyRate > 0L) {
-                    durationMinutes = ((prepaymentAmount / hourlyRate) * 60L).toInt()
+                    val exactMillis = exactPrepaymentDurationMillis(prepaymentAmount, hourlyRate, 0)
+                    durationMinutes = ((exactMillis + 59_999L) / 60_000L).coerceAtLeast(1L).toInt()
                 }
             }
             val updated = station.copy(
@@ -4369,7 +4372,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 _isAdminAuthenticated.value = false
                 _isServerConnected.value = false
                 _licenseState.value = LicenseState.ConnectionRequired(
-                    "برای بررسی اعتبار اشتراک تست ۲۴ ساعته، اتصال به سرور اعتبارسنجی الزامی است."
+                    "برای بررسی اعتبار اشتراک تست 24 ساعته، اتصال به سرور اعتبارسنجی الزامی است."
                 )
                 return
             }
@@ -4535,7 +4538,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 // Auto-logout user/manager due to 24h offline limit
                 android.util.Log.e("OfflineCheck", "Offline for more than 24 hours. Forcing logout.")
                 _isSubscribed.value = false
-                _licenseState.value = LicenseState.ConnectionRequired("بیش از ۲۴ ساعت است که ارتباط با سرور قطع است. جهت حفظ امنیت سیستم، باید مجددا لاگین کنید.")
+                _licenseState.value = LicenseState.ConnectionRequired("بیش از 24 ساعت است که ارتباط با سرور قطع است. جهت حفظ امنیت سیستم، باید مجددا لاگین کنید.")
                 
                 // Clear credentials to force relogin
                 encryptSetting("enc_auth_token", "")
@@ -4552,7 +4555,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             if (cachedPlan.isBlank() || (cachedPlan == "TRIAL" && (cachedExpireTime <= 0 || estimatedCurrentServerTime >= cachedExpireTime))) {
                 _isSubscribed.value = false
                 if (cachedPlan == "TRIAL" && cachedExpireTime > 0 && estimatedCurrentServerTime >= cachedExpireTime) {
-                    _licenseState.value = LicenseState.Expired("اشتراک تست ۲۴ ساعته شما به پایان رسیده است.")
+                    _licenseState.value = LicenseState.Expired("اشتراک تست 24 ساعته شما به پایان رسیده است.")
                 } else {
                     _licenseState.value = LicenseState.Unactivated("اطلاعات لایسنس بر روی این دستگاه یافت نشد. جهت فعال‌سازی اتصال به اینترنت الزامی است.")
                 }
@@ -4682,7 +4685,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             } catch (t: Throwable) {
                 Log.e("GameNetViewModel", "activateFreeTrial failed", t)
                 withContext(Dispatchers.Main) {
-                    onResult(false, "خطا در فعال‌سازی تست ۲۴ ساعته. اتصال به سرور الزامی است.")
+                    onResult(false, "خطا در فعال‌سازی تست 24 ساعته. اتصال به سرور الزامی است.")
                 }
             }
         }
@@ -5204,7 +5207,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         val cleanEmail = email?.trim()?.ifBlank { null }
 
         if (cleanUsername.length < 3) {
-            onResult(false, "نام کاربری باید حداقل ۳ کاراکتر باشد.")
+            onResult(false, "نام کاربری باید حداقل 3 کاراکتر باشد.")
             return
         }
         if (cleanPhone.isNullOrBlank() || cleanPhone.length < 10) {
@@ -5216,7 +5219,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         if (cleanPassword.length < 4) {
-            onResult(false, "رمز عبور باید حداقل ۴ کاراکتر باشد.")
+            onResult(false, "رمز عبور باید حداقل 4 کاراکتر باشد.")
             return
         }
 
@@ -5752,7 +5755,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                             gnChange = -finalGnPen,
                             lpChange = -finalLpPen,
                             appliedBy = "سیستم انضباطی خودکار",
-                            reason = "غیبت $absentDays روزه مشتری (عدم مراجعه بیش از ۲۰ روز)",
+                            reason = "غیبت $absentDays روزه مشتری (عدم مراجعه بیش از 20 روز)",
                             timestamp = now
                         )
                     )

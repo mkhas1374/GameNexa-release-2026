@@ -226,7 +226,7 @@ fun ChargeAccountSection(viewModel: GameNetViewModel) {
         OutlinedTextField(
             value = amountTomanText,
             onValueChange = { amountTomanText = it.filter { ch -> ch.isDigit() } },
-            label = { Text("مبلغ واریزی به تومان (مثال: ۵۰۰۰۰)") },
+            label = { Text("مبلغ واریزی به تومان (مثال: 50000)") },
             leadingIcon = { Icon(Icons.Default.AttachMoney, contentDescription = null) },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.fillMaxWidth(),
@@ -400,7 +400,7 @@ fun ChargeAccountSection(viewModel: GameNetViewModel) {
                     color = MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    text = "پس از واریز مبلغ، کد رهگیری ۴ یا ۶ رقمی را وارد کنید تا حساب شما فورا تایید و شارژ شود.",
+                    text = "پس از واریز مبلغ، کد رهگیری 4 یا 6 رقمی را وارد کنید تا حساب شما فورا تایید و شارژ شود.",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -408,7 +408,7 @@ fun ChargeAccountSection(viewModel: GameNetViewModel) {
                 OutlinedTextField(
                     value = trackingCodeText,
                     onValueChange = { trackingCodeText = it },
-                    label = { Text("کد پیگیری یا ۴ رقم آخر شماره کارت واریزی") },
+                    label = { Text("کد پیگیری یا 4 رقم آخر شماره کارت واریزی") },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
                     singleLine = true
@@ -563,7 +563,7 @@ fun BuyGnSection(viewModel: GameNetViewModel) {
                 Column {
                     Text("خرید اعتبار رسمی GN گیم‌نکسا", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     Text(
-                        text = "نرخ تبدیل: هر ۱ GN = ${formatter.format(effectiveRatio)} تومان",
+                        text = "نرخ تبدیل: هر 1 GN = ${formatter.format(effectiveRatio)} تومان",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold
@@ -639,8 +639,8 @@ fun BuyGnSection(viewModel: GameNetViewModel) {
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("۱ GN", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("۵۰۰ GN", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("1 GN", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("500 GN", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("${formatter.format(sliderMax.toLong())} GN", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
@@ -862,7 +862,7 @@ fun TransferGnSection(viewModel: GameNetViewModel) {
                     shape = RoundedCornerShape(8.dp),
                     color = MaterialTheme.colorScheme.surface
                 ) {
-                    Text("کارمزد: ۵٪", fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                    Text("کارمزد: 5٪", fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
                 }
             }
         }
@@ -928,7 +928,7 @@ fun TransferGnSection(viewModel: GameNetViewModel) {
                         Text("${formatter.format(amount)} GN", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("کارمزد انتقال شبکه (۵٪):", fontSize = 11.sp)
+                        Text("کارمزد انتقال شبکه (5٪):", fontSize = 11.sp)
                         Text("${formatter.format(feeAmount)} GN", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))

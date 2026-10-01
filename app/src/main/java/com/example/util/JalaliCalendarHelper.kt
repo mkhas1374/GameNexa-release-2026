@@ -22,14 +22,14 @@ object JalaliCalendarHelper {
         val minute = cal.get(Calendar.MINUTE)
 
         val jalali = gregorianToJalali(gYear, gMonth, gDay)
-        val yearStr = toPersianDigits(jalali[0].toString())
-        val monthStr = toPersianDigits(String.format(Locale.US, "%02d", jalali[1]))
-        val dayStr = toPersianDigits(String.format(Locale.US, "%02d", jalali[2]))
+        val yearStr = toEnglishDigits(jalali[0].toString())
+        val monthStr = toEnglishDigits(String.format(Locale.US, "%02d", jalali[1]))
+        val dayStr = toEnglishDigits(String.format(Locale.US, "%02d", jalali[2]))
 
         val dateStr = "$yearStr/$monthStr/$dayStr"
         if (!includeTime) return dateStr
 
-        val timeStr = toPersianDigits(String.format(Locale.US, "%02d:%02d", hour, minute))
+        val timeStr = toEnglishDigits(String.format(Locale.US, "%02d:%02d", hour, minute))
         return "$dateStr - ساعت $timeStr"
     }
 
@@ -46,11 +46,11 @@ object JalaliCalendarHelper {
 
     fun getPlanTitleFa(planType: String): String {
         return when (planType.uppercase()) {
-            "TRIAL" -> "اشتراک تست رایگان ۲۴ ساعته"
-            "MONTH1", "1_MONTH", "MONTHLY" -> "اشتراک ۱ ماهه"
-            "MONTH3", "3_MONTH", "SEASONAL" -> "اشتراک ۳ ماهه"
-            "MONTH6", "6_MONTH" -> "اشتراک ۶ ماهه"
-            "MONTH12", "12_MONTH", "YEARLY" -> "اشتراک ۱ ساله"
+            "TRIAL" -> "اشتراک تست رایگان 24 ساعته"
+            "MONTH1", "1_MONTH", "MONTHLY" -> "اشتراک 1 ماهه"
+            "MONTH3", "3_MONTH", "SEASONAL" -> "اشتراک 3 ماهه"
+            "MONTH6", "6_MONTH" -> "اشتراک 6 ماهه"
+            "MONTH12", "12_MONTH", "YEARLY" -> "اشتراک 1 ساله"
             "VIP" -> "اشتراک ویژه VIP"
             "SUPER_MANAGER" -> "مدیریت ارشد"
             "MANAGER" -> "مدیر سیستم"
@@ -102,15 +102,26 @@ object JalaliCalendarHelper {
         return intArrayOf(jy, jm, jd)
     }
 
-    fun toPersianDigits(input: String): String {
-        val persianNumbers = charArrayOf('۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹')
-        val englishNumbers = charArrayOf('0', '1', '2', '3', '4', '5', '6', '7', '8', '9')
-        var result = input
-        for (i in 0..9) {
-            result = result.replace(englishNumbers[i], persianNumbers[i])
+    fun toEnglishDigits(input: String): String = input.translateDigits()
+
+    // Kept for source compatibility with older callers; display output is now always Western digits.
+    fun toPersianDigits(input: String): String = input.translateDigits()
+
+    private fun String.translateDigits(): String = map { ch ->
+        when (ch) {
+            '۰', '٠' -> '0'
+            '۱', '١' -> '1'
+            '۲', '٢' -> '2'
+            '۳', '٣' -> '3'
+            '۴', '٤' -> '4'
+            '۵', '٥' -> '5'
+            '۶', '٦' -> '6'
+            '۷', '٧' -> '7'
+            '۸', '٨' -> '8'
+            '۹', '٩' -> '9'
+            else -> ch
         }
-        return result
-    }
+    }.joinToString("")
 
     fun formatRemainingTime(expiresAtMs: Long, serverNowMs: Long = System.currentTimeMillis()): String {
         if (expiresAtMs <= 0L || expiresAtMs >= Long.MAX_VALUE - (365L * 86400_000L)) return "اشتراک فعال"

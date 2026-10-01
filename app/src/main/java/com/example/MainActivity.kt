@@ -331,7 +331,7 @@ fun AppContent(viewModel: GameNetViewModel) {
         AlertDialog(
             onDismissRequest = { showTrialClubLockDialog = false },
             title = { Text(if (lang == "fa") "بخش قفل شده" else "Feature Locked", fontWeight = FontWeight.Bold) },
-            text = { Text(if (lang == "fa") "دسترسی به امکانات باشگاه مشتریان در نسخه آزمایشی ۲۴ ساعته قفل است. لطفاً جهت فعال‌سازی نامحدود، اشتراک تهیه نمایید." else "Access to Customer Club is locked in 24-hour trial mode. Please purchase a subscription for unlimited access.") },
+            text = { Text(if (lang == "fa") "دسترسی به امکانات باشگاه مشتریان در نسخه آزمایشی 24 ساعته قفل است. لطفاً جهت فعال‌سازی نامحدود، اشتراک تهیه نمایید." else "Access to Customer Club is locked in 24-hour trial mode. Please purchase a subscription for unlimited access.") },
             confirmButton = {
                 Button(onClick = {
                     showTrialClubLockDialog = false
@@ -396,7 +396,7 @@ fun AppContent(viewModel: GameNetViewModel) {
                         ) {
                             Text(
                                 text = when {
-                                    isTrialActive || currentAdminRole == "TRIAL_USER" -> if (lang == "fa") "نسخه تستی ۲۴ ساعته" else "24H Trial Mode"
+                                    isTrialActive || currentAdminRole == "TRIAL_USER" -> if (lang == "fa") "نسخه تستی 24 ساعته" else "24H Trial Mode"
                                     currentAdminRole == "SUPER_MANAGER" -> androidx.compose.ui.res.stringResource(R.string.role_super_manager)
                                     currentAdminRole == "GAMENET_MANAGER" || currentAdminRole == "MANAGER" -> androidx.compose.ui.res.stringResource(R.string.role_manager)
                                     else -> androidx.compose.ui.res.stringResource(R.string.role_deputy)
