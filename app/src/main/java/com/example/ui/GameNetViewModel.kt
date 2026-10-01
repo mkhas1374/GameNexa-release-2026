@@ -166,6 +166,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun queueOrSyncCustomerTransaction(transaction: CustomerTransaction) {
+        // Trial operational data is strictly local; never enqueue or transmit it.
+        if (NetworkClient.isTrialMode) return
         // Walk-in transactions have no customer row and are intentionally local-only.
         if (transaction.customerId <= 0L || transaction.id <= 0L) return
         val key = "customer_transaction_outbox_${transaction.id}"
