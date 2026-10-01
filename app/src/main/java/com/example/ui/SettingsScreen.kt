@@ -87,7 +87,7 @@ fun SettingsScreen(
             title = { Text(if (lang == "fa") "نسخه تست" else "Trial Version", fontWeight = FontWeight.Bold) },
             text = { Text(if (lang == "fa") "برای دسترسی به این بخش باید اشتراک معتبر تهیه کنید." else "You need a valid subscription to access this feature.") },
             confirmButton = {
-                Button(onClick = { 
+                Button(onClick = {
                     showTrialLockDialog = false
                     viewModel.logoutAdmin()
                 }) {
@@ -127,11 +127,11 @@ fun SettingsScreen(
                 lang = lang,
                 currentRole = currentAdminRole,
                 isTrialActive = isTrialUser,
-                onSelectSection = { 
+                onSelectSection = {
                     if (isTrialUser && it != SettingsSection.LANGUAGE && it != SettingsSection.THEME) {
                         showTrialLockDialog = true
                     } else {
-                        selectedSection = it 
+                        selectedSection = it
                     }
                 },
                 onOpenServerTest = { showDiagnosticsDialog = true }
@@ -365,9 +365,9 @@ fun SettingsMenuHub(
                     ) {
                         Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                         Text(
-                            text = if (lang == "fa") 
-                                "اکانت تست ۲۴ ساعته: در نسخه آزمایشی فقط دسترسی به تنظیمات زبان و تم مجاز است و سایر تنظیمات برای جلوگیری از تغییر پیکربندی سیستم قفل می‌باشند." 
-                            else 
+                            text = if (lang == "fa")
+                                "اکانت تست 24 ساعته: در نسخه آزمایشی فقط دسترسی به تنظیمات زبان و تم مجاز است و سایر تنظیمات برای جلوگیری از تغییر پیکربندی سیستم قفل می‌باشند."
+                            else
                                 "24h Trial Mode: Only Language and Theme settings are available. All configuration settings are locked.",
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.Medium,
@@ -847,7 +847,7 @@ fun BackupRestoreSubScreen(viewModel: GameNetViewModel, lang: String) {
                 }
 
                 Text(
-                    text = "سیستم به صورت خودکار هر روز ساعت ۳:۳۰ بامداد از پایگاه داده بکاپ تهیه می‌کند. شما همچنین می‌توانید به صورت دستی فایل پشتیبان JSON تهیه کرده یا فایل قبلی را بازیابی نمایید.",
+                    text = "سیستم به صورت خودکار هر روز ساعت 3:30 بامداد از پایگاه داده بکاپ تهیه می‌کند. شما همچنین می‌توانید به صورت دستی فایل پشتیبان JSON تهیه کرده یا فایل قبلی را بازیابی نمایید.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 20.sp
@@ -1385,7 +1385,7 @@ fun DeviceConfigSubScreen(viewModel: GameNetViewModel, lang: String) {
                         OutlinedTextField(
                             value = p1Input,
                             onValueChange = { p1Input = it },
-                            label = { Text("۱ دسته (تومان)", fontSize = 10.sp) },
+                            label = { Text("1 دسته (تومان)", fontSize = 10.sp) },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
                             modifier = Modifier.weight(1f),
@@ -1394,7 +1394,7 @@ fun DeviceConfigSubScreen(viewModel: GameNetViewModel, lang: String) {
                         OutlinedTextField(
                             value = p2Input,
                             onValueChange = { p2Input = it },
-                            label = { Text("۲ دسته (تومان)", fontSize = 10.sp) },
+                            label = { Text("2 دسته (تومان)", fontSize = 10.sp) },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
                             modifier = Modifier.weight(1f),
@@ -1406,7 +1406,7 @@ fun DeviceConfigSubScreen(viewModel: GameNetViewModel, lang: String) {
                         OutlinedTextField(
                             value = p3Input,
                             onValueChange = { p3Input = it },
-                            label = { Text("۳ دسته (تومان)", fontSize = 10.sp) },
+                            label = { Text("3 دسته (تومان)", fontSize = 10.sp) },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
                             modifier = Modifier.weight(1f),
@@ -1415,7 +1415,7 @@ fun DeviceConfigSubScreen(viewModel: GameNetViewModel, lang: String) {
                         OutlinedTextField(
                             value = p4Input,
                             onValueChange = { p4Input = it },
-                            label = { Text("۴ دسته (تومان)", fontSize = 10.sp) },
+                            label = { Text("4 دسته (تومان)", fontSize = 10.sp) },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
                             modifier = Modifier.weight(1f),
@@ -1803,7 +1803,7 @@ fun PaymentMethodsSubScreen(viewModel: GameNetViewModel, lang: String) {
                 OutlinedTextField(
                     value = cardNumberInput,
                     onValueChange = { cardNumberInput = it },
-                    label = { Text("شماره کارت ۱۶ رقمی") },
+                    label = { Text("شماره کارت 16 رقمی") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -2093,7 +2093,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                 Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(imageVector = Icons.Default.Timer, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
                     Spacer(modifier = Modifier.width(16.dp))
-                    Text(text = if (lang == "fa") "مدیریت تست ۲۴ ساعته" else "24h Trial Management", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    Text(text = if (lang == "fa") "مدیریت تست 24 ساعته" else "24h Trial Management", fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -2103,7 +2103,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
         var phone by remember { mutableStateOf("") }
         var gameneName by remember { mutableStateOf("") }
         var password by remember { mutableStateOf("") }
-        var planType by remember { mutableStateOf("۱ ماهه") }
+        var planType by remember { mutableStateOf("1 ماهه") }
         var durationDays by remember { mutableStateOf("30") }
         var maxDevices by remember { mutableStateOf("1") }
         var paymentAmount by remember { mutableStateOf("0") }
@@ -2123,7 +2123,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                     fontWeight = FontWeight.Bold
                 )
             }
-            
+
             if (createdLicenseCode != null) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = Color(0xFF10B981).copy(alpha = 0.1f)),
@@ -2148,18 +2148,18 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                 OutlinedTextField(value = gameneName, onValueChange = { gameneName = it }, label = { Text("نام گیم نت") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text("شماره موبایل (نام کاربری)") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
                 OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("رمز عبور") }, modifier = Modifier.fillMaxWidth())
-                
+
                 Spacer(Modifier.height(8.dp))
                 Text("نوع پلن:")
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    listOf("۱ ماهه", "۳ ماهه", "۱۲ ماهه").forEach { plan ->
+                    listOf("1 ماهه", "3 ماهه", "12 ماهه").forEach { plan ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             RadioButton(selected = planType == plan, onClick = {
                                 planType = plan
                                 durationDays = when(plan) {
-                                    "۱ ماهه" -> "30"
-                                    "۳ ماهه" -> "90"
-                                    "۱۲ ماهه" -> "365"
+                                    "1 ماهه" -> "30"
+                                    "3 ماهه" -> "90"
+                                    "12 ماهه" -> "365"
                                     else -> durationDays
                                 }
                             })
@@ -2174,7 +2174,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 OutlinedTextField(value = maxDevices, onValueChange = { maxDevices = it }, label = { Text("تعداد دستگاه مجاز") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                
+
                 Spacer(Modifier.height(16.dp))
                 Button(
                     onClick = {
@@ -2189,7 +2189,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                             phone = phone,
                             pass = password,
                             planType = planType,
-                            durationDays = when(planType) { "۱ ماهه" -> 30; "۳ ماهه" -> 90; "۱۲ ماهه" -> 365; "وی ای پی" -> 365; else -> durationDays.toIntOrNull() ?: 30 },
+                            durationDays = when(planType) { "1 ماهه" -> 30; "3 ماهه" -> 90; "12 ماهه" -> 365; "وی ای پی" -> 365; else -> durationDays.toIntOrNull() ?: 30 },
                             maxDevices = maxDevices.toIntOrNull() ?: 1,
                             paymentAmount = 0L,
                             paymentStatus = "PAID",
@@ -2229,7 +2229,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                     fontWeight = FontWeight.Bold
                 )
             }
-            
+
             // Stats Card for Managers
             Card(
                 modifier = Modifier
@@ -2266,7 +2266,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                     )
                 }
             }
-            
+
             var filterState by remember { mutableStateOf("ALL") }
             var searchQuery by remember { mutableStateOf("") }
             var showPurgeConfirmDialog by remember { mutableStateOf(false) }
@@ -2372,7 +2372,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 singleLine = true
             )
-            
+
             val currentAdminRole by viewModel.currentAdminRole.collectAsState()
             val isCurrentAdminSuper = currentAdminRole == "SUPER_MANAGER" || currentAdminRole == "GAMENET_MANAGER"
 
@@ -2394,7 +2394,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                 }
                 matchesFilter && matchesSearch
             }
-            
+
             var selectedManagerForDetails by remember { mutableStateOf<com.example.data.network.AdminManagerDto?>(null) }
 
             if (selectedManagerForDetails != null) {
@@ -2634,18 +2634,18 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                     }
                 )
             }
-            
+
             var managerToEdit by remember { mutableStateOf<com.example.data.network.AdminManagerDto?>(null) }
             var managerToDelete by remember { mutableStateOf<com.example.data.network.AdminManagerDto?>(null) }
-            
+
             if (managerToEdit != null) {
                 var editName by remember { mutableStateOf(managerToEdit!!.fullName ?: managerToEdit!!.name ?: "") }
                 var editGameNet by remember { mutableStateOf(managerToEdit!!.gameNetName ?: "") }
-                var editPlan by remember { mutableStateOf(managerToEdit!!.planType ?: "۱ ماهه") }
+                var editPlan by remember { mutableStateOf(managerToEdit!!.planType ?: "1 ماهه") }
                 var editPass by remember { mutableStateOf("") }
                 val context = LocalContext.current
                 var isEditing by remember { mutableStateOf(false) }
-                
+
                 AlertDialog(
                     onDismissRequest = { managerToEdit = null },
                     title = { Text("ویرایش مدیر") },
@@ -2688,7 +2688,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                     }
                 )
             }
-            
+
             if (managerToDelete != null) {
                 val context = LocalContext.current
                 var isDeleting by remember { mutableStateOf(false) }
@@ -2745,7 +2745,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                         var isExpanded by remember { mutableStateOf(false) }
                         val isStatusActive = manager.status?.equals("active", ignoreCase = true) == true
                         val statusBg = if (isStatusActive) Color(0xFF10B981) else Color(0xFFF59E0B)
-                        
+
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -2811,7 +2811,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                                         verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), thickness = 0.6.dp)
-                                        
+
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
                                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -2835,7 +2835,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                                             ) {
                                                 Text("جزئیات بیشتر", fontSize = 11.sp)
                                             }
-                                            
+
                                             Spacer(Modifier.width(8.dp))
 
                                             OutlinedButton(
@@ -2849,7 +2849,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                                             }
 
                                             Spacer(Modifier.width(8.dp))
-                                            
+
                                             Button(
                                                 onClick = { managerToDelete = manager },
                                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
@@ -2881,7 +2881,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                         Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                     Text(
-                        text = if (lang == "fa") "مدیریت تست ۲۴ ساعته" else "24h Trial Management",
+                        text = if (lang == "fa") "مدیریت تست 24 ساعته" else "24h Trial Management",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -2890,11 +2890,11 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                     Icon(imageVector = Icons.Default.Refresh, contentDescription = "Refresh", tint = MaterialTheme.colorScheme.primary)
                 }
             }
-            
+
             val context = LocalContext.current
             val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
             val deviceTrials by viewModel.deviceTrials.collectAsState()
-            
+
             // Stats Card for Trial Devices
             Card(
                 modifier = Modifier
@@ -2910,7 +2910,7 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                 ) {
                     Column {
                         Text(
-                            text = "تست‌های ۲۴ ساعته فعال",
+                            text = "تست‌های 24 ساعته فعال",
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -2932,17 +2932,17 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
             }
 
             var showResetDialog by remember { mutableStateOf<com.example.data.network.DeviceTrialDto?>(null) }
-            
+
             LaunchedEffect(Unit) {
                 viewModel.fetchDeviceTrials()
             }
-            
+
             if (showResetDialog != null) {
                 androidx.compose.material3.AlertDialog(
                     onDismissRequest = { showResetDialog = null },
                     title = { Text(if (lang == "fa") "تمدید اشتراک تستی" else "Extend Trial") },
                     text = {
-                        Text(if (lang == "fa") "آیا مطمئن هستید که می‌خواهید اشتراک تستی این دستگاه را ۲۴ ساعت دیگر تمدید کنید؟" else "Are you sure you want to extend this trial by 24 hours?")
+                        Text(if (lang == "fa") "آیا مطمئن هستید که می‌خواهید اشتراک تستی این دستگاه را 24 ساعت دیگر تمدید کنید؟" else "Are you sure you want to extend this trial by 24 hours?")
                     },
                     confirmButton = {
                         Button(onClick = {
@@ -3144,13 +3144,13 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
                     }
                 }
             }
-                                
+
             Spacer(modifier = Modifier.height(16.dp))
-                                
+
             Button(
                 onClick = {
                     viewModel.resetCurrentDeviceTrial()
-                    Toast.makeText(context, if (lang == "fa") "دسترسی تست ۲۴ ساعته برای این دستگاه ریست شد!" else "Trial reset successfully!", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, if (lang == "fa") "دسترسی تست 24 ساعته برای این دستگاه ریست شد!" else "Trial reset successfully!", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444))
@@ -3255,9 +3255,9 @@ private fun SubscriptionPlansAdminSubScreen(
             Text(if (lang == "fa") "هر گزینه را لمس کنید تا تنظیمات همان بخش باز شود." else "Tap an item to open its settings.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             listOf(
                 "page" to if (lang == "fa") "متن و ظاهر صفحه خرید" else "Purchase page texts",
-                "MONTHLY" to if (lang == "fa") "پلن ۱ ماهه" else "1 Month Plan",
-                "THREE_MONTHS" to if (lang == "fa") "پلن ۳ ماهه" else "3 Month Plan",
-                "YEARLY" to if (lang == "fa") "پلن ۱ ساله" else "1 Year Plan"
+                "MONTHLY" to if (lang == "fa") "پلن 1 ماهه" else "1 Month Plan",
+                "THREE_MONTHS" to if (lang == "fa") "پلن 3 ماهه" else "3 Month Plan",
+                "YEARLY" to if (lang == "fa") "پلن 1 ساله" else "1 Year Plan"
             ).forEach { (key, title) ->
                 Card(Modifier.fillMaxWidth().clickable { selectedSubscriptionSection = key }) {
                     Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {

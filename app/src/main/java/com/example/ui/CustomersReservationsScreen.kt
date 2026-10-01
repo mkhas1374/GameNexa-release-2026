@@ -93,14 +93,14 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
             onDismissRequest = { showTrialLimitDialog = false },
             title = {
                 Text(
-                    text = if (lang == "fa") "محدودیت نسخه آزمایشی ۲۴ ساعته" else "24H Trial Limitation",
+                    text = if (lang == "fa") "محدودیت نسخه آزمایشی 24 ساعته" else "24H Trial Limitation",
                     fontWeight = FontWeight.Bold
                 )
             },
             text = {
                 Text(
                     text = if (lang == "fa")
-                        "در نسخه تست ۲۴ ساعته، امکانات مدیریت مخاطبین و رزروها محدود به ۴ مخاطب لوکال تستی است و امکان تغییر یا ثبت داده جدید وجود ندارد. لطفاً جهت استفاده نامحدود از تمام امکانات، اشتراک تهیه نمایید."
+                        "در نسخه تست 24 ساعته، امکانات مدیریت مخاطبین و رزروها محدود به 4 مخاطب لوکال تستی است و امکان تغییر یا ثبت داده جدید وجود ندارد. لطفاً جهت استفاده نامحدود از تمام امکانات، اشتراک تهیه نمایید."
                     else
                         "In 24-hour trial mode, customer management and reservations are restricted to 4 local test contacts. Please purchase a subscription for full unlimited access."
                 )
@@ -140,7 +140,7 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
                     )
                     Text(
                         text = if (lang == "fa")
-                            "نسخه تست ۲۴ ساعته: دسترسی فقط محدود به ۴ مخاطب لوکال تستی جهت بررسی سیستم می‌باشد."
+                            "نسخه تست 24 ساعته: دسترسی فقط محدود به 4 مخاطب لوکال تستی جهت بررسی سیستم می‌باشد."
                         else
                             "24H Trial Mode: Access is restricted to 4 local test contacts for evaluation.",
                         style = MaterialTheme.typography.bodySmall,
@@ -2383,7 +2383,7 @@ fun ReservationCard(
                     modifier = Modifier.size(14.dp)
                 )
                 Text(
-                    text = if (lang == "fa") "هشدارهای نیم ساعت، ۱۵ دقیقه و ۵ دقیقه قبل فعال است" else "30m, 15m, and 5m alarms are scheduled",
+                    text = if (lang == "fa") "هشدارهای نیم ساعت، 15 دقیقه و 5 دقیقه قبل فعال است" else "30m, 15m, and 5m alarms are scheduled",
                     style = MaterialTheme.typography.labelSmall,
                     fontSize = 9.sp
                 )

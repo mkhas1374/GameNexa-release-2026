@@ -63,7 +63,7 @@
     <string name="section_backup_desc">ذخیره و بازیابی اطلاعات گیم‌نت</string>
     <string name="section_managers_title">فروش و مدیریت مدیران</string>
     <string name="section_managers_desc">ایجاد پنل مدیر و مدیریت دسترسی‌ها</string>
-    <string name="section_trial_title">مدیریت تست ۲۴ ساعته</string>
+    <string name="section_trial_title">مدیریت تست 24 ساعته</string>
     <string name="section_trial_desc">بررسی و ریست زمان تست دستگاه‌ها</string>
     <string name="section_analytics_title">آمار و تحلیل مالی</string>
     <string name="section_analytics_desc">درآمد روزانه، ماهانه و گزارش عملکرد</string>
@@ -124,7 +124,7 @@
     <string name="ext_search_33">جستجو...</string>
     <string name="ext_delete_customer_34">حذف مشتری</string>
     <string name="ext_min_35">دقیقه</string>
-    <string name="ext_30m_15m_and_5m_alarms_are_sche_36">آلارم‌های ۳۰، ۱۵ و ۵ دقیقه تنظیم شده‌اند</string>
+    <string name="ext_30m_15m_and_5m_alarms_are_sche_36">آلارم‌های 30، 15 و 5 دقیقه تنظیم شده‌اند</string>
     <string name="ext_delete_reservation_37">حذف رزرو</string>
     <string name="ext_edit_customer_38">ویرایش مشتری</string>
     <string name="ext_yy_39">سال</string>
@@ -150,7 +150,7 @@
     <string name="ext_manager_sales_59">فروش مدیران</string>
     <string name="ext_create_manager_panel_60">ایجاد پنل مدیر</string>
     <string name="ext_access_to_current_managers_61">دسترسی به مدیران فعلی</string>
-    <string name="ext_24h_trial_management_62">مدیریت تست ۲۴ ساعته</string>
+    <string name="ext_24h_trial_management_62">مدیریت تست 24 ساعته</string>
     <string name="ext_create_manager_panel_63">ایجاد پنل مدیر</string>
     <string name="ext_register_manager_64">ثبت مدیر</string>
     <string name="ext_current_managers_65">مدیران فعلی</string>
@@ -159,7 +159,7 @@
     <string name="ext_active_68">فعال</string>
     <string name="ext_search_name_user_gamenet_69">جستجوی نام، کاربر، گیم‌نت...</string>
     <string name="ext_no_managers_found_70">هیچ مدیری یافت نشد.</string>
-    <string name="ext_24h_trial_management_71">مدیریت تست ۲۴ ساعته</string>
+    <string name="ext_24h_trial_management_71">مدیریت تست 24 ساعته</string>
     <string name="ext_reset_trial_time_72">ریست زمان تست</string>
     <string name="ext_yes_reset_73">بله، ریست شود</string>
     <string name="ext_cancel_74">انصراف</string>
@@ -171,8 +171,8 @@
     <string name="ext_business_analytics_80">تحلیل کسب‌وکار</string>
     <string name="ext_reset_data_81">ریست داده‌ها</string>
     <string name="ext_average_monthly_income_82">میانگین درآمد ماهانه</string>
-    <string name="ext_30_days_ago_83">۳۰ روز پیش</string>
-    <string name="ext_15_days_ago_84">۱۵ روز پیش</string>
+    <string name="ext_30_days_ago_83">30 روز پیش</string>
+    <string name="ext_15_days_ago_84">15 روز پیش</string>
     <string name="ext_today_85">امروز</string>
     <string name="ext_no_data_available_86">داده‌ای موجود نیست.</string>
 </resources>

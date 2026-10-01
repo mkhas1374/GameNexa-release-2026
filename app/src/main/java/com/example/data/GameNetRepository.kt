@@ -698,10 +698,10 @@ class GameNetRepository(private val db: AppDatabase) {
         // Trial customer state lives in Room and survives process recreation/reload.
         if (customerDao.getAllList().isEmpty()) {
             customerDao.insertAll(listOf(
-                Customer(id = 1L, fullName = "مشتری تستی ۱", phoneNumber = "09120000001", description = "__GN_TRIAL_TEST_CONTACT__"),
-                Customer(id = 2L, fullName = "مشتری تستی ۲", phoneNumber = "09120000002", credit = 50000L, description = "__GN_TRIAL_TEST_CONTACT__"),
-                Customer(id = 3L, fullName = "مشتری تستی ۳", phoneNumber = "09120000003", debt = 35000L, description = "__GN_TRIAL_TEST_CONTACT__"),
-                Customer(id = 4L, fullName = "مشتری تستی ۴", phoneNumber = "09120000004", description = "__GN_TRIAL_TEST_CONTACT__")
+                Customer(id = 1L, fullName = "مشتری تستی 1", phoneNumber = "09120000001", description = "__GN_TRIAL_TEST_CONTACT__"),
+                Customer(id = 2L, fullName = "مشتری تستی 2", phoneNumber = "09120000002", credit = 50000L, description = "__GN_TRIAL_TEST_CONTACT__"),
+                Customer(id = 3L, fullName = "مشتری تستی 3", phoneNumber = "09120000003", debt = 35000L, description = "__GN_TRIAL_TEST_CONTACT__"),
+                Customer(id = 4L, fullName = "مشتری تستی 4", phoneNumber = "09120000004", description = "__GN_TRIAL_TEST_CONTACT__")
             ))
         }
     }
@@ -1001,7 +1001,7 @@ class GameNetRepository(private val db: AppDatabase) {
             put("gameneName", req.gameneName)
             put("gameNetName", req.gameneName)
             put("password", req.password)
-            put("plan_name", if (req.planType.isNotBlank()) req.planType else "پلن ۳ ماهه")
+            put("plan_name", if (req.planType.isNotBlank()) req.planType else "پلن 3 ماهه")
             put("planType", req.planType)
             put("plan_type", req.planType)
             put("amount_paid", req.paymentAmount.toLong())

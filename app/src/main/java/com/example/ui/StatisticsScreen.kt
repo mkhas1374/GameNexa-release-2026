@@ -237,8 +237,8 @@ fun StatisticsScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text(text = if (lang == "fa") "۳۰ روز پیش" else "30 days ago", style = MaterialTheme.typography.labelSmall, color = labelColor)
-                            Text(text = if (lang == "fa") "۱۵ روز پیش" else "15 days ago", style = MaterialTheme.typography.labelSmall, color = labelColor)
+                            Text(text = if (lang == "fa") "30 روز پیش" else "30 days ago", style = MaterialTheme.typography.labelSmall, color = labelColor)
+                            Text(text = if (lang == "fa") "15 روز پیش" else "15 days ago", style = MaterialTheme.typography.labelSmall, color = labelColor)
                             Text(text = if (lang == "fa") "امروز" else "Today", style = MaterialTheme.typography.labelSmall, color = labelColor, fontWeight = FontWeight.Bold)
                         }
                     }

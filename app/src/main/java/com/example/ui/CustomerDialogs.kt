@@ -406,7 +406,7 @@ fun SaveGuestAsCustomerDialog(
                     value = phoneNumber,
                     onValueChange = { phoneNumber = it },
                     label = { Text("شماره تماس (اختیاری)", fontSize = 11.sp) },
-                    placeholder = { Text("۰۹۱۲...", fontSize = 11.sp) },
+                    placeholder = { Text("0912...", fontSize = 11.sp) },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(8.dp),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
@@ -1006,7 +1006,7 @@ fun StationPauseDialog(
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                     Text(
-                        text = "انتخاب مخاطب/مخاطبانی که هزینه این بخش بر عهده آن‌هاست (۱، ۲ یا چند نفر):",
+                        text = "انتخاب مخاطب/مخاطبانی که هزینه این بخش بر عهده آن‌هاست (1، 2 یا چند نفر):",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary

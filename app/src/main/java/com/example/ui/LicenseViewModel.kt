@@ -68,12 +68,12 @@ class LicenseViewModel(application: Application) : AndroidViewModel(application)
         if (expiresAt == null) return
         val delayMs = expiresAt - System.currentTimeMillis()
         if (delayMs <= 0) {
-            _accessState.value = AppAccessState.Denied("مهلت تست ۲۴ ساعته به پایان رسید.")
+            _accessState.value = AppAccessState.Denied("مهلت تست 24 ساعته به پایان رسید.")
             return
         }
         expirationJob = viewModelScope.launch(Dispatchers.Main) {
             delay(delayMs)
-            _accessState.value = AppAccessState.Denied("مهلت تست ۲۴ ساعته به پایان رسید.")
+            _accessState.value = AppAccessState.Denied("مهلت تست 24 ساعته به پایان رسید.")
         }
     }
 
@@ -97,7 +97,7 @@ class LicenseViewModel(application: Application) : AndroidViewModel(application)
 
                 if (trialCheck.isExpired) {
                     _accessState.value = AppAccessState.Denied(
-                        trialCheck.responseMessage.ifBlank { "مهلت تست ۲۴ ساعته به پایان رسید." }
+                        trialCheck.responseMessage.ifBlank { "مهلت تست 24 ساعته به پایان رسید." }
                     )
                 } else {
                     val serverNow = trialCheck.serverTime ?: System.currentTimeMillis()

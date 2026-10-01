@@ -346,7 +346,7 @@ fun AuthDialog(
                     Button(
                         onClick = {
                             if (regUsername.trim().length < 3) {
-                                localErrorMessage = if (isFa) "نام کاربری باید حداقل ۳ کاراکتر باشد." else "Username must be at least 3 characters."
+                                localErrorMessage = if (isFa) "نام کاربری باید حداقل 3 کاراکتر باشد." else "Username must be at least 3 characters."
                                 return@Button
                             }
                             if (regPhone.trim().isBlank() || regPhone.trim().length < 10) {
@@ -358,7 +358,7 @@ fun AuthDialog(
                                 return@Button
                             }
                             if (regPassword.trim().length < 4) {
-                                localErrorMessage = if (isFa) "رمز عبور باید حداقل ۴ کاراکتر باشد." else "Password must be at least 4 characters."
+                                localErrorMessage = if (isFa) "رمز عبور باید حداقل 4 کاراکتر باشد." else "Password must be at least 4 characters."
                                 return@Button
                             }
                             if (regPassword != regConfirmPassword) {

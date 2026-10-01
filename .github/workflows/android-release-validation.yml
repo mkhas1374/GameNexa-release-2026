@@ -53,25 +53,33 @@ jobs:
       - name: Build Debug APK
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: Create ephemeral CI release keystore
-        run: |
-          keytool -genkeypair -v \
-            -keystore "$RUNNER_TEMP/gamenexa-ci-release.jks" \
-            -storepass gamenexa-ci-store \
-            -keypass gamenexa-ci-store \
-            -alias gamenexa-ci \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 3650 \
-            -dname "CN=GameNexa CI Validation, OU=Build, O=GameNexa, C=XX"
-
-      - name: Build Release AAB with ephemeral validation signing
+      - name: Require stable release signing credentials
         env:
-          GAMENEXA_KEYSTORE_PATH: ${{ runner.temp }}/gamenexa-ci-release.jks
-          GAMENEXA_STORE_PASSWORD: gamenexa-ci-store
-          GAMENEXA_KEY_ALIAS: gamenexa-ci
-          GAMENEXA_KEY_PASSWORD: gamenexa-ci-store
-        run: ./gradlew bundleRelease --stacktrace
+          GAMENEXA_RELEASE_KEYSTORE_BASE64: ${{ secrets.GAMENEXA_RELEASE_KEYSTORE_BASE64 }}
+          GAMENEXA_STORE_PASSWORD: ${{ secrets.GAMENEXA_STORE_PASSWORD }}
+          GAMENEXA_KEY_ALIAS: ${{ secrets.GAMENEXA_KEY_ALIAS }}
+          GAMENEXA_KEY_PASSWORD: ${{ secrets.GAMENEXA_KEY_PASSWORD }}
+        run: |
+          test -n "$GAMENEXA_RELEASE_KEYSTORE_BASE64" || { echo "::error::Stable release keystore secret is not configured. Refusing to create another ephemeral signing key because Trial identity depends on a stable app signing key."; exit 1; }
+          test -n "$GAMENEXA_STORE_PASSWORD" || { echo "::error::GAMENEXA_STORE_PASSWORD is missing."; exit 1; }
+          test -n "$GAMENEXA_KEY_ALIAS" || { echo "::error::GAMENEXA_KEY_ALIAS is missing."; exit 1; }
+          test -n "$GAMENEXA_KEY_PASSWORD" || { echo "::error::GAMENEXA_KEY_PASSWORD is missing."; exit 1; }
+
+      - name: Restore stable release keystore
+        env:
+          GAMENEXA_RELEASE_KEYSTORE_BASE64: ${{ secrets.GAMENEXA_RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          echo "$GAMENEXA_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/gamenexa-release.jks"
+          test -s "$RUNNER_TEMP/gamenexa-release.jks"
+
+      - name: Build signed Release APK and AAB with stable signing
+        env:
+          GAMENEXA_KEYSTORE_PATH: ${{ runner.temp }}/gamenexa-release.jks
+          GAMENEXA_STORE_PASSWORD: ${{ secrets.GAMENEXA_STORE_PASSWORD }}
+          GAMENEXA_KEY_ALIAS: ${{ secrets.GAMENEXA_KEY_ALIAS }}
+          GAMENEXA_KEY_PASSWORD: ${{ secrets.GAMENEXA_KEY_PASSWORD }}
+        run: |
+          ./gradlew assembleRelease bundleRelease --stacktrace
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
@@ -81,10 +89,18 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      - name: Upload Release Validation AAB
+      - name: Upload Stable Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: GameNexa-release-validation-aab
+          name: GameNexa-release-apk
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload Stable Release AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameNexa-release-aab
           path: app/build/outputs/bundle/release/*.aab
           if-no-files-found: error
           retention-days: 3

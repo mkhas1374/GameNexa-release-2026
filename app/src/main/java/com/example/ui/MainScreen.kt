@@ -37,6 +37,7 @@ import java.text.SimpleDateFormat
 import java.math.BigDecimal
 import java.math.RoundingMode
 import com.example.util.ExactBilling
+import com.example.utils.NumberConverter
 import androidx.compose.ui.platform.LocalFocusManager
 import com.example.util.JalaliCalendarHelper
 import androidx.compose.ui.platform.testTag
@@ -405,9 +406,10 @@ fun StationCard(
     val segmentsCostExact = remember(station.segmentsJson) {
         station.getSegmentsList().fold(BigDecimal.ZERO) { acc, segment -> acc.add(BigDecimal.valueOf(segment.cost)) }
     }
-    val gameCostExact = remember(isCountdown, station.prepaymentAmount, overtimeCost, currentElapsedMs, hourlyRate, segmentsCostExact) {
+    val gameCostExact = remember(isCountdown, station.prepaymentAmount, overtimeCost, elapsedMillis, currentElapsedMs, hourlyRate, segmentsCostExact) {
         if (isCountdown) {
-            BigDecimal.valueOf(station.prepaymentAmount).add(overtimeCost)
+            // Prepayment is a credit, not an already-consumed cost. Consume it live by exact active time.
+            ExactBilling.costForMillis(hourlyRate, elapsedMillis)
         } else {
             segmentsCostExact.add(ExactBilling.costForMillis(hourlyRate, currentElapsedMs))
         }
@@ -889,7 +891,7 @@ fun StationCard(
                             BasicTextField(
                                 value = payInput,
                                 onValueChange = { value ->
-                                    payInput = value.filter(Char::isDigit)
+                                    payInput = NumberConverter.toEnglishDigits(value).filter(Char::isDigit)
                                     if (payInput.isNotEmpty() && hourlyRate > 0L) {
                                         val millis = exactPrepaymentDurationMillis(payInput.toLongOrNull() ?: 0L, hourlyRate, 0)
                                         durationInput = (millis / 60000L).toString()
@@ -912,7 +914,7 @@ fun StationCard(
                             BasicTextField(
                                 value = durationInput,
                                 onValueChange = { value ->
-                                    durationInput = value.filter(Char::isDigit)
+                                    durationInput = NumberConverter.toEnglishDigits(value).filter(Char::isDigit)
                                     val minutes = durationInput.toLongOrNull() ?: 0L
                                     if (minutes > 0L && hourlyRate > 0L) {
                                         payInput = BigDecimal.valueOf(hourlyRate).multiply(BigDecimal.valueOf(minutes))
@@ -1099,9 +1101,11 @@ fun StationCard(
                 val prepayment = station.prepaymentAmount
                 val hasPrepayment = prepayment > 0
                 val prepaymentExact = BigDecimal.valueOf(prepayment)
-                val isOverPrepayment = hasPrepayment && totalCostExact > prepaymentExact
-                val surplusAmountExact = if (isOverPrepayment) totalCostExact.subtract(prepaymentExact) else BigDecimal.ZERO
-                val remainingPrepayExact = if (hasPrepayment && totalCostExact <= prepaymentExact) prepaymentExact.subtract(totalCostExact) else BigDecimal.ZERO
+                // Buffet is separate from prepaid station time. Only game time consumes the initial payment.
+                val consumedGameCostExact = gameCostExact
+                val isOverPrepayment = hasPrepayment && consumedGameCostExact > prepaymentExact
+                val surplusAmountExact = if (isOverPrepayment) consumedGameCostExact.subtract(prepaymentExact) else BigDecimal.ZERO
+                val remainingPrepayExact = if (hasPrepayment) prepaymentExact.subtract(consumedGameCostExact).max(BigDecimal.ZERO) else BigDecimal.ZERO
                 val surplusAmount = surplusAmountExact.toLong()
                 val remainingPrepay = remainingPrepayExact.toLong()
 
@@ -1954,17 +1958,17 @@ fun SubscriptionWarningBanner(
                 val planUpper = planType.uppercase()
                 val is1Year = planUpper.contains("1_YEAR") || planUpper.contains("YEAR1") ||
                               planUpper.contains("12_MONTH") || planUpper.contains("YEAR") ||
-                              planType.contains("۱۲ ماهه") || planType.contains("12 ماهه") ||
-                              planType.contains("۱ ساله") || planType.contains("1 ساله") ||
+                              planType.contains("12 ماهه") || planType.contains("12 ماهه") ||
+                              planType.contains("1 ساله") || planType.contains("1 ساله") ||
                               planUpper.contains("VIP") || planType.contains("وی ای پی")
 
                 val is3Months = planUpper.contains("3_MONTH") || planUpper.contains("MONTH3") ||
                                 planUpper.contains("90_DAYS") || planUpper.contains("QUARTER") ||
-                                planType.contains("۳ ماهه") || planType.contains("3 ماهه")
+                                planType.contains("3 ماهه") || planType.contains("3 ماهه")
 
                 val is1Month = planUpper.contains("1_MONTH") || planUpper.contains("MONTH1") ||
                                planUpper.contains("30_DAYS") || planUpper.contains("MONTH") ||
-                               planType.contains("۱ ماهه") || planType.contains("1 ماهه")
+                               planType.contains("1 ماهه") || planType.contains("1 ماهه")
 
                 val warningThresholdMs = when {
                     is1Year -> 30L * 86400_000L
@@ -2003,7 +2007,7 @@ fun SubscriptionWarningBanner(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = if (lang == "fa") "نسخه تست ۲۴ ساعته (محدود به ۲ جایگاه)" else "24h Trial Version (Limited to 2 stations)",
+                    text = if (lang == "fa") "نسخه تست 24 ساعته (محدود به 2 جایگاه)" else "24h Trial Version (Limited to 2 stations)",
                     color = Color.White,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold

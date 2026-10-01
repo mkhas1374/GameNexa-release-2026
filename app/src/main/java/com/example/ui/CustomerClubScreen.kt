@@ -132,7 +132,7 @@ fun CustomerClubScreen(
     if (showTrialLockDialog) {
         AlertDialog(
             onDismissRequest = { showTrialLockDialog = false },
-            title = { Text(if (lang == "fa") "نسخه آزمایشی ۲۴ ساعته" else "24h Trial Version", fontWeight = FontWeight.Bold) },
+            title = { Text(if (lang == "fa") "نسخه آزمایشی 24 ساعته" else "24h Trial Version", fontWeight = FontWeight.Bold) },
             text = { Text(if (lang == "fa") "امکانات باشگاه مشتریان در نسخه آزمایشی قفل است. لطفاً اشتراک تهیه فرمایید." else "Customer Club features are locked in trial mode. Please purchase a subscription.") },
             confirmButton = {
                 Button(onClick = { 
@@ -205,7 +205,7 @@ fun CustomerClubScreen(
 
                         Text(
                             text = if (lang == "fa") 
-                                "تمامی امکانات باشگاه مشتریان شامل سطوح عضویت، تخفیف‌های وفاداری، گردونه شانس، قرعه‌کشی و پیامک‌ها در نسخه ۲۴ ساعته غیرفعال می‌باشند."
+                                "تمامی امکانات باشگاه مشتریان شامل سطوح عضویت، تخفیف‌های وفاداری، گردونه شانس، قرعه‌کشی و پیامک‌ها در نسخه 24 ساعته غیرفعال می‌باشند."
                             else 
                                 "All Customer Club features including membership tiers, loyalty discounts, lucky wheel, lottery, and SMS notifications are locked in the 24-hour trial mode.",
                             style = MaterialTheme.typography.bodyMedium,
@@ -629,7 +629,7 @@ fun CustomerRequestsSubScreen(viewModel: GameNetViewModel, lang: String) {
                                             if (ok) {
                                                 viewModel.logOperatorActivity(
                                                     "تایید شارژ آنلاین",
-                                                    "تایید شارژ $typeTitle برای ${p.customerName} به مبلغ ${p.amount} تومان و واریز ۱۰۰ امتیاز پاداش"
+                                                    "تایید شارژ $typeTitle برای ${p.customerName} به مبلغ ${p.amount} تومان و واریز 100 امتیاز پاداش"
                                                 )
                                             }
                                         }
@@ -637,7 +637,7 @@ fun CustomerRequestsSubScreen(viewModel: GameNetViewModel, lang: String) {
                                     shape = RoundedCornerShape(8.dp),
                                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                                 ) {
-                                    Text(if (lang == "fa") "تایید و شارژ (+۱۰۰ GN)" else "Approve (+100 GN)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    Text(if (lang == "fa") "تایید و شارژ (+100 GN)" else "Approve (+100 GN)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
@@ -748,7 +748,7 @@ fun BaseGnRulesSubScreen(viewModel: GameNetViewModel, lang: String) {
                     OutlinedTextField(
                         value = gameRewardInput,
                         onValueChange = { gameRewardInput = it },
-                        label = { Text(if (lang == "fa") "GN بازی (به ازای ۱۰۰هزار تومان)" else "Game GN (per 100k T)", fontSize = 10.sp) },
+                        label = { Text(if (lang == "fa") "GN بازی (به ازای 100هزار تومان)" else "Game GN (per 100k T)", fontSize = 10.sp) },
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
@@ -757,7 +757,7 @@ fun BaseGnRulesSubScreen(viewModel: GameNetViewModel, lang: String) {
                     OutlinedTextField(
                         value = buffetRewardInput,
                         onValueChange = { buffetRewardInput = it },
-                        label = { Text(if (lang == "fa") "GN بوفه (به ازای ۱۰۰هزار تومان)" else "Buffet GN (per 100k T)", fontSize = 10.sp) },
+                        label = { Text(if (lang == "fa") "GN بوفه (به ازای 100هزار تومان)" else "Buffet GN (per 100k T)", fontSize = 10.sp) },
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
@@ -781,7 +781,7 @@ fun BaseGnRulesSubScreen(viewModel: GameNetViewModel, lang: String) {
                     OutlinedTextField(
                         value = gnTomanRateInput,
                         onValueChange = { gnTomanRateInput = it },
-                        label = { Text(if (lang == "fa") "ارزش هر ۱ GN به تومان (۱ GN = ۴۰۰ تومان)" else "Value of 1 GN in Toman (1 GN = 400 T)", fontSize = 10.sp) },
+                        label = { Text(if (lang == "fa") "ارزش هر 1 GN به تومان (1 GN = 400 تومان)" else "Value of 1 GN in Toman (1 GN = 400 T)", fontSize = 10.sp) },
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
@@ -1474,7 +1474,7 @@ fun LoyaltyLevelsSubScreen(viewModel: GameNetViewModel, lang: String) {
                 }
 
                 Text(
-                    text = if (lang == "fa") "قانون انضباطی: تا ۲۰ روز عدم مراجعه هیچ جریمه‌ای ندارد. از روز ۲۱، به ازای هر روز غیبت ۵٪ از موجودی فعلی مشتری کسر می‌شود (سقف جریمه کل دوره غیبت: ۳۰٪ موجودی مبنا). موجودی‌ها هرگز منفی نمی‌شوند." else "Disciplinary rule: Grace period of 20 days absence. From day 21, 5% of current balance is deducted per absent day (max cumulative 30%). Balance never goes negative.",
+                    text = if (lang == "fa") "قانون انضباطی: تا 20 روز عدم مراجعه هیچ جریمه‌ای ندارد. از روز 21، به ازای هر روز غیبت 5٪ از موجودی فعلی مشتری کسر می‌شود (سقف جریمه کل دوره غیبت: 30٪ موجودی مبنا). موجودی‌ها هرگز منفی نمی‌شوند." else "Disciplinary rule: Grace period of 20 days absence. From day 21, 5% of current balance is deducted per absent day (max cumulative 30%). Balance never goes negative.",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 16.sp
@@ -1546,7 +1546,7 @@ fun LoyaltyLevelsSubScreen(viewModel: GameNetViewModel, lang: String) {
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     // Section 1: Conditions & LP
-                    Text(if (lang == "fa") "۱. شرایط ارتقا، ماندن و فرجه (بر اساس LP)" else "1. LP, Retention & Grace Conditions", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                    Text(if (lang == "fa") "1. شرایط ارتقا، ماندن و فرجه (بر اساس LP)" else "1. LP, Retention & Grace Conditions", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                     
                     OutlinedTextField(
                         value = nameInput,
@@ -1604,7 +1604,7 @@ fun LoyaltyLevelsSubScreen(viewModel: GameNetViewModel, lang: String) {
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                     // Section 2: GN Bonuses & Payments
-                    Text(if (lang == "fa") "۲. پاداش‌ها، تخفیف‌ها و دریافت سکه‌های GN" else "2. GN Rewards, Discounts & Coins", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                    Text(if (lang == "fa") "2. پاداش‌ها، تخفیف‌ها و دریافت سکه‌های GN" else "2. GN Rewards, Discounts & Coins", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
 
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
@@ -1699,7 +1699,7 @@ fun LoyaltyLevelsSubScreen(viewModel: GameNetViewModel, lang: String) {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(if (lang == "fa") "۳. مزایای غیرمالی (Non-Financial Perks)" else "3. Non-Financial Perks", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        Text(if (lang == "fa") "3. مزایای غیرمالی (Non-Financial Perks)" else "3. Non-Financial Perks", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                         TextButton(onClick = {
                             editablePerks.add(
                                 NonFinancialPerk(
@@ -1762,7 +1762,7 @@ fun LoyaltyLevelsSubScreen(viewModel: GameNetViewModel, lang: String) {
                                     OutlinedTextField(
                                         value = perk.startDate,
                                         onValueChange = { editablePerks[index] = perk.copy(startDate = it) },
-                                        label = { Text(if (lang == "fa") "تاریخ شروع (مثلا ۱۴۰۳/۰۱/۰۱)" else "Start Date", fontSize = 8.sp) },
+                                        label = { Text(if (lang == "fa") "تاریخ شروع (مثلا 1403/01/01)" else "Start Date", fontSize = 8.sp) },
                                         singleLine = true,
                                         modifier = Modifier.weight(1f)
                                     )
@@ -3138,7 +3138,7 @@ fun LpRulesSubScreen(viewModel: GameNetViewModel, lang: String) {
                 }
 
                 Text(
-                    text = if (lang == "fa") "تعیین کنید به ازای پرداخت چه مبلغی از طرف مشتری (بازی یا بوفه)، ۱ امتیاز LP اعطا شود:"
+                    text = if (lang == "fa") "تعیین کنید به ازای پرداخت چه مبلغی از طرف مشتری (بازی یا بوفه)، 1 امتیاز LP اعطا شود:"
                     else "Specify how much money spent by customer (gaming or buffet) grants 1 LP point:",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -3152,7 +3152,7 @@ fun LpRulesSubScreen(viewModel: GameNetViewModel, lang: String) {
                     OutlinedTextField(
                         value = lpRateInput,
                         onValueChange = { lpRateInput = it },
-                        label = { Text(if (lang == "fa") "مبلغ به تومان (به ازای ۱ LP)" else "Amount in Tomans (per 1 LP)", fontSize = 10.sp) },
+                        label = { Text(if (lang == "fa") "مبلغ به تومان (به ازای 1 LP)" else "Amount in Tomans (per 1 LP)", fontSize = 10.sp) },
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
@@ -3186,7 +3186,7 @@ fun LpRulesSubScreen(viewModel: GameNetViewModel, lang: String) {
                         Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         val previewText = if (lang == "fa") {
-                            "💡 پیش‌نمایش: با این نرخ، به ازای هر ۱۰,۰۰۰ تومان هزینه در گیم‌نت ⬅️ ${DecimalFormat("#.#").format(sampleLpFor10k)} LP تعلق می‌گیرد."
+                            "💡 پیش‌نمایش: با این نرخ، به ازای هر 10,000 تومان هزینه در گیم‌نت ⬅️ ${DecimalFormat("#.#").format(sampleLpFor10k)} LP تعلق می‌گیرد."
                         } else {
                             "💡 Preview: With this rate, per 10,000 Tomans spent ⬅️ ${DecimalFormat("#.#").format(sampleLpFor10k)} LP will be granted."
                         }

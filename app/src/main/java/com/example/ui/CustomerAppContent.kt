@@ -995,7 +995,7 @@ fun CustomerLoyaltyProgressDialog(
                                 Text("${numberFormat.format(neededToman)} تومان", fontSize = 12.sp, fontWeight = FontWeight.Black, color = Color(0xFF2E7D32))
                             }
                             Text(
-                                text = "* بر اساس محاسبه ۱ LP به ازای هر ${numberFormat.format(lpTomanRate)} تومان پرداخت",
+                                text = "* بر اساس محاسبه 1 LP به ازای هر ${numberFormat.format(lpTomanRate)} تومان پرداخت",
                                 fontSize = 9.sp,
                                 color = MaterialTheme.colorScheme.outline
                             )

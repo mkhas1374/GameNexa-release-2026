@@ -141,7 +141,7 @@ fun InvoiceCard(
                 modifier = Modifier.padding(vertical = 1.dp)
             )
 
-            // سطر سوم (فوتر فاکتور): تاریخ و ساعت تسویه + نشان وضعیت در راست، و «مجموع: ۱۴۵,۰۰۰ تومان» با فونت درشت در چپ
+            // سطر سوم (فوتر فاکتور): تاریخ و ساعت تسویه + نشان وضعیت در راست، و «مجموع: 145,000 تومان» با فونت درشت در چپ
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,

@@ -821,8 +821,8 @@ data class CheckTrialResponse(
         }
 
     val responseMessage: String
-        get() = if (isTampered) "اکانت اشتراک ۲۴ ساعته شما به علت تقلب و دستکاری در زمان و تاریخ گوشی تان مسدود شده است در حال حاضر اجازه ورود به حساب های خریداری شده و یا تهیه اشتراک را دارید با تشکر ادمین برنامه GameNexa"
-                else (altResponseMessage ?: message ?: if (isExpired) "مدت زمان تست رایگان ۲۴ ساعته این دستگاه به پایان رسیده است." else "نسخه تست فعال است.")
+        get() = if (isTampered) "اکانت اشتراک 24 ساعته شما به علت تقلب و دستکاری در زمان و تاریخ گوشی تان مسدود شده است در حال حاضر اجازه ورود به حساب های خریداری شده و یا تهیه اشتراک را دارید با تشکر ادمین برنامه GameNexa"
+                else (altResponseMessage ?: message ?: if (isExpired) "مدت زمان تست رایگان 24 ساعته این دستگاه به پایان رسیده است." else "نسخه تست فعال است.")
 }
 
 @com.squareup.moshi.JsonClass(generateAdapter = true)

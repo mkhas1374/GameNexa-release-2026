@@ -229,7 +229,7 @@ fun GameNexaWelcomeScreen(
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        "۱. استفاده رایگان",
+                                        "1. استفاده رایگان",
                                         fontWeight = FontWeight.ExtraBold,
                                         fontSize = 16.sp,
                                         color = Color.White
@@ -257,7 +257,7 @@ fun GameNexaWelcomeScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    "۲. خرید اشتراک",
+                                    "2. خرید اشتراک",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 16.sp,
                                     color = MaterialTheme.colorScheme.primary
@@ -410,7 +410,7 @@ fun GameNexaWelcomeScreen(
                                         regUsername = it
                                         localErrorMessage = null
                                     },
-                                    label = { Text("نام کاربری (الزامی - حداقل ۳ حرف)") },
+                                    label = { Text("نام کاربری (الزامی - حداقل 3 حرف)") },
                                     leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
                                     singleLine = true,
                                     modifier = Modifier.fillMaxWidth().testTag("gamenexa_register_username_input")
@@ -448,7 +448,7 @@ fun GameNexaWelcomeScreen(
                                         regPassword = it
                                         localErrorMessage = null
                                     },
-                                    label = { Text("رمز عبور (الزامی - حداقل ۴ حرف)") },
+                                    label = { Text("رمز عبور (الزامی - حداقل 4 حرف)") },
                                     leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
                                     trailingIcon = {
                                         IconButton(onClick = { regPasswordVisible = !regPasswordVisible }) {
@@ -481,7 +481,7 @@ fun GameNexaWelcomeScreen(
                                 Button(
                                     onClick = {
                                         if (regUsername.trim().length < 3) {
-                                            localErrorMessage = "نام کاربری باید حداقل ۳ کاراکتر باشد."
+                                            localErrorMessage = "نام کاربری باید حداقل 3 کاراکتر باشد."
                                             return@Button
                                         }
                                         if (regPhone.trim().isBlank() || regPhone.trim().length < 10) {
@@ -493,7 +493,7 @@ fun GameNexaWelcomeScreen(
                                             return@Button
                                         }
                                         if (regPassword.trim().length < 4) {
-                                            localErrorMessage = "رمز عبور باید حداقل ۴ کاراکتر باشد."
+                                            localErrorMessage = "رمز عبور باید حداقل 4 کاراکتر باشد."
                                             return@Button
                                         }
                                         if (regPassword != regConfirmPassword) {
