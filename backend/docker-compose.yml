@@ -53,3 +53,5 @@ services:
 
 volumes:
   pgdata:
+    name: vps-backend_pgdata
+    external: true

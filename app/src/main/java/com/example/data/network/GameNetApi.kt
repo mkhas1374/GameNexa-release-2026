@@ -208,6 +208,12 @@ interface GameNetApi {
     @GET("api/v1/plans")
     suspend fun getSubscriptionPlans(): List<SubscriptionPlanDto>
 
+    @GET("api/v1/super-manager/subscription-plans")
+    suspend fun getSubscriptionPlansAdmin(): SubscriptionPlansAdminResponse
+
+    @PUT("api/v1/super-manager/subscription-plans")
+    suspend fun updateSubscriptionPlansAdmin(@Body body: Map<String, Any>): SubscriptionPlansAdminResponse
+
 }
 
 @com.squareup.moshi.JsonClass(generateAdapter = true)
@@ -391,6 +397,13 @@ data class MyketVerifyResponse(
 }
 
 @com.squareup.moshi.JsonClass(generateAdapter = true)
+data class SubscriptionPlansAdminResponse(
+    @com.squareup.moshi.Json(name = "success") val success: Boolean = false,
+    @com.squareup.moshi.Json(name = "version") val version: Int = 0,
+    @com.squareup.moshi.Json(name = "settings") val settings: Map<String, Any?> = emptyMap()
+)
+
+@com.squareup.moshi.JsonClass(generateAdapter = true)
 data class SubscriptionPlanDto(
     @com.squareup.moshi.Json(name = "id") val id: String? = null,
     @com.squareup.moshi.Json(name = "name") val name: String? = null,
@@ -420,7 +433,23 @@ data class SubscriptionPlanDto(
     @com.squareup.moshi.Json(name = "allow_extra_devices") val allow_extra_devices: Boolean? = null,
     @com.squareup.moshi.Json(name = "sortOrder") val rawSortOrder: Int? = null,
     @com.squareup.moshi.Json(name = "sort_order") val sort_order: Int? = null,
-    @com.squareup.moshi.Json(name = "display_order") val display_order: Int? = null
+    @com.squareup.moshi.Json(name = "display_order") val display_order: Int? = null,
+    @com.squareup.moshi.Json(name = "nameFa") val nameFa: String? = null,
+    @com.squareup.moshi.Json(name = "nameEn") val nameEn: String? = null,
+    @com.squareup.moshi.Json(name = "descriptionFa") val descriptionFa: String? = null,
+    @com.squareup.moshi.Json(name = "descriptionEn") val descriptionEn: String? = null,
+    @com.squareup.moshi.Json(name = "pageTitleFa") val pageTitleFa: String? = null,
+    @com.squareup.moshi.Json(name = "pageTitleEn") val pageTitleEn: String? = null,
+    @com.squareup.moshi.Json(name = "pageSubtitleFa") val pageSubtitleFa: String? = null,
+    @com.squareup.moshi.Json(name = "pageSubtitleEn") val pageSubtitleEn: String? = null,
+    @com.squareup.moshi.Json(name = "paymentInstructionFa") val paymentInstructionFa: String? = null,
+    @com.squareup.moshi.Json(name = "paymentInstructionEn") val paymentInstructionEn: String? = null,
+    @com.squareup.moshi.Json(name = "purchaseButtonFa") val purchaseButtonFa: String? = null,
+    @com.squareup.moshi.Json(name = "purchaseButtonEn") val purchaseButtonEn: String? = null,
+    @com.squareup.moshi.Json(name = "currencyFa") val currencyFa: String? = null,
+    @com.squareup.moshi.Json(name = "currencyEn") val currencyEn: String? = null,
+    @com.squareup.moshi.Json(name = "supportMessageFa") val supportMessageFa: String? = null,
+    @com.squareup.moshi.Json(name = "supportMessageEn") val supportMessageEn: String? = null
 ) {
     val realId: String
         get() = id ?: ""
@@ -468,6 +497,7 @@ data class SubscriptionPlanDto(
 data class LicenseActivateRequest(
     val deviceId: String,
     val licenseCode: String,
+    val activationSecret: String? = null,
     val userPhone: String? = null,
     val extensionType: String? = null,
     val extensionExpiresAt: Long? = null,
@@ -488,7 +518,8 @@ data class LicenseBuyRequest(
     val userPhone: String? = null,
     val userName: String? = null,
     val gameNetName: String? = null,
-    val password: String? = null
+    val password: String? = null,
+    val idempotencyKey: String = ""
 )
 
 data class LicenseInfoResponse(
@@ -502,12 +533,16 @@ data class LicenseInfoResponse(
 
 data class SetPasswordRequest(
     val licenseCode: String,
-    val password: String
+    val password: String,
+    val activationSecret: String? = null,
+    val userPhone: String? = null,
+    val deviceId: String? = null
 )
 
 data class LicenseBuyResponse(
     val paymentUrl: String,
     val licenseCode: String,
+    val activationSecret: String? = null,
     val expiresAt: Long = 0L,
     val maxDevices: Int = 1,
     val type: String = "",
@@ -780,6 +815,7 @@ data class AtomicReservationRequest(
     val stationId: Long? = null,
     val durationMinutes: Int = 0,
     val reservationTimeMillis: Long = 0L,
+    val controllersCount: Int = 1,
     val customerName: String? = null,
     val customerPhone: String? = null,
     val idempotencyKey: String = ""

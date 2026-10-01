@@ -154,7 +154,7 @@ fun CustomerFullHallTab(viewModel: GameNetViewModel) {
                                 reservationTimeMillis = selectedStartMillis,
                                 customerName = c.fullName,
                                 customerPhone = c.phoneNumber,
-                                idempotencyKey = "vip-request-${c.id}-${selectedStartMillis}-${selectedDuration}"
+                                idempotencyKey = "vip-request-" + java.util.UUID.randomUUID()
                             )
                         )
                         message = response?.message?.ifBlank { "درخواست VIP ثبت شد و منتظر پرداخت کامل و تأیید مدیریت است." }

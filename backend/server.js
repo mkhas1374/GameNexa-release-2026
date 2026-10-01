@@ -1,16 +1,7 @@
 const express = require('express');
-const fs = require('fs');
 const cors = require('cors');
 const { Pool } = require('pg');
 const { cancelReservation, completeVipReservation, DEFAULT_RESERVATION_CONFIGURATION, deepMerge } = require('./financialService');
-const MANUAL_PAYMENT_MIGRATION = '/app/migrate_manual_payment_workflow.sql';
-const MANUAL_PAYMENT_HARDENING_MIGRATION = '/app/migrate_manual_payment_hardening.sql';
-const FINANCIAL_INTEGRITY_MIGRATION = '/app/migrate_financial_integrity.sql';
-const MANAGER_SALES_HARDENING_MIGRATION = '/app/migrate_manager_sales_hardening.sql';
-const ANDROID_CUSTOMER_MIGRATION = '/app/migrate_android_customer_contract.sql';
-const RESERVATION_CONSTRAINT_MIGRATION = '/app/update_constraint.sql';
-const RESERVATION_IDEMPOTENCY_MIGRATION = '/app/migrate_reservation_idempotency.sql';
-const RESERVATION_MANAGER_ISOLATION_MIGRATION = '/app/migrate_reservation_manager_isolation.sql';
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 require('dotenv').config();
@@ -56,6 +47,17 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL
 });
 
+// Monetary values exposed to customers/managers are whole Tomans.
+// Internal PostgreSQL NUMERIC calculations may retain sub-Toman precision for exact
+// second-based billing, but all persisted invoice/session money is canonicalized down
+// to the nearest whole Toman before it becomes a billable amount.
+const normalizeMoneyInteger = (value) => {
+    const text = String(value ?? '0').trim();
+    if (!/^\d+(?:\.\d+)?$/.test(text)) return null;
+    const whole = text.split('.')[0];
+    try { return BigInt(whole).toString(); } catch (_) { return null; }
+};
+
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('JWT_SECRET is not set');
 
@@ -69,7 +71,7 @@ const requireSuperManagerAuth = async (req, res, next) => {
     const token = authHeader.slice(7).trim();
     try {
         const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
-        if (decoded.role !== 'SUPER_MANAGER' || !decoded.id) return res.status(403).json({ error: 'Forbidden' });
+        if (decoded.role !== 'SUPER_MANAGER' || !decoded.id || !decoded.managerId || String(decoded.id) !== String(decoded.managerId)) return res.status(403).json({ error: 'Forbidden' });
         const account = await pool.query("SELECT id, role FROM managers WHERE id = $1 AND role = 'SUPER_MANAGER' LIMIT 1", [decoded.id]);
         if (!account.rows.length) return res.status(401).json({ error: 'Manager account no longer exists' });
         const entitlement = await pool.query("SELECT 1 FROM manager_entitlements WHERE manager_id=$1 AND entitlement_type='SUPER_MANAGER_LIFETIME' AND status='ACTIVE' AND starts_at<=NOW() AND expires_at>NOW() LIMIT 1", [decoded.id]);
@@ -89,10 +91,14 @@ const requireManagerAuth = async (req, res, next) => {
     const token = authHeader.slice(7).trim();
     try {
         const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
-        if (decoded.role !== 'MANAGER' || !decoded.id || !decoded.managerId || String(decoded.id) !== String(decoded.managerId)) {
+        if (!['MANAGER', 'SUPER_MANAGER'].includes(decoded.role) || !decoded.id || !decoded.managerId || String(decoded.id) !== String(decoded.managerId)) {
             return res.status(403).json({ error: 'Forbidden' });
         }
-        const account = await pool.query("SELECT id, role FROM managers WHERE id = $1 AND role = 'MANAGER' LIMIT 1", [decoded.id]);
+        const managerHeader = String(req.headers['x-manager-id'] || '').trim();
+        if (!managerHeader || managerHeader !== String(decoded.managerId)) {
+            return res.status(403).json({ error: 'Manager identity header mismatch' });
+        }
+        const account = await pool.query("SELECT id, role FROM managers WHERE id = $1 AND role = ANY($2::text[]) LIMIT 1", [decoded.id, ['MANAGER', 'SUPER_MANAGER']]);
         if (!account.rows.length) return res.status(401).json({ error: 'Manager account no longer exists' });
         req.user = decoded;
         next();
@@ -199,11 +205,11 @@ app.post('/api/auth/manager/login', rateLimit({ windowMs: 60_000, max: 10 }), as
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
-        if ((manager.role || 'MANAGER') === 'MANAGER') {
+        {
             const deviceId = String(req.body?.deviceId || req.body?.device_id || '').trim().slice(0,255);
             if (!deviceId) return res.status(400).json({ error:'Manager device identity is required' });
             const entitlement = await pool.query(
-                "SELECT max_devices FROM manager_entitlements WHERE manager_id=$1 AND status='ACTIVE' AND starts_at<=NOW() AND expires_at>NOW() ORDER BY expires_at DESC LIMIT 1",
+                "SELECT max_devices, entitlement_type, plan_id FROM manager_entitlements WHERE manager_id=$1 AND status='ACTIVE' AND starts_at<=NOW() AND expires_at>NOW() ORDER BY expires_at DESC LIMIT 1",
                 [manager.id]
             );
             if (!entitlement.rows[0]) return res.status(403).json({ error:'Active subscription required', code:'ENTITLEMENT_REQUIRED' });
@@ -270,17 +276,11 @@ app.post('/api/auth/customer/register', rateLimit({ windowMs: 60_000, max: 5 }),
 
 app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), async (req, res) => {
     const { phone_number, manager_id, password } = req.body;
-    if (!phone_number || typeof password !== 'string') {
-        return res.status(400).json({ error: 'phone_number and password are required' });
+    if (!phone_number || !manager_id || typeof password !== 'string') {
+        return res.status(400).json({ error: 'phone_number, manager_id and password are required' });
     }
     try {
-        const normalizedPhone = String(phone_number).trim();
-        const result = manager_id
-            ? await pool.query('SELECT * FROM customers WHERE phone_number = $1 AND manager_id = $2 LIMIT 1', [normalizedPhone, manager_id])
-            : await pool.query('SELECT * FROM customers WHERE phone_number = $1 ORDER BY id ASC', [normalizedPhone]);
-        if (!manager_id && result.rows.length > 1) {
-            return res.status(409).json({ error: 'Manager ID is required because this phone exists in multiple Manager accounts', code: 'MANAGER_ID_REQUIRED' });
-        }
+        const result = await pool.query('SELECT * FROM customers WHERE phone_number = $1 AND manager_id = $2', [phone_number, manager_id]);
         const customer = result.rows[0];
         if (!customer) return res.status(401).json({ error: 'Customer not found' });
         if (!customer.password_hash) return res.status(401).json({ error: 'Customer password is not configured' });
@@ -294,23 +294,6 @@ app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), a
     }
 });
 
-app.put('/api/manager/customers/:id/password', requireManagerAuth, async (req, res) => {
-    const { password } = req.body;
-    if (typeof password !== 'string' || password.length < 12) {
-        return res.status(400).json({ error: 'Password must be at least 12 characters' });
-    }
-    try {
-        const hash = await bcrypt.hash(password, 12);
-        const result = await pool.query(
-            'UPDATE customers SET password_hash = $1, updated_at = NOW() WHERE id = $2 AND manager_id = $3 RETURNING id',
-            [hash, req.params.id, req.user.managerId]
-        );
-        if (result.rows.length === 0) return res.status(404).json({ error: 'Customer not found' });
-        res.json({ success: true, customerId: result.rows[0].id });
-    } catch (e) {
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
 
 
 // Canonical server clock. Clients use this only as a reference/display clock;
@@ -321,42 +304,6 @@ app.get('/api/v1/time', rateLimit({ windowMs: 60_000, max: 60 }), (req, res) => 
         serverTime: Date.now(),
         timezone: 'Asia/Tehran'
     });
-});
-
-app.get('/api/v1/plans', rateLimit({ windowMs: 60_000, max: 30 }), (req, res) => {
-    res.set('Cache-Control', 'no-store');
-    return res.json([
-        {
-            id: 'MONTHLY',
-            name: 'اشتراک ۱ ماهه',
-            price: 500000,
-            durationDays: 30,
-            paymentUrl: 'https://pay.forbix.ir/mkhas1374/1784524345734',
-            description: 'دسترسی کامل به تمامی امکانات برنامه',
-            maxDevices: 1,
-            sortOrder: 1
-        },
-        {
-            id: 'THREE_MONTHS',
-            name: 'اشتراک ۳ ماهه',
-            price: 1200000,
-            durationDays: 90,
-            paymentUrl: 'https://pay.forbix.ir/mkhas1374/1784524399731',
-            description: '۹۸,۰۰۰ تومان تخفیف ویژه',
-            maxDevices: 1,
-            sortOrder: 2
-        },
-        {
-            id: 'YEARLY',
-            name: 'اشتراک ۱۲ ماهه (۱ ساله)',
-            price: 3259000,
-            durationDays: 365,
-            paymentUrl: 'https://pay.forbix.ir/mkhas1374/1784524151630',
-            description: 'بیشترین صرفه‌جویی و پشتیبانی اختصاصی',
-            maxDevices: 1,
-            sortOrder: 3
-        }
-    ]);
 });
 
 // --- TRIAL 24H CANONICAL PUBLIC FLOW ---
@@ -370,7 +317,8 @@ app.post('/api/v1/trial/start', rateLimit({ windowMs: 60_000, max: 5 }), async (
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        const blocked = await client.query('SELECT 1 FROM trial_device_blocks WHERE device_id = $1 OR device_fingerprint = $2 LIMIT 1', [deviceId, deviceFingerprint]);
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['trial:' + deviceId + ':' + deviceFingerprint]);
+        const blocked = await client.query('SELECT 1 FROM trial_device_blocks WHERE (device_id = $1 AND device_fingerprint = $2) OR device_id = $1 OR device_fingerprint = $2 LIMIT 1', [deviceId, deviceFingerprint]);
         if (blocked.rows.length > 0) {
             await client.query('COMMIT');
             return res.status(403).json({ success: false, trialActive: false, isExpired: true, remainingMinutes: 0, message: 'این دستگاه قبلاً Trial خود را استفاده کرده یا توسط Super Manager حذف شده است.' });
@@ -400,7 +348,7 @@ app.post('/api/v1/trial/status', rateLimit({ windowMs: 60_000, max: 20 }), async
     const deviceFingerprint = normalizeTrialIdentity(req.body?.deviceFingerprint || req.body?.device_fingerprint);
     if (!deviceId || !deviceFingerprint) return res.status(400).json({ success: false, trialActive: false, isExpired: true, message: 'Device identity is required.' });
     try {
-        const result = await pool.query('SELECT expires_at, status FROM trial_devices WHERE device_id = $1 OR device_fingerprint = $2 ORDER BY created_at DESC LIMIT 1', [deviceId, deviceFingerprint]);
+        const result = await pool.query('SELECT expires_at, status FROM trial_devices WHERE device_id = $1 AND device_fingerprint = $2 ORDER BY created_at DESC LIMIT 1', [deviceId, deviceFingerprint]);
         if (result.rows.length === 0) return res.status(404).json({ success: false, trialActive: false, isExpired: true, remainingMinutes: 0, message: 'No trial has been activated on this device.' });
         const trial = result.rows[0];
         const expiresAt = new Date(trial.expires_at);
@@ -409,222 +357,7 @@ app.post('/api/v1/trial/status', rateLimit({ windowMs: 60_000, max: 20 }), async
     } catch (e) { return res.status(500).json({ success: false, trialActive: false, isExpired: true, message: 'خطا در بررسی اعتبار تست.' }); }
 });
 
-// --- TRIAL 24H ---
-// Legacy manager-scoped Trial activation is intentionally disabled.
-// Canonical Trial lifecycle is device-bound and uses /api/v1/trial/start.
-app.post('/api/v1/manager/trial/activate', requireManagerAuth, async (req, res) => {
-    return res.status(410).json({
-        success: false,
-        code: 'LEGACY_TRIAL_ROUTE_DISABLED',
-        message: 'مسیر قدیمی فعال‌سازی Trial غیرفعال است. از مسیر canonical Trial استفاده کنید.'
-    });
-});
-
-
-
-// --- MANAGER ENDPOINTS (ISOLATION DEMO) ---
-app.get('/api/manager/customers', requireManagerAuth, async (req, res) => {
-    try {
-        const result = await pool.query('SELECT * FROM customers WHERE manager_id = $1', [req.user.managerId]);
-        res.json(result.rows);
-    } catch (e) {
-        console.error('API internal error:', e); res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-app.get('/api/manager/reservations/:id', requireManagerAuth, async (req, res) => {
-    try {
-        const result = await pool.query('SELECT * FROM reservations WHERE id = $1 AND manager_id = $2', [req.params.id, req.user.managerId]);
-        if (result.rows.length === 0) return res.status(404).json({ error: 'Not found or unauthorized' });
-        res.json(result.rows[0]);
-    } catch (e) {
-        console.error('API internal error:', e); res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-// --- CUSTOMER ENDPOINTS (ISOLATION DEMO) ---
-app.get('/api/customer/profile', requireCustomerAuth, async (req, res) => {
-    try {
-        const result = await pool.query('SELECT id, phone_number, full_name, wallet_balance, gn_balance, lp_balance FROM customers WHERE id = $1 AND manager_id = $2', [req.user.id, req.user.managerId]);
-        if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
-        res.json(result.rows[0]);
-    } catch (e) {
-        console.error('API internal error:', e); res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-app.get('/api/customer/reservations/:id', requireCustomerAuth, async (req, res) => {
-    try {
-        const result = await pool.query('SELECT * FROM reservations WHERE id = $1 AND customer_id = $2 AND manager_id = $3', [req.params.id, req.user.id, req.user.managerId]);
-        if (result.rows.length === 0) return res.status(404).json({ error: 'Not found or unauthorized' });
-        res.json(result.rows[0]);
-    } catch (e) {
-        console.error('API internal error:', e); res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-// Legacy payment/reservation implementation removed. Canonical Android contract lives in canonical_routes.js.
-
-app.post('/api/v1/super-manager/subscription-requests/:id/confirm', requireSuperManagerAuth, async (req, res) => {
-    return res.status(410).json({
-        success:false,
-        code:'MANUAL_MANAGER_PROVISIONING_REQUIRED',
-        message:'پرداخت فقط پس از اعتبارسنجی دستی و از مسیر «فروش مدیر → ساخت پنل مدیر» توسط Super Manager به حساب Manager تبدیل می‌شود.'
-    });
-});
-/* Legacy automatic subscription confirmation is intentionally disabled.
-    const { id } = req.params;
-    const client = await pool.connect();
-
-    try {
-        await client.query('BEGIN');
-
-        const reqResult = await client.query(`
-            SELECT *
-            FROM subscription_payment_requests
-            WHERE id = $1
-              AND status = 'PENDING'
-            FOR UPDATE
-        `, [id]);
-
-        if (reqResult.rows.length === 0) {
-            throw new Error('Request not found or already processed');
-        }
-
-        const request = reqResult.rows[0];
-
-        const planMap = {
-            '1_MONTH': { months: 1 },
-            'THREE_MONTHS': { months: 3 },
-            'YEARLY': { months: 12 }
-        };
-
-        if (Number(request.amount) !== ({"1_MONTH":500000,"THREE_MONTHS":1200000,"YEARLY":3259000})[request.plan_id]) throw new Error("Subscription amount does not match canonical plan price");
-        const plan = planMap[request.plan_id];
-        if (!plan) {
-            throw new Error('Invalid subscription plan');
-        }
-
-        if (!request.manager_id) {
-            throw new Error('Subscription request has no manager');
-        }
-
-        const managerResult = await client.query(
-            `SELECT id, role, username FROM managers WHERE id = $1 FOR UPDATE`,
-            [request.manager_id]
-        );
-
-        if (managerResult.rows.length === 0) {
-            throw new Error('Manager account not found');
-        }
-
-        const managerId = request.manager_id;
-
-        const activeResult = await client.query(`
-            SELECT id, expires_at
-            FROM manager_entitlements
-            WHERE manager_id = $1
-              AND status = 'ACTIVE'
-              AND starts_at <= NOW()
-              AND expires_at > NOW()
-            FOR UPDATE
-        `, [managerId]);
-
-        let startsAt = new Date();
-        let expiresAt;
-
-        if (activeResult.rows.length > 0) {
-            startsAt = activeResult.rows[0].expires_at;
-        }
-
-        expiresAt = new Date(startsAt);
-        expiresAt.setMonth(expiresAt.getMonth() + plan.months);
-
-        if (activeResult.rows.length > 0) {
-            await client.query(`
-                UPDATE manager_entitlements
-                SET status = 'EXPIRED',
-                    updated_at = NOW()
-                WHERE manager_id = $1
-                  AND status = 'ACTIVE'
-            `, [managerId]);
-        }
-
-        await client.query(`
-            INSERT INTO manager_entitlements (
-                manager_id,
-                entitlement_type,
-                plan_id,
-                status,
-                starts_at,
-                expires_at,
-                source,
-                metadata
-            )
-            VALUES (
-                $1,
-                'SUBSCRIPTION',
-                $2,
-                'ACTIVE',
-                $3,
-                $4,
-                'SUBSCRIPTION_PAYMENT',
-                $5::jsonb
-            )
-        `, [
-            managerId,
-            request.plan_id,
-            startsAt,
-            expiresAt,
-            JSON.stringify({
-                subscription_request_id: request.id
-            })
-        ]);
-
-        await client.query(`
-            UPDATE subscription_payment_requests
-            SET status = 'CONFIRMED',
-                reviewed_at = NOW(),
-                reviewed_by = $1,
-                updated_at = NOW()
-            WHERE id = $2
-        `, [req.user.id, id]);
-
-        await client.query('COMMIT');
-
-        res.json({
-            success: true,
-            managerId,
-            planId: request.plan_id,
-            startsAt,
-            expiresAt
-        });
-
-    } catch (e) {
-        await client.query('ROLLBACK');
-        console.error('Subscription confirmation error:', e);
-        res.status(400).json({ error: e.message });
-    } finally {
-        client.release();
-    }
-});
-*/
-app.post('/api/v1/super-manager/subscription-requests/:id/reject', requireSuperManagerAuth, async (req, res) => {
-    const { id } = req.params;
-    const { reason } = req.body;
-    try {
-        const reqResult = await pool.query('SELECT * FROM subscription_payment_requests WHERE id = $1', [id]);
-        if (reqResult.rows.length === 0) return res.status(404).json({ error: "Not found" });
-        if (reqResult.rows[0].status !== 'PENDING') return res.status(400).json({ error: "Invalid status" });
-        
-        await pool.query("UPDATE subscription_payment_requests SET status = 'REJECTED', rejection_reason = $1, reviewed_at = NOW() WHERE id = $2", [reason || '', id]);
-        res.json({ status: "success" });
-    } catch (e) {
-        console.error('API internal error:', e); res.status(500).json({ error: 'Internal server error' });
-    }
-});
-// Legacy /api/license/buy removed; canonical subscription purchase is in canonical_routes.js.
-app.post("/api/v1/super-manager/check-trial", rateLimit({ windowMs: 60000, max: 10 }), async function(req, res) { return res.status(410).json({ success:false, code:"LEGACY_TRIAL_STATUS_DISABLED" }); });
+// Canonical API routes are registered in canonical_routes.js.
 
 // SUPER MANAGER missing endpoints for Android App
 
@@ -697,7 +430,7 @@ app.post('/api/v1/super-manager/add-manager', requireSuperManagerAuth, async (re
         const startsAt = new Date();
         const expiresAt = new Date(startsAt.getTime() + plan.days*86400000);
         await client.query(`INSERT INTO manager_entitlements(manager_id,entitlement_type,plan_id,status,starts_at,expires_at,source,max_devices,metadata)
-            VALUES($1,'SUBSCRIPTION',$2,'ACTIVE',$3,$4,'MANAGER_SALES',$5,$6::jsonb)`,[managerId,plan.id,startsAt,expiresAt,maxDevices,JSON.stringify({createdBy:req.user.id,salesChannel:'SUPER_MANAGER_MANAGER_SALES'})]);
+            VALUES($1,'SUBSCRIPTION',$2,'ACTIVE',$3,$4,'SUPER_MANAGER',$5,$6::jsonb)`,[managerId,plan.id,startsAt,expiresAt,maxDevices,JSON.stringify({createdBy:req.user.id,salesChannel:'SUPER_MANAGER_MANAGER_SALES'})]);
         const pending = await client.query(`SELECT id FROM subscription_payment_requests WHERE status='PENDING' AND buyer_phone=$1 AND plan_id=$2 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,[username,plan.id]);
         if (pending.rows[0]) await client.query(`UPDATE subscription_payment_requests SET manager_id=$1,status='CONFIRMED',provisioned_account=TRUE,reviewed_at=NOW(),reviewed_by=$2,updated_at=NOW() WHERE id=$3`,[managerId,req.user.id,pending.rows[0].id]);
         await client.query('COMMIT');
@@ -708,36 +441,7 @@ app.post('/api/v1/super-manager/add-manager', requireSuperManagerAuth, async (re
         return res.status(400).json({success:false,error:'ثبت پنل مدیر انجام نشد.'});
     } finally { client.release(); }
 });
-app.post('/api/v1/super-manager/add-manager-legacy', requireSuperManagerAuth, async (req, res) => {
-    return res.status(410).json({success:false,code:'USE_MANAGER_SALES_PANEL',message:'ساخت پنل مدیر فقط از مسیر فروش مدیر انجام می‌شود.'});
-});
 
-/* Legacy duplicate add-manager implementation disabled.
-    const username = String(req.body?.username || req.body?.phone || '').trim();
-    const password = String(req.body?.password || '');
-    const displayName = String(req.body?.fullName || req.body?.full_name || '').trim();
-    const gamenetName = String(req.body?.gameneName || req.body?.gamenet_name || '').trim();
-    const phone = String(req.body?.phone || username).trim();
-    const planType = String(req.body?.planType || req.body?.plan_name || '').trim();
-    const subscriptionStatus = String(req.body?.subscriptionStatus || 'ACTIVE').trim();
-    const paymentStatus = String(req.body?.paymentStatus || 'PAID').trim();
-    if (!username || !password) return res.status(400).json({ error: 'Missing username or password' });
-    try {
-        const managerId = 'mgr_' + Date.now();
-        const bcrypt = require('bcrypt');
-        const hash = await bcrypt.hash(password, 10);
-        const created = await pool.query(`INSERT INTO managers
-            (id, username, password_hash, role, display_name, gamenet_name, phone, plan_type, subscription_status, payment_status)
-            VALUES ($1,$2,$3,'MANAGER',$4,$5,$6,$7,$8,$9)
-            RETURNING id, username, role, display_name, gamenet_name, phone, plan_type, subscription_status, payment_status, created_at`,
-            [managerId, username, hash, displayName || username, gamenetName, phone, planType, subscriptionStatus, paymentStatus]);
-        res.json({ success: true, managerId, manager: created.rows[0] });
-    } catch (e) {
-        console.error('API internal error:', e);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-*/
 app.post('/api/v1/super-manager/managers', requireSuperManagerAuth, async (req, res) => {
     return res.status(410).json({success:false,code:'USE_MANAGER_SALES_PANEL',message:'ساخت پنل مدیر فقط از مسیر فروش مدیر انجام می‌شود.'});
     // Alias to add-manager
@@ -797,7 +501,12 @@ app.get('/api/v1/super-manager/trial-devices', requireSuperManagerAuth, async (r
         const result = await pool.query(`SELECT device_id, device_fingerprint, device_name, started_at, expires_at, status, created_at
                                          FROM trial_devices
                                          ORDER BY started_at DESC NULLS LAST, created_at DESC`);
-        res.json(result.rows);
+        res.json(result.rows.map(row => ({
+            ...row,
+            startTime: row.started_at ? new Date(row.started_at).getTime() : null,
+            expiryDate: row.expires_at ? new Date(row.expires_at).getTime() : null,
+            expireTime: row.expires_at ? new Date(row.expires_at).getTime() : null
+        })));
     } catch (e) {
         res.status(500).json({ error: 'Internal server error' });
     }
@@ -829,6 +538,55 @@ app.delete('/api/v1/super-manager/trial-devices/:id', requireSuperManagerAuth, a
         await client.query('ROLLBACK');
         res.status(500).json({ success: false, error: 'Internal server error' });
     } finally { client.release(); }
+});
+
+
+app.post('/api/v1/super-manager/managers/:id/subscription/extend', requireSuperManagerAuth, async (req, res) => {
+    const managerId = String(req.params.id || '').trim();
+    const planId = String(req.body?.planId || req.body?.plan_id || '').trim();
+    if (!managerId || !planId) return res.status(400).json({success:false,error:'managerId and planId are required'});
+    try {
+        const storeRaw = (await pool.query('SELECT settings FROM subscription_store_config WHERE id=1')).rows[0]?.settings || {};
+        const plan = Array.isArray(storeRaw.plans) ? storeRaw.plans.find(p => String(p.id || '') === planId && p.active !== false) : null;
+        if (!plan) return res.status(400).json({success:false,error:'Subscription plan is unavailable'});
+        const days = Number(plan.durationDays || 0);
+        if (!Number.isInteger(days) || days <= 0) return res.status(400).json({success:false,error:'Invalid subscription duration'});
+        const c = await pool.connect();
+        try {
+            await c.query('BEGIN');
+            await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[managerId]);
+            const mgr = (await c.query("SELECT id,role FROM managers WHERE id=$1 AND role='MANAGER' FOR UPDATE",[managerId])).rows[0];
+            if (!mgr) { await c.query('ROLLBACK'); return res.status(404).json({success:false,error:'Manager not found'}); }
+            const current = (await c.query("SELECT id,plan_id,starts_at,expires_at,max_devices,status FROM manager_entitlements WHERE manager_id=$1 ORDER BY expires_at DESC LIMIT 1 FOR UPDATE",[managerId])).rows[0];
+            const now = new Date();
+            let startsAt = now;
+            let expiresAt = new Date(now.getTime() + days*86400000);
+            if (current && current.status === 'ACTIVE' && new Date(current.expires_at) > now) {
+                startsAt = new Date(current.expires_at);
+                expiresAt = new Date(startsAt.getTime() + days*86400000);
+                await c.query("UPDATE manager_entitlements SET status='EXPIRED',updated_at=NOW() WHERE id=$1",[current.id]);
+            } else if (current && current.status === 'ACTIVE') {
+                await c.query("UPDATE manager_entitlements SET status='EXPIRED',updated_at=NOW() WHERE id=$1",[current.id]);
+            }
+            const maxDevices = Math.max(1,Number(req.body?.maxDevices || current?.max_devices || 1));
+            const created = await c.query(`INSERT INTO manager_entitlements(manager_id,entitlement_type,plan_id,status,starts_at,expires_at,source,max_devices,metadata)
+                VALUES($1,'SUBSCRIPTION',$2,'ACTIVE',$3,$4,'SUPER_MANAGER',$5,$6::jsonb) RETURNING id,plan_id,status,starts_at,expires_at,max_devices`,
+                [managerId,planId,startsAt,expiresAt,maxDevices,JSON.stringify({extendedBy:req.user.id,previousEntitlementId:current?.id||null})]);
+            await c.query("UPDATE managers SET plan_type=$1,subscription_status='ACTIVE',payment_status='PAID',updated_at=NOW() WHERE id=$2",[planId,managerId]);
+            await c.query('COMMIT');
+            return res.json({success:true,entitlement:created.rows[0]});
+        } catch(e){ try{await c.query('ROLLBACK')}catch(_){} throw e; } finally { c.release(); }
+    } catch(e){ return res.status(400).json({success:false,error:'Subscription extension failed'}); }
+});
+
+app.delete('/api/v1/super-manager/managers/:id/devices/:deviceId', requireSuperManagerAuth, async (req,res) => {
+    const managerId=String(req.params.id||'').trim(), deviceId=String(req.params.deviceId||'').trim();
+    if(!managerId||!deviceId) return res.status(400).json({success:false,error:'Manager and device are required'});
+    try {
+        const q=await pool.query("UPDATE manager_device_bindings SET active=FALSE WHERE manager_id=$1 AND device_id=$2 AND active=TRUE RETURNING manager_id,device_id",[managerId,deviceId]);
+        if(!q.rows[0]) return res.status(404).json({success:false,error:'Active device binding not found'});
+        return res.json({success:true,managerId,deviceId});
+    } catch(e){ return res.status(500).json({success:false,error:'Device unbinding failed'}); }
 });
 
 app.post('/api/v1/super-manager/trial-devices/:id/extend', requireSuperManagerAuth, async (req, res) => {
@@ -863,37 +621,7 @@ app.post('/api/v1/super-manager/trial-devices/:id/extend', requireSuperManagerAu
     } finally { client.release(); }
 });
 
-app.post('/api/v1/super-manager/add-trial', requireSuperManagerAuth, async (req, res) => {
-    return res.status(410).json({ success:false, code:"LEGACY_TRIAL_CREATE_DISABLED", message:"Legacy Trial create route disabled." });
-    const { deviceId, deviceName } = req.body;
-    if (!deviceId) return res.status(400).json({ error: "deviceId required" });
-    try {
-        const result = await pool.query('SELECT * FROM trial_devices WHERE device_id = $1', [deviceId]);
-        if (result.rows.length > 0) {
-            return res.status(400).json({ error: "Trial already exists for this device" });
-        }
-        const insertResult = await pool.query(
-            "INSERT INTO trial_devices (device_id, device_name, started_at, expires_at, status) VALUES ($1, $2, NOW(), NOW() + INTERVAL '24 hours', 'ACTIVE') RETURNING *",
-            [deviceId, deviceName || 'Unknown']
-        );
-        res.json({ success: true, trial: insertResult.rows[0] });
-    } catch (e) {
-        console.error('API internal error:', e); res.status(500).json({ error: 'Internal server error' });
-    }
-});
 
-app.post('/api/v1/super-manager/reset-trial', requireSuperManagerAuth, async (req, res) => {
-    const { deviceId, device_id } = req.body;
-    return res.status(410).json({ success:false, code:"LEGACY_TRIAL_RESET_DISABLED", message:"Legacy Trial reset route disabled." });
-    const finalId = deviceId || device_id;
-    if (!finalId) return res.status(400).json({ error: 'Missing deviceId' });
-    try {
-        await pool.query("UPDATE trial_devices SET started_at = NOW(), expires_at = NOW() + INTERVAL '24 hours', status = 'ACTIVE' WHERE device_id = $1", [finalId]);
-        res.json({ success: true, message: 'Trial reset' });
-    } catch (e) {
-        console.error('API internal error:', e); res.status(500).json({ error: 'Internal server error' });
-    }
-});
 
 app.put('/api/v1/super-manager/managers/:id', requireSuperManagerAuth, async (req, res) => {
     const managerId = String(req.params.id || '').trim();
@@ -1002,6 +730,12 @@ const defaultManagerConfiguration = () => deepMerge(DEFAULT_RESERVATION_CONFIGUR
     policies: {
         reservation: {
             depositPercent: 30
+        },
+        loyalty: {
+            gameSettlement: {
+                gnPer10000: 10,
+                lpPer10000: 5
+            }
         }
     }
 });
@@ -1203,10 +937,11 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
 app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlement, rateLimit({windowMs:60000,max:30}), async (req,res) => {
     const managerId = sessionManagerId(req), sessionId = String(req.body?.sessionId || "").trim();
     const stationId = Number(req.body?.stationId), startTimeMillis = Number(req.body?.startTimeMillis);
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId);
     const consoleType = String(req.body?.consoleType || "").trim(), controllerCount = Number(req.body?.controllerCount || 1);
     const participants = Array.isArray(req.body?.participants) ? req.body.participants : [];
     const key = String(req.headers["idempotency-key"] || "").trim();
-    if (!managerId || !sessionId || !key || !Number.isInteger(stationId) || stationId <= 0 || !Number.isFinite(startTimeMillis) || !consoleType || controllerCount < 1 || controllerCount > 4) return res.status(400).json({success:false,error:"Invalid offline session start payload"});
+    if (!managerId || !sessionId || !isUuid || !key || !Number.isInteger(stationId) || stationId <= 0 || !Number.isFinite(startTimeMillis) || !consoleType || controllerCount < 1 || controllerCount > 4) return res.status(400).json({success:false,error:"Invalid offline session start payload"});
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
@@ -1220,6 +955,8 @@ app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlem
         const canonicalConsoleType = String(station.rows[0].console_type || consoleType);
         const configuredRate = configuredHourlyRate(configuration, canonicalConsoleType, controllerCount);
         if (!configuredRate) { await client.query("ROLLBACK"); return res.status(422).json({success:false,code:"SERVER_PRICING_NOT_CONFIGURED"}); }
+        const nowMs = Date.now();
+        if (startTimeMillis > nowMs + 5 * 60 * 1000 || startTimeMillis < nowMs - 24 * 60 * 60 * 1000) { await client.query("ROLLBACK"); return res.status(422).json({success:false,code:"OFFLINE_START_OUTSIDE_ALLOWED_WINDOW"}); }
         const startedAt = new Date(startTimeMillis);
         const pricingSnapshot = {source:"MANAGER_CONFIGURATION_REVISION",configurationRevisionId:configuration.id,configurationVersion:configuration.version_number,currency:configuration.settings?.currency || "IRT",consoleType:canonicalConsoleType,controllerCount,hourlyRate:configuredRate,capturedAt:new Date().toISOString(),offlineReconciled:true};
         await client.query("INSERT INTO game_sessions(id,manager_id,station_id,status,console_type,controller_count,started_at,pricing_snapshot) VALUES($1,$2,$3,'ACTIVE',$4,$5,$6,$7::jsonb)",[sessionId,managerId,stationId,canonicalConsoleType,controllerCount,startedAt.toISOString(),JSON.stringify(pricingSnapshot)]);
@@ -1256,19 +993,33 @@ app.post("/api/station/order", requireManagerAuth, requireActiveEntitlement, rat
         const session = await client.query("SELECT id FROM game_sessions WHERE manager_id=$1 AND station_id=$2 AND status IN ('ACTIVE','PAUSED') ORDER BY started_at DESC LIMIT 1 FOR UPDATE",[managerId,stationId]);
         if (!session.rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({success:false,error:"Active session not found"}); }
         const sid=session.rows[0].id;
-        const duplicate=await client.query("SELECT id FROM session_events WHERE manager_id=$1 AND event_id=$2 LIMIT 1",[managerId,idempotencyKey]);
-        if(duplicate.rows[0]){await client.query("COMMIT");return res.json({success:true,duplicate:true,sessionId:sid});}
+        const duplicate=await client.query("SELECT id,session_id FROM session_events WHERE manager_id=$1 AND event_id=$2 LIMIT 1",[managerId,idempotencyKey]);
+        if(duplicate.rows[0]){
+            if(String(duplicate.rows[0].session_id) !== String(sid)){
+                await client.query("ROLLBACK");
+                return res.status(409).json({success:false,code:"IDEMPOTENCY_KEY_REUSED_FOR_DIFFERENT_SESSION"});
+            }
+            await client.query("COMMIT");
+            return res.json({success:true,duplicate:true,sessionId:sid});
+        }
         const cfg=await getManagerConfiguration(client,managerId);
         const product=cfg.settings?.pricing?.products?.[productName] ?? cfg.settings?.products?.[productName];
         const unitPrice=Number(product?.price ?? product ?? 0);
         if(!Number.isFinite(unitPrice) || unitPrice < 0) { await client.query("ROLLBACK"); return res.status(422).json({success:false,error:"Product pricing not configured"}); }
-        if(targetCustomerId){const c=await client.query("SELECT id FROM customers WHERE id=$1 AND manager_id=$2",[targetCustomerId,managerId]);if(!c.rows[0]){await client.query("ROLLBACK");return res.status(404).json({success:false,error:"Customer not found"});}}
-        const lineTotal=unitPrice*quantity;
-        await client.query("INSERT INTO session_orders(manager_id,session_id,product_name,quantity,unit_price,target_customer_id,line_total,product_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)",[managerId,sid,productName,quantity,unitPrice,targetCustomerId||null,lineTotal,JSON.stringify({productName,unitPrice,capturedAt:new Date().toISOString()})]);
+        const unitPriceWhole = Math.trunc(unitPrice);
+        if(targetCustomerId){
+            const target=await client.query("SELECT id FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND customer_id=$3",[sid,managerId,targetCustomerId]);
+            if(!target.rows[0]){
+                await client.query("ROLLBACK");
+                return res.status(409).json({success:false,code:"ORDER_CUSTOMER_NOT_IN_SESSION"});
+            }
+        }
+        const lineTotal=unitPriceWhole*quantity;
+        await client.query("INSERT INTO session_orders(manager_id,session_id,product_name,quantity,unit_price,target_customer_id,line_total,product_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)",[managerId,sid,productName,quantity,unitPriceWhole,targetCustomerId||null,lineTotal,JSON.stringify({productName,unitPrice:unitPriceWhole,capturedAt:new Date().toISOString()})]);
         const last=await client.query("SELECT COALESCE(MAX(sequence_no),0)+1 seq FROM session_events WHERE session_id=$1 AND manager_id=$2",[sid,managerId]);
         await client.query("INSERT INTO session_events(manager_id,session_id,event_id,event_type,occurred_at,payload,sequence_no) VALUES($1,$2,$3,'ORDER',NOW(),$4::jsonb,$5)",[managerId,sid,idempotencyKey,JSON.stringify({productName,quantity,unitPrice,targetCustomerId:targetCustomerId||null}),Number(last.rows[0].seq)]);
         await client.query("COMMIT");
-        res.status(201).json({success:true,sessionId:sid,unitPrice,lineTotal});
+        res.status(201).json({success:true,sessionId:sid,unitPrice:unitPriceWhole,lineTotal});
     } catch(e){try{await client.query("ROLLBACK")}catch(_){}res.status(500).json({success:false,error:"Order creation failed"});} finally{client.release();}
 });
 
@@ -1284,8 +1035,12 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
-        const duplicate = await client.query("SELECT sequence_no FROM session_events WHERE manager_id=$1 AND event_id=$2 LIMIT 1",[managerId,eventId]);
+        const duplicate = await client.query("SELECT sequence_no,session_id FROM session_events WHERE manager_id=$1 AND event_id=$2 LIMIT 1",[managerId,eventId]);
         if (duplicate.rows[0]) {
+            if(String(duplicate.rows[0].session_id) !== String(sessionId)){
+                await client.query("ROLLBACK");
+                return res.status(409).json({success:false,code:"IDEMPOTENCY_KEY_REUSED_FOR_DIFFERENT_SESSION"});
+            }
             await client.query("COMMIT");
             return res.json({success:true,duplicate:true,sessionId,sequenceNo:duplicate.rows[0].sequence_no});
         }
@@ -1329,21 +1084,24 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
         } else if (eventType === "ORDER") {
             const productName = String(payload.productName || "").trim();
             const quantity = Number(payload.quantity);
-            const unitPriceText = String(payload.unitPrice ?? "").trim();
             const targetCustomerId = payload.targetCustomerId == null ? null : Number(payload.targetCustomerId);
-            if (!productName || !Number.isInteger(quantity) || quantity <= 0 || quantity > 1000 || !/^\d+(\\.\d+)?$/.test(unitPriceText) || Number(unitPriceText) < 0) { await client.query("ROLLBACK"); return res.status(400).json({success:false,error:"Invalid order payload"}); }
+            if (!productName || !Number.isInteger(quantity) || quantity <= 0 || quantity > 1000) { await client.query("ROLLBACK"); return res.status(400).json({success:false,error:"Invalid order payload"}); }
             if (targetCustomerId != null) {
                 const target = await client.query("SELECT 1 FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND customer_id=$3", [sessionId,managerId,targetCustomerId]);
                 if (!target.rows.length) { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"ORDER_CUSTOMER_NOT_IN_SESSION"}); }
             }
-            await client.query("INSERT INTO session_orders(manager_id,session_id,product_name,quantity,unit_price,target_customer_id,line_total,product_snapshot) VALUES($1,$2,$3,$4,$5::numeric,$6,($4::numeric*$5::numeric),$7::jsonb)", [managerId,sessionId,productName,quantity,unitPriceText,targetCustomerId,JSON.stringify(payload.productSnapshot || {name:productName,unitPrice:unitPriceText})]);
+            const cfg=await getManagerConfiguration(client,managerId);
+            const product=cfg.settings?.pricing?.products?.[productName] ?? cfg.settings?.products?.[productName];
+            const unitPriceWhole=normalizeMoneyInteger(product?.price ?? product ?? "");
+            if (unitPriceWhole === null) { await client.query("ROLLBACK"); return res.status(422).json({success:false,error:"Product pricing not configured"}); }
+            await client.query("INSERT INTO session_orders(manager_id,session_id,product_name,quantity,unit_price,target_customer_id,line_total,product_snapshot) VALUES($1,$2,$3,$4,$5::numeric,$6,FLOOR($4::numeric*$5::numeric),$7::jsonb)", [managerId,sessionId,productName,quantity,unitPriceWhole,targetCustomerId,JSON.stringify({name:productName,unitPrice:unitPriceWhole,capturedAt:new Date().toISOString()})]);
         }
         await client.query(
             "INSERT INTO session_events(manager_id,session_id,event_id,event_type,occurred_at,payload,sequence_no) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7)",
             [managerId,sessionId,eventId,eventType,occurredAt.toISOString(),JSON.stringify(payload),sequenceNo]
         );
         if (eventType === "PAUSE" || eventType === "RESUME") {
-            await client.query("UPDATE game_sessions SET status=$1,paused_at=CASE WHEN $1='PAUSED' THEN $2 ELSE paused_at END,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[eventType==="PAUSE"?"PAUSED":"ACTIVE",occurredAt.toISOString(),sessionId,managerId]);
+            await client.query("UPDATE game_sessions SET status=$1::varchar,paused_at=CASE WHEN $1::varchar='PAUSED' THEN $2 ELSE paused_at END,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[eventType==="PAUSE"?"PAUSED":"ACTIVE",occurredAt.toISOString(),sessionId,managerId]);
         }
         await client.query("COMMIT");
         return res.json({success:true,sessionId,sequenceNo,serverTime:Date.now()});
@@ -1465,7 +1223,7 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
     const managerId = sessionManagerId(req);
     const sessionId = String(req.body?.sessionId || "");
     const endedAtMs = Number(req.body?.endedAt || req.body?.closedAtMillis || Date.now());
-    if (!managerId || !sessionId || !Number.isFinite(endedAtMs)) return res.status(400).json({success:false,error:"Invalid settlement payload"});
+    if (!managerId || !sessionId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId) || !Number.isFinite(endedAtMs)) return res.status(400).json({success:false,error:"Invalid settlement payload"});
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
@@ -1489,7 +1247,7 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
         }
         // PostgreSQL NUMERIC keeps the financial calculation exact; do not use JS floating point.
         const financial = await client.query(
-            "SELECT ($1::numeric * $2::numeric) / 3600::numeric AS game_cost, COALESCE((SELECT SUM(line_total) FROM session_orders WHERE session_id=$3 AND manager_id=$4),0)::numeric AS buffet_cost",
+            "SELECT FLOOR(($1::numeric * $2::numeric) / 3600::numeric) AS game_cost, FLOOR(COALESCE((SELECT SUM(line_total) FROM session_orders WHERE session_id=$3 AND manager_id=$4),0)::numeric) AS buffet_cost",
             [pricingRateText, activeSeconds, sessionId, managerId]
         );
         const gameCost = financial.rows[0].game_cost;
@@ -1499,28 +1257,65 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
             [gameCost, buffetCost]
         );
         const totalCost = totalResult.rows[0].total_cost;
-        await client.query("UPDATE game_sessions SET status='SETTLED',ended_at=$1,duration_seconds=$2,duration_minutes=FLOOR($2/60),game_cost=$3,buffet_cost=$4,total_cost=$5,updated_at=NOW() WHERE id=$6 AND manager_id=$7",[endedAt.toISOString(),activeSeconds,gameCost,buffetCost,totalCost,sessionId,managerId]);
+        await client.query("UPDATE game_sessions SET status='SETTLED',ended_at=$1,duration_seconds=$2::bigint,duration_minutes=FLOOR($2::numeric/60)::integer,game_cost=$3,buffet_cost=$4,total_cost=$5,updated_at=NOW() WHERE id=$6 AND manager_id=$7",[endedAt.toISOString(),activeSeconds,gameCost,buffetCost,totalCost,sessionId,managerId]);
         const participants = await client.query("SELECT customer_id,participant_key,participant_name,is_guest,is_payer FROM session_participants WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sessionId,managerId]);
         const payers = participants.rows.filter(p => p.is_payer);
         if (payers.length) {
             const shares = await client.query(
-                "SELECT $1::numeric / $2::numeric AS game_share, $3::numeric / $2::numeric AS buffet_share",
+                "SELECT FLOOR($1::numeric / $2::numeric) AS game_share_base, MOD($1::numeric, $2::numeric) AS game_remainder, FLOOR($3::numeric / $2::numeric) AS buffet_share_base, MOD($3::numeric, $2::numeric) AS buffet_remainder",
                 [gameCost, payers.length, buffetCost]
             );
-            const shareGame = shares.rows[0].game_share;
-            const shareBuffet = shares.rows[0].buffet_share;
-            for (const payer of payers) {
+            const shareData = shares.rows[0];
+            const baseGame = BigInt(String(shareData.game_share_base || '0'));
+            const gameRemainder = BigInt(String(shareData.game_remainder || '0'));
+            const baseBuffet = BigInt(String(shareData.buffet_share_base || '0'));
+            const buffetRemainder = BigInt(String(shareData.buffet_remainder || '0'));
+            const managerConfig = await getManagerConfiguration(client,managerId);
+            let clubLevels = managerConfig.settings?.club_levels || [];
+            if (typeof clubLevels === 'string') {
+                try { clubLevels = JSON.parse(clubLevels); } catch (_) { clubLevels = []; }
+            }
+            if (!Array.isArray(clubLevels)) clubLevels = [];
+            for (let payerIndex = 0; payerIndex < payers.length; payerIndex += 1) {
+                const payer = payers[payerIndex];
                 if (!payer.customer_id) continue;
+                // Every invoice amount is an integer Toman. Any indivisible remainder
+                // is assigned to the final payer so the invoice totals still reconcile.
+                const shareGame = (baseGame + (payerIndex === payers.length - 1 ? gameRemainder : 0n)).toString();
+                const shareBuffet = (baseBuffet + (payerIndex === payers.length - 1 ? buffetRemainder : 0n)).toString();
+                const customerRow = await client.query("SELECT club_tier FROM customers WHERE id=$1 AND manager_id=$2",[payer.customer_id,managerId]);
+                const tier = String(customerRow.rows[0]?.club_tier || "BRONZE").toLowerCase();
+                const level = clubLevels.find(x => String(x?.id || "").toLowerCase() === tier) || {};
+                const gameDiscountPercent = Math.max(0,Math.min(100,Number(level.gameDiscountPercent || 0)));
+                const buffetDiscountPercent = Math.max(0,Math.min(100,Number(level.buffetDiscountPercent || 0)));
+                const fixedDiscountToman = Math.max(0,Math.trunc(Number(level.fixedDiscountToman || 0)));
+                const discounted = await client.query(
+                    "SELECT FLOOR($1::numeric*(100-$3::numeric)/100::numeric) AS game_cost,FLOOR($2::numeric*(100-$4::numeric)/100::numeric) AS buffet_cost",
+                    [shareGame,shareBuffet,gameDiscountPercent,buffetDiscountPercent]
+                );
+                let invoiceGameCost = BigInt(String(discounted.rows[0].game_cost || "0"));
+                let invoiceBuffetCost = BigInt(String(discounted.rows[0].buffet_cost || "0"));
+                const beforeFixed = invoiceGameCost + invoiceBuffetCost;
+                const fixedDiscount = BigInt(String(fixedDiscountToman));
+                if (fixedDiscount > 0n) {
+                    let remainingFixed = fixedDiscount > beforeFixed ? beforeFixed : fixedDiscount;
+                    const buffetDeduction = remainingFixed > invoiceBuffetCost ? invoiceBuffetCost : remainingFixed;
+                    invoiceBuffetCost -= buffetDeduction;
+                    remainingFixed -= buffetDeduction;
+                    if (remainingFixed > 0n) invoiceGameCost = invoiceGameCost > remainingFixed ? invoiceGameCost - remainingFixed : 0n;
+                }
                 const invoiceNumber = "GN-" + new Date().toISOString().replace(/[-:TZ.]/g,"").slice(0,14) + "-" + payer.customer_id + "-" + sessionId.slice(0,8);
+                const invoicePricingSnapshot = {...pricing,clubTier:tier,gameDiscountPercent,buffetDiscountPercent,fixedDiscountToman};
                 await client.query(
                     "INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,$3,$4,$5,'UNPAID','IRT',$6,$7,($6::numeric+$7::numeric),0,$8,$9::jsonb,$10::jsonb,$11::jsonb) ON CONFLICT(session_id,customer_id) DO UPDATE SET game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,settlement_idempotency_key=COALESCE(invoices.settlement_idempotency_key,EXCLUDED.settlement_idempotency_key),pricing_snapshot=EXCLUDED.pricing_snapshot,updated_at=NOW()",
-                    [invoiceNumber,managerId,payer.customer_id,sessionId,session.station_id,shareGame,shareBuffet,"settle_"+sessionId,JSON.stringify(pricing),JSON.stringify({id:payer.customer_id,name:payer.participant_name}),JSON.stringify({id:managerId})]
+                    [invoiceNumber,managerId,payer.customer_id,sessionId,session.station_id,invoiceGameCost.toString(),invoiceBuffetCost.toString(),"settle_"+sessionId+"_"+payer.customer_id,JSON.stringify(invoicePricingSnapshot),JSON.stringify({id:payer.customer_id,name:payer.participant_name}),JSON.stringify({id:managerId})]
                 );
             }
         }
         await client.query("DELETE FROM active_session_customer_claims WHERE session_id=$1 AND manager_id=$2", [sessionId,managerId]);
         await client.query("COMMIT");
-        return res.json({success:true,sessionId,serverTime:Date.now(),durationSeconds:activeSeconds,gameCost,buffetCost,totalCost});
+        const settledInvoices = await client.query("SELECT id,invoice_number,customer_id,total_amount,paid_amount,status FROM invoices WHERE session_id=$1 AND manager_id=$2 ORDER BY id", [sessionId,managerId]);
+        return res.json({success:true,sessionId,serverTime:Date.now(),durationSeconds:activeSeconds,gameCost,buffetCost,totalCost,invoices:settledInvoices.rows});
     } catch(e) {
         try { await client.query("ROLLBACK"); } catch(_) {}
         console.error("Session settlement error:",e);
@@ -1530,7 +1325,7 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
 
 // Canonical Android contract routes are registered before the server starts listening.
 const registerCanonicalRoutes = require('./canonical_routes');
-registerCanonicalRoutes({ app, pool, requireManagerAuth, requireActiveEntitlement, requireCustomerAuth });
+registerCanonicalRoutes({ app, pool, requireManagerAuth, requireActiveEntitlement, requireCustomerAuth, requireSuperManagerAuth, rateLimit });
 
 const PORT = process.env.PORT || 3000;
 const expireDueReservationPayments = async () => {
@@ -1579,32 +1374,8 @@ const expireDueReservationPayments = async () => {
     }
 };
 
-const applyManualPaymentMigration = async () => {
-    const sql = fs.readFileSync(MANUAL_PAYMENT_MIGRATION, 'utf8');
-    await pool.query(sql);
-    const hardeningSql = fs.readFileSync(MANUAL_PAYMENT_HARDENING_MIGRATION, 'utf8');
-    await pool.query(hardeningSql);
-    const financialIntegritySql = fs.readFileSync(FINANCIAL_INTEGRITY_MIGRATION, 'utf8');
-    await pool.query(financialIntegritySql);
-    const managerSalesHardeningSql = fs.readFileSync(MANAGER_SALES_HARDENING_MIGRATION, 'utf8');
-    await pool.query(managerSalesHardeningSql);
-    const androidCustomerSql = fs.readFileSync(ANDROID_CUSTOMER_MIGRATION, 'utf8');
-    await pool.query(androidCustomerSql);
-    const reservationConstraintSql = fs.readFileSync(RESERVATION_CONSTRAINT_MIGRATION, 'utf8');
-    await pool.query(reservationConstraintSql);
-    const reservationIdempotencySql = fs.readFileSync(RESERVATION_IDEMPOTENCY_MIGRATION, 'utf8');
-    await pool.query(reservationIdempotencySql);
-    const reservationManagerIsolationSql = fs.readFileSync(RESERVATION_MANAGER_ISOLATION_MIGRATION, 'utf8');
-    await pool.query(reservationManagerIsolationSql);
-    console.log('Financial integrity migration ready.');
-    console.log('Manager sales hardening migration ready.');
-    console.log('Manual payment workflow migrations ready.');
-};
-applyManualPaymentMigration()
-    .then(() => {
-        setInterval(expireDueReservationPayments, 30000);
-        return expireDueReservationPayments();
-    })
+setInterval(expireDueReservationPayments, 30000);
+expireDueReservationPayments()
     .then(() => app.listen(PORT, '0.0.0.0', () => console.log(`API running on port ${PORT}`)))
-    .catch((e) => { console.error('Manual payment migration failed:', e); process.exit(1); });
+    .catch((e) => { console.error('Reservation expiry initialization failed:', e); process.exit(1); });
 

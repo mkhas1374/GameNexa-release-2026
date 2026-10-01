@@ -226,12 +226,12 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
                                     Text(
-                                        text = if (lang == "fa") "پلن‌های اشتراک گیم‌نکسا" else "GameNexa Subscription Plans",
+                                        text = if (lang == "fa") (plans.firstOrNull()?.pageTitleFa?.ifBlank { null } ?: "پلن‌های اشتراک") else (plans.firstOrNull()?.pageTitleEn?.ifBlank { null } ?: "Subscription Plans"),
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 14.sp
                                     )
                                     Text(
-                                        text = if (lang == "fa") "دسترسی کامل، آپدیت مداوم و پشتیبانی اختصاصی" else "Full access, regular updates, and dedicated support",
+                                        text = if (lang == "fa") (plans.firstOrNull()?.pageSubtitleFa?.ifBlank { null } ?: "") else (plans.firstOrNull()?.pageSubtitleEn?.ifBlank { null } ?: ""),
                                         fontSize = 11.5.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -285,7 +285,7 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
-                                            text = if (lang == "fa") (plan.name ?: "") else { if (plan.id == "YEARLY" || (plan.durationDays ?: 0) >= 360) "1 Year Subscription" else if (plan.id == "THREE_MONTHS" || (plan.durationDays ?: 0) in 80..100) "3 Months Subscription" else "1 Month Subscription" },
+                                            text = if (lang == "fa") (plan.nameFa?.ifBlank { null } ?: plan.name ?: "") else (plan.nameEn?.ifBlank { null } ?: plan.name ?: ""),
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 15.sp
                                         )
@@ -329,7 +329,7 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
                                             )
                                             Spacer(modifier = Modifier.width(4.dp))
                                             Text(
-                                                text = if (lang == "fa") "تومان" else "Toman",
+                                                text = if (lang == "fa") (plan.currencyFa?.ifBlank { null } ?: "تومان") else (plan.currencyEn?.ifBlank { null } ?: "Toman"),
                                                 fontSize = 11.5.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -355,7 +355,7 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = if (lang == "fa") "خرید و فعال‌سازی" else "Buy & Activate",
+                                            text = if (lang == "fa") (plan.purchaseButtonFa?.ifBlank { null } ?: "خرید و پرداخت") else (plan.purchaseButtonEn?.ifBlank { null } ?: "Buy & Pay"),
                                             fontSize = 12.sp,
                                             fontWeight = FontWeight.Bold
                                         )
@@ -894,6 +894,21 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
                         }
                     }
 
+                    if (!plan.paymentInstructionFa.isNullOrBlank() || !plan.paymentInstructionEn.isNullOrBlank()) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                if (lang == "fa") plan.paymentInstructionFa.orEmpty() else plan.paymentInstructionEn.orEmpty(),
+                                modifier = Modifier.padding(12.dp),
+                                fontSize = 11.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
                     OutlinedTextField(
                         value = couponCodeInput,
                         onValueChange = { couponCodeInput = it },
@@ -974,7 +989,7 @@ fun SubscriptionActivationScreen(viewModel: GameNetViewModel, isEmbedded: Boolea
                     },
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    Text(if (lang == "fa") "ادامه و پرداخت از طریق فوربیکس" else "Continue to Forbix Payment", fontWeight = FontWeight.Bold)
+                    Text(if (lang == "fa") (plan.purchaseButtonFa?.ifBlank { null } ?: "ادامه و پرداخت") else (plan.purchaseButtonEn?.ifBlank { null } ?: "Continue to Payment"), fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {

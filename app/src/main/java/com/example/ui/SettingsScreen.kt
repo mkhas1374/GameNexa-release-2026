@@ -62,6 +62,7 @@ enum class SettingsSection(
     BROADCAST_MESSAGE("پیام مدیریت برای اعضا", "Broadcast Message", "ارسال پیام و اعلامیه عمومی مستقیم به اپلیکیشن مشتریان", "Send announcements and notices directly to customer app", Icons.Default.Campaign, Color(0xFFE53935)),
     DEPUTY_ASSIGNMENT("تخصیص معاون یا مدیر اجرایی", "Assign Assistant / Deputy", "تنظیم حساب کاربری، رمز عبور و دسترسی‌های معاون", "Set credentials, password, and permissions for deputy", Icons.Default.SupervisorAccount, Color(0xFFF4511E)),
     MANAGER_SALES("فروش مدیر", "Manager Sales", "ثبت نام و مدیریت حساب سایر مدیران", "Register and manage accounts of other managers", Icons.Default.Store, Color(0xFFD81B60)),
+    SUBSCRIPTION_PLANS("مدیریت پلن‌های اشتراک", "Subscription Plans", "تنظیم قیمت، لینک فوربیکس و متن‌های صفحه خرید اشتراک", "Manage subscription prices, Forbix links, and purchase-page texts", Icons.Default.CardMembership, Color(0xFF7B1FA2)),
     DEVICE_CONFIG("پیکر بندی دستگاه ها", "Device Configuration", "تعداد ایستگاه‌ها، اعلان‌ها و قیمت انواع کنسول‌ها", "Station counts, notifications, and console rates", Icons.Default.Devices, Color(0xFF039BE5)),
     BUFFET_CAFE("بوفه و کافه", "Buffet & Cafe", "مدیریت محصولات، قیمت‌گذاری و اقلام بوفه", "Product management, pricing, and cafe items", Icons.Default.Storefront, Color(0xFFFB8C00)),
     PAYMENT_METHODS("تخصیص روش های پرداخت", "Payment Methods", "شماره کارت، شبا، درگاه آنلاین، رمزارز و نرخ تبدیل", "Card numbers, IBAN, online gateway, and crypto", Icons.Default.Payment, Color(0xFF43A047))
@@ -157,6 +158,11 @@ fun SettingsScreen(
                         SettingsSection.BACKUP_RESTORE -> BackupRestoreSubScreen(viewModel = viewModel, lang = lang)
                         SettingsSection.BROADCAST_MESSAGE -> BroadcastMessageSubScreen(viewModel = viewModel, lang = lang)
                         SettingsSection.DEPUTY_ASSIGNMENT -> DeputyAssignmentSubScreen(viewModel = viewModel, lang = lang)
+                        SettingsSection.SUBSCRIPTION_PLANS -> {
+                            if (currentAdminRole == "SUPER_MANAGER") {
+                                SubscriptionPlansAdminSubScreen(viewModel = viewModel, lang = lang)
+                            }
+                        }
                         SettingsSection.MANAGER_SALES -> {
                             if (currentAdminRole == "SUPER_MANAGER") {
                                 ManagerSalesSubScreen(viewModel = viewModel, lang = lang)
@@ -375,7 +381,7 @@ fun SettingsMenuHub(
         val visibleSections = SettingsSection.values().filter { section ->
             if (isTrial) {
                 section == SettingsSection.LANGUAGE || section == SettingsSection.THEME
-            } else if (section == SettingsSection.MANAGER_SALES) {
+            } else if (section == SettingsSection.MANAGER_SALES || section == SettingsSection.SUBSCRIPTION_PLANS) {
                 currentRole == "SUPER_MANAGER"
             } else {
                 true
@@ -3153,4 +3159,231 @@ fun ManagerSalesSubScreen(viewModel: GameNetViewModel, lang: String) {
             }
         }
     }
+}
+
+
+@Composable
+private fun SubscriptionPlansAdminSubScreen(
+    viewModel: GameNetViewModel,
+    lang: String
+) {
+    val remote by viewModel.subscriptionPlansAdmin.collectAsState()
+    val scope = rememberCoroutineScope()
+    var loaded by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("") }
+
+    var titleFa by remember { mutableStateOf("") }
+    var titleEn by remember { mutableStateOf("") }
+    var subtitleFa by remember { mutableStateOf("") }
+    var subtitleEn by remember { mutableStateOf("") }
+    var instructionFa by remember { mutableStateOf("") }
+    var instructionEn by remember { mutableStateOf("") }
+    var buttonFa by remember { mutableStateOf("") }
+    var buttonEn by remember { mutableStateOf("") }
+    var currencyFa by remember { mutableStateOf("") }
+    var currencyEn by remember { mutableStateOf("") }
+    var supportFa by remember { mutableStateOf("") }
+    var supportEn by remember { mutableStateOf("") }
+
+    data class Draft(
+        val id: String,
+        var nameFa: String,
+        var nameEn: String,
+        var price: String,
+        var durationDays: String,
+        var paymentUrl: String,
+        var descriptionFa: String,
+        var descriptionEn: String,
+        var active: Boolean
+    )
+
+    var drafts by remember {
+        mutableStateOf(
+            listOf(
+                Draft("MONTHLY", "", "", "", "30", "", "", "", true),
+                Draft("THREE_MONTHS", "", "", "", "90", "", "", "", true),
+                Draft("YEARLY", "", "", "", "365", "", "", "", true)
+            )
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.fetchSubscriptionPlansAdmin()
+    }
+
+    LaunchedEffect(remote) {
+        if (remote.isNotEmpty() && !loaded) {
+            fun str(key: String) = remote[key]?.toString().orEmpty()
+            titleFa = str("pageTitleFa")
+            titleEn = str("pageTitleEn")
+            subtitleFa = str("pageSubtitleFa")
+            subtitleEn = str("pageSubtitleEn")
+            instructionFa = str("paymentInstructionFa")
+            instructionEn = str("paymentInstructionEn")
+            buttonFa = str("purchaseButtonFa")
+            buttonEn = str("purchaseButtonEn")
+            currencyFa = str("currencyFa")
+            currencyEn = str("currencyEn")
+            supportFa = str("supportMessageFa")
+            supportEn = str("supportMessageEn")
+            val rawPlans = remote["plans"] as? List<*>
+            if (rawPlans != null) {
+                drafts = drafts.map { old ->
+                    val m = rawPlans.mapNotNull { it as? Map<*, *> }
+                        .firstOrNull { it["id"]?.toString() == old.id }
+                    if (m == null) old else old.copy(
+                        nameFa = m["nameFa"]?.toString().orEmpty(),
+                        nameEn = m["nameEn"]?.toString().orEmpty(),
+                        price = m["price"]?.toString()?.removeSuffix(".0").orEmpty(),
+                        durationDays = m["durationDays"]?.toString()?.removeSuffix(".0").orEmpty(),
+                        paymentUrl = m["paymentUrl"]?.toString().orEmpty(),
+                        descriptionFa = m["descriptionFa"]?.toString().orEmpty(),
+                        descriptionEn = m["descriptionEn"]?.toString().orEmpty(),
+                        active = m["active"]?.toString()?.toBooleanStrictOrNull() ?: true
+                    )
+                }
+            }
+            loaded = true
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Text(
+                if (lang == "fa") "مدیریت کامل صفحه خرید اشتراک" else "Subscription Purchase Management",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                if (lang == "fa") "این بخش فقط برای Super Manager است. تغییرات بلافاصله منبع سروری صفحه خرید را تغییر می‌دهد." else "Only Super Manager can edit these settings. Changes update the server-side purchase page source.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        item {
+            SubscriptionTextField("عنوان فارسی", titleFa) { titleFa = it }
+            SubscriptionTextField("عنوان انگلیسی", titleEn) { titleEn = it }
+            SubscriptionTextField("زیرعنوان فارسی", subtitleFa) { subtitleFa = it }
+            SubscriptionTextField("زیرعنوان انگلیسی", subtitleEn) { subtitleEn = it }
+            SubscriptionTextField("پیام راهنمای پرداخت فارسی", instructionFa, minLines = 3) { instructionFa = it }
+            SubscriptionTextField("Payment instruction (English)", instructionEn, minLines = 3) { instructionEn = it }
+            SubscriptionTextField("متن دکمه پرداخت فارسی", buttonFa) { buttonFa = it }
+            SubscriptionTextField("Payment button text (English)", buttonEn) { buttonEn = it }
+            SubscriptionTextField("واحد پول فارسی", currencyFa) { currencyFa = it }
+            SubscriptionTextField("Currency label (English)", currencyEn) { currencyEn = it }
+            SubscriptionTextField("پیام پیگیری/تأیید فارسی", supportFa, minLines = 3) { supportFa = it }
+            SubscriptionTextField("Support / verification message (English)", supportEn, minLines = 3) { supportEn = it }
+        }
+
+        items(drafts.size) { index ->
+            val d = drafts[index]
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(d.id, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    SubscriptionTextField("نام فارسی", d.nameFa) { v ->
+                        drafts = drafts.toMutableList().also { it[index] = d.copy(nameFa = v) }
+                    }
+                    SubscriptionTextField("نام انگلیسی", d.nameEn) { v ->
+                        drafts = drafts.toMutableList().also { it[index] = d.copy(nameEn = v) }
+                    }
+                    SubscriptionTextField("قیمت (تومان)", d.price, keyboardType = KeyboardType.Number) { v ->
+                        drafts = drafts.toMutableList().also { it[index] = d.copy(price = v.filter { c -> c.isDigit() }) }
+                    }
+                    SubscriptionTextField("مدت اعتبار (روز)", d.durationDays, keyboardType = KeyboardType.Number) { v ->
+                        drafts = drafts.toMutableList().also { it[index] = d.copy(durationDays = v.filter { c -> c.isDigit() }) }
+                    }
+                    SubscriptionTextField("لینک پرداخت فوربیکس", d.paymentUrl) { v ->
+                        drafts = drafts.toMutableList().also { it[index] = d.copy(paymentUrl = v.trim()) }
+                    }
+                    SubscriptionTextField("توضیح فارسی", d.descriptionFa, minLines = 2) { v ->
+                        drafts = drafts.toMutableList().also { it[index] = d.copy(descriptionFa = v) }
+                    }
+                    SubscriptionTextField("توضیح انگلیسی", d.descriptionEn, minLines = 2) { v ->
+                        drafts = drafts.toMutableList().also { it[index] = d.copy(descriptionEn = v) }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = d.active,
+                            onCheckedChange = { v -> drafts = drafts.toMutableList().also { it[index] = d.copy(active = v) } }
+                        )
+                        Text(if (lang == "fa") "نمایش این پلن در صفحه خرید" else "Show this plan")
+                    }
+                }
+            }
+        }
+
+        item {
+            Button(
+                enabled = !saving && drafts.size == 3 && drafts.all { it.price.toLongOrNull()?.let { n -> n > 0 } == true && it.paymentUrl.startsWith("https://pay.forbix.ir/") },
+                onClick = {
+                    saving = true
+                    message = ""
+                    val plans = drafts.map {
+                        mapOf<String, Any>(
+                            "id" to it.id,
+                            "nameFa" to it.nameFa,
+                            "nameEn" to it.nameEn,
+                            "price" to (it.price.toLongOrNull() ?: 0L),
+                            "durationDays" to (it.durationDays.toIntOrNull() ?: 0),
+                            "paymentUrl" to it.paymentUrl,
+                            "descriptionFa" to it.descriptionFa,
+                            "descriptionEn" to it.descriptionEn,
+                            "active" to it.active
+                        )
+                    }
+                    val settings = mapOf<String, Any?>(
+                        "pageTitleFa" to titleFa,
+                        "pageTitleEn" to titleEn,
+                        "pageSubtitleFa" to subtitleFa,
+                        "pageSubtitleEn" to subtitleEn,
+                        "paymentInstructionFa" to instructionFa,
+                        "paymentInstructionEn" to instructionEn,
+                        "purchaseButtonFa" to buttonFa,
+                        "purchaseButtonEn" to buttonEn,
+                        "currencyFa" to currencyFa,
+                        "currencyEn" to currencyEn,
+                        "supportMessageFa" to supportFa,
+                        "supportMessageEn" to supportEn,
+                        "plans" to plans
+                    )
+                    viewModel.updateSubscriptionPlansAdmin(settings) { ok, msg ->
+                        saving = false
+                        message = if (ok) {
+                            if (lang == "fa") "تنظیمات با موفقیت ذخیره شد." else "Settings saved successfully."
+                        } else msg
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (saving) "..." else if (lang == "fa") "ذخیره تغییرات" else "Save Changes")
+            }
+            if (message.isNotBlank()) {
+                Text(message, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubscriptionTextField(
+    label: String,
+    value: String,
+    minLines: Int = 1,
+    keyboardType: KeyboardType = KeyboardType.Text,
+    onValueChange: (String) -> Unit
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        minLines = minLines,
+        singleLine = minLines == 1,
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType)
+    )
 }

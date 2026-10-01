@@ -22,9 +22,13 @@ async function runTests() {
         client.release();
     }
     
-    const baseDate = new Date();
-    baseDate.setHours(baseDate.getHours() + 1); // Future time
-    const startIso = baseDate.toISOString();
+    // Use a future Tehran-local time that is valid for the manager's configured VIP window.
+    // This keeps the test deterministic and avoids depending on the VPS wall-clock hour.
+    const nowTehran = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tehran' }));
+    const baseDate = new Date(nowTehran);
+    baseDate.setHours(15, 0, 0, 0);
+    if (baseDate.getTime() <= Date.now()) baseDate.setDate(baseDate.getDate() + 1);
+    const startIso = new Date(baseDate.getTime() - (3.5 * 60 * 60 * 1000)).toISOString();
     
     // 1. State Machine
     try {

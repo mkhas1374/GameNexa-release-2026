@@ -1189,7 +1189,7 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
                                 return@launch
                             }
                             val startMillis = selectedStartMillis
-                            val key = "customer-reservation:${customer.id}:$selectedStationId:$startMillis:$selectedDuration"
+                            val key = "customer-reservation:" + java.util.UUID.randomUUID()
                             val response = SelfHostedManager.submitAtomicReservation(
                                 com.example.data.network.AtomicReservationRequest(
                                     reservationType = "NORMAL_RESERVATION",

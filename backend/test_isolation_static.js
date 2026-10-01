@@ -18,6 +18,7 @@ assert(financial.includes('AND customer_id = $3 FOR UPDATE'), 'customer cancella
 assert(reservation.includes('WHERE id = $1 AND manager_id = $2 FOR UPDATE'), 'reservation creation must verify customer tenant');
 assert(server.includes('phone_number, manager_id, password'), 'customer login must require a password');
 assert(server.includes("customer.password_hash"), 'customer login must verify a stored password hash');
-assert(server.includes("/api/manager/customers/:id/password"), 'manager password provisioning route must exist');
+assert(canonical.includes("/api/v1/manager/customers"), 'canonical manager customer route must exist');
+assert(!server.includes("/api/manager/customers/:id/password"), 'legacy manager customer password route must be removed');
 
 console.log('tenant-isolation static checks passed');

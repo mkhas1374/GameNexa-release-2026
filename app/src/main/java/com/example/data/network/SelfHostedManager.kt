@@ -382,7 +382,7 @@ object SelfHostedManager {
 
             NetworkClient.authToken = token
             val profileRequest = Request.Builder()
-                .url("$SERVER_URL/api/customer/profile")
+                .url("$SERVER_URL/api/v1/customer/profile")
                 .headers(getBaseHeaders().newBuilder().add("Authorization", "Bearer $token").build())
                 .get()
                 .build()
@@ -468,65 +468,13 @@ object SelfHostedManager {
     suspend fun syncAllCustomersToCloud(customers: List<Customer>): Boolean = withContext(Dispatchers.IO) {
         if (customers.isEmpty()) return@withContext true
         try {
-            val jsonArray = JSONArray()
-            for (c in customers) {
-                jsonArray.put(JSONObject().apply {
-                    if (false) {
-                        put("manager_id", _currentManagerId)
-                    }
-                    put("id", c.id)
-                    put("customer_name", c.fullName)
-                    put("customer_phone", c.phoneNumber)
-                    put("fullName", c.fullName)
-                    put("phoneNumber", c.phoneNumber)
-                    put("password", c.password)
-                    put("debt", c.debt)
-                    put("credit", c.credit)
-                    put("points", c.points)
-                    put("availableGn", c.availableGn)
-                    put("pendingGn", c.pendingGn)
-                    put("lp", c.lp)
-                    put("tier", c.tier)
-                    put("inviteCode", c.inviteCode)
-                    put("invitedByCode", c.invitedByCode)
-                    put("description", c.description)
-                })
-            }
-
-            val requestBody = jsonArray.toString().toRequestBody(JSON_MEDIA)
-
-            // 1. Try isolated manager endpoint if manager_id is set
-            if (false) {
-                try {
-                    val contractReq = Request.Builder()
-                        .url("$SERVER_URL/api/v1/manager/customers/upsert")
-                        .headers(getBaseHeaders())
-                        .post(requestBody)
-                        .build()
-                    val contractResp = client.newCall(contractReq).execute()
-                    if (contractResp.isSuccessful) return@withContext true
-                } catch (_: Exception) {}
-            }
-
-            // 2. Try selfhosted sync endpoint
-            try {
-                val request = Request.Builder()
-                    .url("$SERVER_URL/api/v1/manager/customers/sync")
-                    .headers(getBaseHeaders())
-                    .post(requestBody)
-                    .build()
-                val response = client.newCall(request).execute()
-                if (response.isSuccessful) return@withContext true
-            } catch (_: Exception) {}
-
-            // 3. Fallback: Upsert each customer individually to guaranteed endpoint
             var successCount = 0
             for (c in customers) {
                 if (upsertCustomer(c)) successCount++
             }
-            successCount > 0
+            successCount == customers.size
         } catch (e: Exception) {
-            Log.w(TAG, "syncAllCustomersToCloud fallback sync handled: ${e.message}")
+            Log.w(TAG, "syncAllCustomersToCloud failed: ${e.message}")
             false
         }
     }
@@ -540,8 +488,7 @@ object SelfHostedManager {
         try {
             val json=JSONObject().apply {
                 put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber); put("password",customer.password)
-                put("debt",customer.debt); put("credit",customer.credit); put("points",customer.points); put("availableGn",customer.availableGn)
-                put("pendingGn",customer.pendingGn); put("lp",customer.lp); put("tier",customer.tier); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
+                put("debt",customer.debt); put("credit",customer.credit); put("tier",customer.tier); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
             }
             val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
             client.newCall(req).execute().use { resp ->
@@ -829,15 +776,17 @@ object SelfHostedManager {
             updated[key] = valueString
             _cloudAppConfigs.value = updated
 
+            val settings = JSONObject().apply {
+                put(key, valueString)
+            }
             val json = JSONObject().apply {
-                put("key", key)
-                put("value", valueString)
+                put("settings", settings)
             }
 
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/manager/configuration")
                 .headers(getBaseHeaders())
-                .post(json.toString().toRequestBody(JSON_MEDIA))
+                .put(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
 
             val resp = client.newCall(req).execute()
@@ -1000,10 +949,12 @@ object SelfHostedManager {
                 put("description", entry.description)
             }
 
+            val idem = entry.referenceId.trim().takeIf { it.isNotBlank() }
+                ?: "gn-ledger:${entry.customerId}:${entry.timestamp}:${entry.gnAmount}:${entry.transactionType}"
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/manager/club/ledger")
-                .headers(getBaseHeaders())
-                .post(json.toString().toRequestBody(JSON_MEDIA))
+                .headers(getBaseHeaders().newBuilder().add("Idempotency-Key", idem).build())
+                .post(json.put("idempotencyKey", idem).toString().toRequestBody(JSON_MEDIA))
                 .build()
 
             val resp = client.newCall(req).execute()
@@ -1378,7 +1329,7 @@ object SelfHostedManager {
 
     suspend fun submitAtomicReservation(req: AtomicReservationRequest): AtomicReservationResponse? = withContext(Dispatchers.IO) {
         try {
-            val key = req.idempotencyKey.ifBlank { "reservation:${req.reservationTimeMillis}:${req.stationId ?: 0L}:${req.durationMinutes}" }
+            val key = req.idempotencyKey.trim().takeIf { it.isNotEmpty() } ?: return@withContext null
             val json = JSONObject().apply {
                 put("type", req.reservationType)
                 put("stationIds", JSONArray().apply { req.stationId?.let { put(it) } })
@@ -1537,16 +1488,18 @@ object SelfHostedManager {
                 ?: _allCloudCustomers.value.find { it.phoneNumber == senderPhoneOrId || it.id.toString() == senderPhoneOrId }
                 ?: return@withContext Result.failure(Exception("حساب فرستنده یافت نشد"))
 
+            val transferKey = "gn-transfer:${sender.id}:${receiverPhoneOrId}:${amount}:${java.util.UUID.randomUUID()}"
             val json = JSONObject().apply {
                 put("senderId", sender.id)
                 put("receiverPhone", receiverPhoneOrId)
                 put("gnAmount", amount)
                 put("description", description)
+                put("idempotencyKey", transferKey)
             }
 
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/customer/club/transfer")
-                .headers(getBaseHeaders())
+                .headers(getBaseHeaders().newBuilder().add("Idempotency-Key", transferKey).build())
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
 
@@ -1557,8 +1510,7 @@ object SelfHostedManager {
                 val obj = JSONObject(body)
                 if (obj.optBoolean("success", true)) {
                     val updatedSender = sender.copy(
-                        availableGn = (sender.availableGn - amount).coerceAtLeast(0L),
-                        points = (sender.points - amount).coerceAtLeast(0L)
+                        availableGn = (sender.availableGn - amount).coerceAtLeast(0L)
                     )
                     _currentLoggedInCustomer.value = updatedSender
                     return@withContext Result.success("انتقال مبلغ $amount GN با موفقیت انجام شد.")
@@ -1817,7 +1769,9 @@ object SelfHostedManager {
         stationId: Any,
         productName: String,
         quantity: Int,
-        price: Long
+        price: Long,
+        targetCustomerId: Long? = null,
+        idempotencyKey: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             if (_currentManagerId.isBlank()) return@withContext false
@@ -1827,10 +1781,14 @@ object SelfHostedManager {
                 put("productName", productName)
                 put("quantity", quantity)
                 put("price", price)
+                put("targetCustomerId", targetCustomerId ?: 0)
             }
+            val requestIdempotencyKey = idempotencyKey?.trim().takeIf { !it.isNullOrBlank() }
+                ?: "station-order:${stationId}:${productName}:${targetCustomerId ?: 0}:${java.util.UUID.randomUUID()}"
             val request = Request.Builder()
                 .url("$SERVER_URL/api/station/order")
                 .headers(getBaseHeaders())
+                .header("Idempotency-Key", requestIdempotencyKey)
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
             val response = client.newCall(request).execute()

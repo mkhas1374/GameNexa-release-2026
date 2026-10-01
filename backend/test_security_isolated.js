@@ -8,7 +8,7 @@ const A='sec_a_'+run,B='sec_b_'+run;
 let ca,cb,ra,reqA;
 const tok=(id,role,mid)=>jwt.sign({id,managerId:mid,role},process.env.JWT_SECRET,{expiresIn:'1h'});
 async function db(q,p=[]){return pool.query(q,p)}
-async function api(path,o={}){const h={'Content-Type':'application/json'};if(o.token)h.Authorization='Bearer '+o.token;const r=await fetch(BASE+path,{method:o.method||'GET',headers:h,body:o.body?JSON.stringify(o.body):undefined});let t=await r.text(),d;try{d=JSON.parse(t)}catch{d={raw:t}}return {s:r.status,d}}
+async function api(path,o={}){const h={'Content-Type':'application/json'};if(o.token){h.Authorization='Bearer '+o.token; try{h['X-Manager-ID']=jwt.decode(o.token).managerId||''}catch{}}const r=await fetch(BASE+path,{method:o.method||'GET',headers:h,body:o.body?JSON.stringify(o.body):undefined});let t=await r.text(),d;try{d=JSON.parse(t)}catch{d={raw:t}}return {s:r.status,d}}
 function ok(x,m){if(!x)throw Error('ASSERT '+m)}
 async function clean(){for(const m of [A,B]){for(const q of [
 'DELETE FROM financial_audit_logs WHERE manager_id=$1','DELETE FROM payment_transactions WHERE manager_id=$1',
@@ -28,10 +28,10 @@ async function main(){
  ra=(await db("INSERT INTO reservations(manager_id,customer_id,type,status,start_time,end_time,duration_minutes,snap_base_price,snap_final_price,snap_payable_amount,snap_currency) VALUES($1,$2,'NORMAL_RESERVATION','PAYMENT_PENDING',NOW()+INTERVAL '1 day',NOW()+INTERVAL '1 day 1 hour',60,100000,100000,100000,'IRT') RETURNING id",[A,ca])).rows[0].id;
  const ma=tok(A,'MANAGER',A),mb=tok(B,'MANAGER',B),cu=tok(ca,'CUSTOMER',A),cbt=tok(cb,'CUSTOMER',B);
  console.log('fixtures_ready');
- let r=await api('/api/customer/profile',{token:ma});ok(r.s===403,'manager token blocked from customer');
- r=await api('/api/manager/customers',{token:cu});ok(r.s===403,'customer token blocked from manager');
- r=await api('/api/customer/reservations/'+ra,{token:cbt});ok(r.s===404,'customer cross-manager reservation blocked');
- r=await api('/api/manager/reservations/'+ra,{token:mb});ok(r.s===404,'manager cross-manager reservation blocked');
+ let r=await api('/api/v1/customer/profile',{token:ma});ok(r.s===403,'manager token blocked from customer');
+ r=await api('/api/v1/manager/customers',{token:cu});ok(r.s===403,'customer token blocked from manager');
+ r=await api('/api/v1/customer/reservations/'+ra,{token:cbt});ok(r.s===404,'customer cross-manager reservation blocked');
+ r=await api('/api/v1/manager/reservations/'+ra,{token:mb});ok(r.s===404,'manager cross-manager reservation blocked');
  r=await api('/api/v1/customer/manual-payment-requests?managerId='+B,{token:cu});ok(r.s===200 && Array.isArray(r.d) && r.d.every(x=>x.manager_id===A && x.customer_id===ca),'query manager spoof ignored');
  r=await api('/api/v1/customer/manual-payment-requests/'+999999+'/approve',{method:'POST',token:mb,body:{amount:1}});ok(r.s===404||r.s===400,'foreign/nonexistent request not approved');
  r=await api('/api/v1/customer/manual-payment-requests',{method:'POST',token:cu,body:{purpose:'WALLET_TOPUP',managerId:B,idempotencyKey:'sec_'+run+'_1',amount:'1000'}});ok(r.s===201 && r.d.request?.manager_id===A,'body manager spoof ignored');reqA=r.d.request.id;
@@ -43,15 +43,15 @@ async function main(){
  console.log('idor_and_spoofing_ok');
  const expired=jwt.sign({id:A,managerId:A,role:'MANAGER'},process.env.JWT_SECRET,{expiresIn:'-1s'});
  const malformed=ma.slice(0,-1)+(ma.slice(-1)==='a'?'b':'a');
- const noBearer=await fetch(BASE+'/api/manager/customers',{headers:{Authorization:ma}});ok(noBearer.status===401,'non-Bearer rejected');
- r=await api('/api/manager/customers',{token:expired});ok(r.s===401,'expired token rejected');
- r=await api('/api/manager/customers',{token:malformed});ok(r.s===401,'tampered token rejected');
+ const noBearer=await fetch(BASE+'/api/v1/manager/customers',{headers:{Authorization:ma}});ok(noBearer.status===401,'non-Bearer rejected');
+ r=await api('/api/v1/manager/customers',{token:expired});ok(r.s===401,'expired token rejected');
+ r=await api('/api/v1/manager/customers',{token:malformed});ok(r.s===401,'tampered token rejected');
  const badManager=jwt.sign({id:A,managerId:B,role:'MANAGER'},process.env.JWT_SECRET,{expiresIn:'1h'});
- r=await api('/api/manager/customers',{token:badManager});ok(r.s===403,'manager id mismatch rejected');
+ r=await api('/api/v1/manager/customers',{token:badManager});ok(r.s===403,'manager id mismatch rejected');
  const noMid=jwt.sign({id:A,role:'MANAGER'},process.env.JWT_SECRET,{expiresIn:'1h'});
- r=await api('/api/manager/customers',{token:noMid});ok(r.s===403,'manager without managerId rejected');
+ r=await api('/api/v1/manager/customers',{token:noMid});ok(r.s===403,'manager without managerId rejected');
  const noCid=jwt.sign({managerId:A,role:'CUSTOMER'},process.env.JWT_SECRET,{expiresIn:'1h'});
- r=await api('/api/customer/profile',{token:noCid});ok(r.s===403,'customer without id rejected');
+ r=await api('/api/v1/customer/profile',{token:noCid});ok(r.s===403,'customer without id rejected');
  console.log('jwt_hardening_ok');
  r=await api('/api/v1/customer/manual-payment-requests',{method:'POST',token:cbt,body:{purpose:'RESERVATION_PAYMENT',reservationId:ra,idempotencyKey:'sec_'+run+'_foreign',amount:'100000'}});ok(r.s>=400&&r.s<500,'foreign reservation rejected');
  r=await api('/api/v1/customer/manual-payment-requests',{method:'POST',token:cu,body:{purpose:'RESERVATION_PAYMENT',reservationId:ra,idempotencyKey:'sec_'+run+'_partial',amount:'99999'}});ok(r.s===201 && r.d.request?.manager_id===A && r.d.request?.reservation_id===ra,'valid partial reservation payment request accepted');

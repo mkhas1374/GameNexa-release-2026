@@ -7,8 +7,8 @@ async function runTest() {
     try {
         const res = await fetch('http://127.0.0.1:3000/api/v1/subscriptions/buy', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({deviceId: 'test_dev', plan: '1_MONTH'})
+            headers: {'Content-Type': 'application/json', 'Idempotency-Key': 'test-subscription-idem-1'},
+            body: JSON.stringify({deviceId: 'test_dev', plan: 'MONTHLY', idempotencyKey: 'test-subscription-idem-1'})
         });
         const raw = await res.text(); let data; try { data = JSON.parse(raw); } catch { throw new Error('subscription buy non-JSON response status='+res.status+' body='+raw); }
         
@@ -20,16 +20,24 @@ async function runTest() {
         
         if (!data.licenseCode) throw new Error('subscription buy response missing licenseCode: '+JSON.stringify(data));
         const reqId = data.licenseCode.split('_')[1];
+        const replay = await fetch('http://127.0.0.1:3000/api/v1/subscriptions/buy', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'Idempotency-Key': 'test-subscription-idem-1'},
+            body: JSON.stringify({deviceId: 'test_dev', plan: 'MONTHLY', idempotencyKey: 'test-subscription-idem-1'})
+        });
+        const replayData = await replay.json();
+        if (replayData.licenseCode === data.licenseCode && replayData.idempotent === true) { console.log('PASS: Subscription purchase idempotency'); passed++; }
+        else { console.log('FAIL: Subscription purchase idempotency', replayData); failed++; }
         
         // Automatic confirmation must remain blocked; manual Super Manager provisioning is required.
         const res2 = await fetch(`http://127.0.0.1:3000/api/v1/super-manager/subscription-requests/${reqId}/confirm`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'}
         });
-        if (res2.status === 401) {
-            console.log("PASS: Super Manager authentication gate"); passed++;
+        if (res2.status === 404) {
+            console.log("PASS: legacy automatic confirmation route removed"); passed++;
         } else {
-            console.log("FAIL: Super Manager authentication gate"); failed++;
+            console.log("FAIL: legacy automatic confirmation route removed"); failed++;
         }
         const pending = await pool.query('SELECT status,provisioned_account FROM subscription_payment_requests WHERE id=$1',[reqId]);
         if (pending.rows[0]?.status === 'PENDING' && pending.rows[0]?.provisioned_account === false) {
@@ -43,6 +51,7 @@ async function runTest() {
         failed++;
         process.exitCode = 1;
     } finally {
+        try { await pool.query("DELETE FROM subscription_payment_requests WHERE buyer_device_id='test_dev'"); } catch {}
         pool.end();
         console.log(`Tests Result: Passed: ${passed}, Failed: ${failed}`);
     }

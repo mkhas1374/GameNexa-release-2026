@@ -272,7 +272,7 @@ async function cancelReservation(client, managerId, reservationId, idempotencyKe
         VALUES ($1, $2, $3, 'DEBIT', 'CANCELLATION', $4, $5) ON CONFLICT DO NOTHING RETURNING id
     `, [managerId, r.customer_id, gnLoss, r.id.toString(), `cancel_gn_${idempotencyKey}`]);
     if (gnDebit.rowCount > 0) {
-        await client.query(`UPDATE customers SET gn_balance = gn_balance - $1 WHERE id = $2 AND manager_id = $3`, [gnLoss, r.customer_id, managerId]);
+        await client.query(`UPDATE customers SET gn_balance = GREATEST(0, gn_balance - $1) WHERE id = $2 AND manager_id = $3`, [gnLoss, r.customer_id, managerId]);
     }
 
     const lpDebit = await client.query(`
@@ -280,7 +280,7 @@ async function cancelReservation(client, managerId, reservationId, idempotencyKe
         VALUES ($1, $2, $3, 'DEBIT', 'CANCELLATION', $4, $5) ON CONFLICT DO NOTHING RETURNING id
     `, [managerId, r.customer_id, lpLoss, r.id.toString(), `cancel_lp_${idempotencyKey}`]);
     if (lpDebit.rowCount > 0) {
-        await client.query(`UPDATE customers SET lp_balance = lp_balance - $1 WHERE id = $2 AND manager_id = $3`, [lpLoss, r.customer_id, managerId]);
+        await client.query(`UPDATE customers SET lp_balance = GREATEST(0, lp_balance - $1) WHERE id = $2 AND manager_id = $3`, [lpLoss, r.customer_id, managerId]);
     }
 
     // Apply Restriction/Surcharge for T5

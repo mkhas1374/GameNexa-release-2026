@@ -146,6 +146,68 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun customerTransactionJson(t: CustomerTransaction): org.json.JSONObject = org.json.JSONObject().apply {
+        put("localId", t.id)
+        put("customerId", t.customerId)
+        put("customerName", t.customerName)
+        put("stationName", t.stationName)
+        put("title", t.title)
+        put("amount", t.amount)
+        put("paidAmount", t.paidAmount)
+        put("status", t.status)
+        put("dateStr", t.dateStr)
+        put("timeStr", t.timeStr)
+        put("segmentDetails", t.segmentDetails)
+        put("buffetDetails", t.buffetDetails)
+        put("timestamp", t.timestamp)
+        put("playMinutes", t.playMinutes)
+        put("gameCost", t.gameCost)
+        put("foodCost", t.foodCost)
+    }
+
+    private suspend fun queueOrSyncCustomerTransaction(transaction: CustomerTransaction) {
+        // Walk-in transactions have no customer row and are intentionally local-only.
+        if (transaction.customerId <= 0L || transaction.id <= 0L) return
+        val key = "customer_transaction_outbox_${transaction.id}"
+        val payload = customerTransactionJson(transaction).toString()
+        if (SelfHostedManager.syncCustomerTransactionToCloud(transaction)) {
+            repository.saveSetting(key, "")
+        } else {
+            repository.saveSetting(key, payload)
+        }
+    }
+
+    private suspend fun flushPendingCustomerTransactions() {
+        repository.getAllAppSettings()
+            .filter { it.key.startsWith("customer_transaction_outbox_") && it.value.isNotBlank() }
+            .forEach { setting ->
+                try {
+                    val obj = org.json.JSONObject(setting.value)
+                    val transaction = CustomerTransaction(
+                        id = obj.optLong("localId"),
+                        customerId = obj.optLong("customerId"),
+                        customerName = obj.optString("customerName"),
+                        stationName = obj.optString("stationName"),
+                        title = obj.optString("title"),
+                        amount = obj.optLong("amount"),
+                        paidAmount = obj.optLong("paidAmount"),
+                        status = obj.optString("status", "UNREVIEWED"),
+                        dateStr = obj.optString("dateStr"),
+                        timeStr = obj.optString("timeStr"),
+                        segmentDetails = obj.optString("segmentDetails"),
+                        buffetDetails = obj.optString("buffetDetails"),
+                        timestamp = obj.optLong("timestamp"),
+                        playMinutes = obj.optInt("playMinutes"),
+                        gameCost = obj.optLong("gameCost"),
+                        foodCost = obj.optLong("foodCost")
+                    )
+                    if (transaction.customerId > 0L && transaction.id > 0L && SelfHostedManager.syncCustomerTransactionToCloud(transaction)) {
+                        repository.saveSetting(setting.key, "")
+                    }
+                } catch (_: Exception) { }
+            }
+    }
+
     private suspend fun queueOrSendSessionEvent(
         sessionId: String,
         eventType: String,
@@ -743,6 +805,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                                 SelfHostedManager.setManagerId(finalManagerId)
                                 flushPendingSessionStarts()
                                 flushSessionOutbox()
+                                flushPendingBuffetOrders()
+                                flushPendingCustomerTransactions()
                                 flushPendingSettlements()
                                 SelfHostedManager.fetchAllFromCloud()
                                 repository.syncAllWithServer()
@@ -1216,142 +1280,6 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             repository.saveSetting("policy_transfer_daily_limit_gn", dailyLimitTransfer.toString())
             repository.saveSetting("policy_transfer_fee_percent", feePercent.toString())
             logOperatorActivity("تغییر قوانین سیستم GN", "بروزرسانی نرخ‌های پاداش، معرفی، تبدیل، خرید و انتقال GN")
-        }
-    }
-
-    fun processCustomerGameAndBuffetGn(
-        customer: Customer,
-        paidGameAmount: Long,
-        paidBuffetAmount: Long,
-        referenceId: String,
-        isFullyPaid: Boolean
-    ) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val cust = customer
-
-            val gameGn = (paidGameAmount / 100000L) * _gameRewardRate.value
-            val buffetGn = (paidBuffetAmount / 100000L) * _buffetRewardRate.value
-            val totalEarnedGn = gameGn + buffetGn
-
-            if (totalEarnedGn > 0L) {
-                val status = if (isFullyPaid) "AVAILABLE" else "PENDING"
-                val newAvail = if (isFullyPaid) cust.availableGn + totalEarnedGn else cust.availableGn
-                val newPending = if (!isFullyPaid) cust.pendingGn + totalEarnedGn else cust.pendingGn
-                val currentLpRate = if (_lpTomanRate.value > 0L) _lpTomanRate.value else 1000L
-                val newLp = cust.lp + (paidGameAmount + paidBuffetAmount) / currentLpRate
-                val newQualSpend = cust.totalQualifiedSpend + paidGameAmount
-                val newVisits = cust.totalVisitsCount + 1
-                val now = System.currentTimeMillis()
-
-                val updatedCust = cust.copy(
-                    availableGn = newAvail,
-                    pendingGn = newPending,
-                    lp = newLp,
-                    totalQualifiedSpend = newQualSpend,
-                    totalVisitsCount = newVisits,
-                    lastActivityTimestamp = now
-                )
-                repository.insertCustomer(updatedCust)
-
-                val desc = "پاداش $status (بازی: ${paidGameAmount.toInt()} تومان | بوفه: ${paidBuffetAmount.toInt()} تومان)"
-                repository.addGnLedgerEntry(
-                    GnLedgerEntry(
-                        customerId = cust.id,
-                        customerName = cust.fullName,
-                        gnAmount = totalEarnedGn,
-                        transactionType = if (gameGn > 0 && buffetGn > 0) "GAME_AND_BUFFET_REWARD" else if (gameGn > 0) "GAME_REWARD" else "BUFFET_REWARD",
-                        source = "EARNED",
-                        status = status,
-                        timestamp = now,
-                        referenceId = referenceId,
-                        description = desc
-                    )
-                )
-
-                // Evaluate Referral Qualification for referred customer
-                if (cust.invitedByCode.isNotBlank()) {
-                    val activeGamingRule = _referralRules.value.find { it.type == "GAMING_SPEND" && it.isEnabled }
-                    if (activeGamingRule != null) {
-                        val normalizedInvBy = normalizeInviteCode(cust.invitedByCode)
-                        val inviter = repository.allCustomers.firstOrNull()?.find { normalizeInviteCode(it.inviteCode) == normalizedInvBy }
-                        if (inviter != null && inviter.id != cust.id) {
-                            var refRecord = repository.getReferralRecordForReferred(cust.id)
-                            val reqSpend = activeGamingRule.requiredAmount
-                            val rewGn = activeGamingRule.rewardGn
-
-                            if (refRecord == null) {
-                                val isComplete = paidGameAmount >= reqSpend
-                                refRecord = ReferralProgressRecord(
-                                    referrerCustomerId = inviter.id,
-                                    referredCustomerId = cust.id,
-                                    referredCustomerName = cust.fullName,
-                                    rewardGn = rewGn,
-                                    currentGamingSpend = paidGameAmount,
-                                    requiredGamingSpend = reqSpend,
-                                    status = if (isComplete) "COMPLETED" else "PENDING",
-                                    createdTimestamp = now,
-                                    completedTimestamp = if (isComplete) now else null
-                                )
-                                repository.addReferralRecord(refRecord)
-
-                                if (isComplete) {
-                                    val updatedInviter = inviter.copy(
-                                        availableGn = inviter.availableGn + rewGn
-                                    )
-                                    repository.insertCustomer(updatedInviter)
-
-                                    repository.addGnLedgerEntry(
-                                        GnLedgerEntry(
-                                            customerId = inviter.id,
-                                            customerName = inviter.fullName,
-                                            gnAmount = rewGn,
-                                            transactionType = "REFERRAL",
-                                            source = "REWARD",
-                                            status = "AVAILABLE",
-                                            timestamp = now,
-                                            referenceId = "REF_QUALIFIED_${cust.id}",
-                                            description = "پاداش دعوت از ${cust.fullName} (تکمیل شرط ${reqSpend.toInt()} تومان بازی)"
-                                        )
-                                    )
-                                }
-                            } else if (refRecord.status == "PENDING") {
-                                val newSpend = refRecord.currentGamingSpend + paidGameAmount
-                                if (newSpend >= reqSpend) {
-                                    val updatedRef = refRecord.copy(
-                                        currentGamingSpend = newSpend,
-                                        rewardGn = rewGn,
-                                        requiredGamingSpend = reqSpend,
-                                        status = "COMPLETED",
-                                        completedTimestamp = now
-                                    )
-                                    repository.updateReferralRecord(updatedRef)
-
-                                    val updatedInviter = inviter.copy(
-                                        availableGn = inviter.availableGn + rewGn
-                                    )
-                                    repository.insertCustomer(updatedInviter)
-
-                                    repository.addGnLedgerEntry(
-                                        GnLedgerEntry(
-                                            customerId = inviter.id,
-                                            customerName = inviter.fullName,
-                                            gnAmount = rewGn,
-                                            transactionType = "REFERRAL",
-                                            source = "REWARD",
-                                            status = "AVAILABLE",
-                                            timestamp = now,
-                                            referenceId = "REF_QUALIFIED_${cust.id}",
-                                            description = "پاداش دعوت از ${cust.fullName} (تکمیل شرط ${reqSpend.toInt()} تومان بازی)"
-                                        )
-                                    )
-                                } else {
-                                    repository.updateReferralRecord(refRecord.copy(currentGamingSpend = newSpend))
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -2138,6 +2066,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         lastReconnectSyncElapsed = currentElapsed
                         flushPendingSessionStarts()
                         flushSessionOutbox()
+                        flushPendingBuffetOrders()
+                        flushPendingCustomerTransactions()
                         flushPendingSettlements()
                     }
                     // Connected to server - reset grace period
@@ -2534,7 +2464,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     controllerCount = station.controllerCount
                 )
                 if (sessionStart == null) {
-                    sessionId = "OFFLINE-" + java.util.UUID.randomUUID().toString()
+                    sessionId = java.util.UUID.randomUUID().toString()
                     authoritativeStart = requestedStart
                     repository.saveSetting(
                         "session_pending_start_" + stationId,
@@ -3178,7 +3108,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     val newId = repository.insertCustomerTransaction(trans)
                     val transWithId = trans.copy(id = newId)
                     viewModelScope.launch(Dispatchers.IO) {
-                        SelfHostedManager.syncCustomerTransactionToCloud(transWithId)
+                        queueOrSyncCustomerTransaction(transWithId)
                     }
 
                     if (existingCust != null) {
@@ -3205,14 +3135,6 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                             )
                         }
 
-                        // Award GN & evaluate Loyalty Referral
-                        processCustomerGameAndBuffetGn(
-                            customer = updatedCust,
-                            paidGameAmount = gameCost,
-                            paidBuffetAmount = buffetCost,
-                            referenceId = "SESSION_${now}_CUST_$cid",
-                            isFullyPaid = isFullyPaid
-                        )
                     }
                 }
             }
@@ -3246,7 +3168,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 val walkInTrans = trans.copy(status = "UNREVIEWED", paidAmount = 0L)
                 val newId = repository.insertCustomerTransaction(walkInTrans)
                 viewModelScope.launch(Dispatchers.IO) {
-                    SelfHostedManager.syncCustomerTransactionToCloud(walkInTrans.copy(id = newId))
+                    queueOrSyncCustomerTransaction(walkInTrans.copy(id = newId))
                 }
             }
 
@@ -3387,6 +3309,78 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     // Buffet / Cafe Orders
 
+    private suspend fun sendOrQueueBuffetOrder(
+        stationId: Int,
+        productName: String,
+        quantity: Int,
+        price: Long,
+        targetCustomerId: Long?
+    ) {
+        val operationId = java.util.UUID.randomUUID().toString()
+        val key = "station_order_outbox_" + stationId
+        val current = repository.getSetting(key)
+        val array = try {
+            if (current.isNullOrBlank()) org.json.JSONArray() else org.json.JSONArray(current)
+        } catch (_: Exception) {
+            org.json.JSONArray()
+        }
+        val item = org.json.JSONObject().apply {
+            put("operationId", operationId)
+            put("productName", productName)
+            put("quantity", quantity)
+            put("price", price)
+            put("targetCustomerId", targetCustomerId ?: org.json.JSONObject.NULL)
+        }
+        array.put(item)
+        repository.saveSetting(key, array.toString())
+
+        val sent = SelfHostedManager.addBuffetOrderEvent(
+            stationId = stationId,
+            productName = productName,
+            quantity = quantity,
+            price = price,
+            targetCustomerId = targetCustomerId,
+            idempotencyKey = "station-order:" + operationId
+        )
+        if (sent) removeBuffetOrderFromOutbox(key, operationId)
+    }
+
+    private suspend fun removeBuffetOrderFromOutbox(key: String, operationId: String) {
+        val current = repository.getSetting(key)
+        val array = try { org.json.JSONArray(current.orEmpty()) } catch (_: Exception) { org.json.JSONArray() }
+        val remaining = org.json.JSONArray()
+        for (i in 0 until array.length()) {
+            val item = array.optJSONObject(i) ?: continue
+            if (item.optString("operationId") != operationId) remaining.put(item)
+        }
+        repository.saveSetting(key, remaining.toString())
+    }
+
+    private suspend fun flushPendingBuffetOrders() {
+        val settings = repository.getAllAppSettings()
+        settings.filter { it.key.startsWith("station_order_outbox_") }.forEach { setting ->
+            val stationId = setting.key.removePrefix("station_order_outbox_").toIntOrNull() ?: return@forEach
+            val array = try { org.json.JSONArray(setting.value) } catch (_: Exception) { return@forEach }
+            val remaining = org.json.JSONArray()
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                val operationId = item.optString("operationId")
+                if (operationId.isBlank()) continue
+                val customer = if (item.isNull("targetCustomerId")) null else item.optLong("targetCustomerId").takeIf { it > 0L }
+                val ok = SelfHostedManager.addBuffetOrderEvent(
+                    stationId = stationId,
+                    productName = item.optString("productName"),
+                    quantity = item.optInt("quantity", 1),
+                    price = item.optLong("price", 0L),
+                    targetCustomerId = customer,
+                    idempotencyKey = "station-order:" + operationId
+                )
+                if (!ok) remaining.put(item)
+            }
+            repository.saveSetting(setting.key, remaining.toString())
+        }
+    }
+
     fun addBuffetOrderWithCustomer(stationId: Int, productName: String, targetCustomerId: Long? = null, targetCustomerName: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
             val orderId = if (targetCustomerId != null) "${stationId}_${productName}_${targetCustomerId}" else "${stationId}_${productName}"
@@ -3411,11 +3405,12 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
             val p = repository.getProductByName(productName)
             val productPrice = p?.price ?: 0L
-            SelfHostedManager.addBuffetOrderEvent(
+            sendOrQueueBuffetOrder(
                 stationId = stationId,
                 productName = productName,
                 quantity = 1,
-                price = productPrice
+                price = productPrice,
+                targetCustomerId = targetCustomerId
             )
 
             // Immediately sync updated orders with station to cloud
@@ -3460,7 +3455,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
             val updated = transaction.copy(status = newStatus, amount = finalAmount)
             repository.updateCustomerTransaction(updated)
-            SelfHostedManager.syncCustomerTransactionToCloud(updated)
+            queueOrSyncCustomerTransaction(updated)
         }
     }
 
@@ -3494,7 +3489,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     val updated = trans.copy(status = finalStatus)
                     repository.updateCustomerTransaction(updated)
                     launch(Dispatchers.IO) {
-                        SelfHostedManager.syncCustomerTransactionToCloud(updated)
+                        queueOrSyncCustomerTransaction(updated)
                     }
                     totalCash += trans.paidAmount
                     
@@ -3539,7 +3534,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
             val updated = transaction.copy(paidAmount = paidAmount, status = newStatus, amount = finalTxAmount)
             repository.updateCustomerTransaction(updated)
-            SelfHostedManager.syncCustomerTransactionToCloud(updated)
+            queueOrSyncCustomerTransaction(updated)
 
             if (cust != null) {
                 val newDebt = if (newStatus == "REVIEWED") {
@@ -3600,11 +3595,12 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 refreshOrdersForStation(stationId)
 
                 val p = repository.getProductByName(productName)
-                SelfHostedManager.addBuffetOrderEvent(
+                sendOrQueueBuffetOrder(
                     stationId = stationId,
                     productName = productName,
                     quantity = 1,
-                    price = p?.price ?: 0L
+                    price = p?.price ?: 0L,
+                    targetCustomerId = matched.targetCustomerId
                 )
 
                 val st = repository.getStationStateByIdLocal(stationId)
@@ -3674,13 +3670,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     
                     // 1. Purge stations > count
                     try {
-                        val mgrId = repository.getSetting("enc_manager_id").takeIf { !it.isNullOrBlank() } 
-                            ?: repository.getSetting("enc_user_id") ?: "3"
-                            
-                        val reqBody = "{\"max_id\": $count}".toRequestBody("application/json".toMediaType())
+                        val reqBody = "{\"stationCount\": $count}".toRequestBody("application/json".toMediaType())
                         val req = okhttp3.Request.Builder()
                             .url("${_serverUrl.value}/api/v1/manager/stations/purge-extra")
-                            .header("mgr", mgrId)
+                            .headers(com.example.data.network.SelfHostedManager.getBaseHeaders())
                             .post(reqBody)
                             .build()
                         com.example.data.network.SelfHostedManager.client.newCall(req).execute()
@@ -4294,7 +4287,14 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         if (pendingPurchasedCode.isNotBlank()) {
             try {
                 val api = NetworkClient.getApi(_serverUrl.value)
-                val actRes = api.activateLicense(LicenseActivateRequest(deviceId = deviceId, licenseCode = pendingPurchasedCode, userPhone = savedPhone))
+                val actRes = api.activateLicense(
+                    LicenseActivateRequest(
+                        deviceId = deviceId,
+                        licenseCode = pendingPurchasedCode,
+                        activationSecret = decryptSetting("enc_pending_activation_secret").ifBlank { null },
+                        userPhone = savedPhone
+                    )
+                )
                 if (actRes.valid) {
                     val activeCode = actRes.realLicenseCode.ifBlank { pendingPurchasedCode }
                     val serverTime = actRes.realServerTime
@@ -4674,7 +4674,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 extensionType = extType.ifBlank { null },
                 extensionExpiresAt = extExpiresAtStr.toLongOrNull(),
                 extensionMaxDevices = extMaxDevicesStr.toIntOrNull(),
-                transactionId = txnId.ifBlank { null }
+                transactionId = txnId.ifBlank { null },
+                activationSecret = decryptSetting("enc_pending_activation_secret").ifBlank { null }
             )
             
             try {
@@ -4736,6 +4737,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 encryptSetting("enc_gamenet_name", gameNetName.trim())
             }
             try {
+                val subscriptionIdempotencyKey = "subscription-purchase:" + deviceId + ":" + plan + ":" + java.util.UUID.randomUUID()
+                encryptSetting("enc_pending_subscription_purchase_idempotency", subscriptionIdempotencyKey)
                 val api = NetworkClient.getApi(_serverUrl.value)
                 val response = api.buySubscription(
                     LicenseBuyRequest(
@@ -4749,11 +4752,13 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         userName = userName.ifBlank { null },
                         gameNetName = gameNetName.ifBlank { null },
                         password = password.ifBlank { null },
-                        gateway = gateway.ifBlank { null }
+                        gateway = gateway.ifBlank { null },
+                        idempotencyKey = subscriptionIdempotencyKey
                     )
                 )
                 if (!response.licenseCode.isNullOrBlank()) {
                     encryptSetting("enc_pending_purchased_license", response.licenseCode)
+                    encryptSetting("enc_pending_activation_secret", response.activationSecret ?: "")
                     if (extendLicense) {
                         encryptSetting("enc_pending_extension_type", response.type)
                         encryptSetting("enc_pending_extension_expiresAt", response.expiresAt.toString())
@@ -4805,50 +4810,47 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     val subscriptionPlans: StateFlow<List<SubscriptionPlanDto>> = _subscriptionPlans.asStateFlow()
 
     private fun sanitizeAndOrderPlans(rawPlans: List<SubscriptionPlanDto>): List<SubscriptionPlanDto> {
-        val defaultOrdered = listOf(
-            SubscriptionPlanDto("MONTHLY", "اشتراک ۱ ماهه", 500000.0, 30, "https://pay.forbix.ir/mkhas1374/1784524345734", "دسترسی کامل به تمامی امکانات برنامه", maxDevices = 1, rawSortOrder = 1),
-            SubscriptionPlanDto("THREE_MONTHS", "اشتراک ۳ ماهه", 1200000.0, 90, "https://pay.forbix.ir/mkhas1374/1784524399731", "۹۸,۰۰۰ تومان تخفیف ویژه", maxDevices = 1, rawSortOrder = 2),
-            SubscriptionPlanDto("YEARLY", "اشتراک ۱۲ ماهه (۱ ساله)", 3259000.0, 365, "https://pay.forbix.ir/mkhas1374/1784524151630", "بیشترین صرفه‌جویی و پشتیبانی اختصاصی", maxDevices = 1, rawSortOrder = 3)
-        )
-        if (rawPlans.isEmpty()) return defaultOrdered
+        if (rawPlans.isEmpty()) return emptyList()
+        return rawPlans
+            .filter { it.realId.uppercase() in setOf("MONTHLY", "THREE_MONTHS", "YEARLY") && it.realDurationDays > 0 && it.realPrice > 0.0 && it.realPaymentUrl.startsWith("https://pay.forbix.ir/") }
+            .sortedWith(compareBy<SubscriptionPlanDto> { it.sortOrder }.thenBy { it.realId })
+    }
 
-        val allowedPlanIds = setOf("MONTHLY", "THREE_MONTHS", "YEARLY", "MONTH1", "MONTH3", "MONTH12")
-        val filteredRaw = rawPlans.filter { raw ->
-            val id = raw.realId.uppercase()
-            val name = raw.realName
-            if (name.contains("تست") || name.contains("نیم ساعته") || id.contains("TRIAL")) return@filter false
-            allowedPlanIds.any { id.contains(it) } || raw.realDurationDays in listOf(30, 90, 365)
-        }
+    private val _subscriptionPlansAdmin = MutableStateFlow<Map<String, Any?>>(emptyMap())
+    val subscriptionPlansAdmin: StateFlow<Map<String, Any?>> = _subscriptionPlansAdmin.asStateFlow()
 
-        if (filteredRaw.isEmpty()) return defaultOrdered
-
-        val defaultMap = defaultOrdered.associateBy { it.realId.uppercase() }
-        
-        val result = filteredRaw.mapIndexed { idx, match ->
-            val defaultPlan = defaultMap[match.realId.uppercase()]
-                ?: defaultOrdered.firstOrNull { it.durationDays == match.realDurationDays }
-            val fixedPaymentUrl = if (
-                match.realPaymentUrl.isBlank() ||
-                match.realPaymentUrl.contains("gamenet.com/pay", ignoreCase = true)
-            ) {
-                defaultPlan?.realPaymentUrl.orEmpty()
-            } else {
-                match.realPaymentUrl
+    fun fetchSubscriptionPlansAdmin(onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val api = NetworkClient.getApi(_serverUrl.value)
+                val response = api.getSubscriptionPlansAdmin()
+                if (response.success) {
+                    _subscriptionPlansAdmin.value = response.settings
+                    withContext(Dispatchers.Main) { onResult(true, "") }
+                } else withContext(Dispatchers.Main) { onResult(false, "دریافت تنظیمات پلن‌ها ناموفق بود.") }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { onResult(false, "ارتباط با سرور برقرار نشد.") }
             }
-
-            val effectiveSortOrder = if (match.sortOrder > 0) match.sortOrder else (idx + 1)
-
-            match.copy(
-                name = if (match.realName.isNotBlank()) match.realName else (defaultPlan?.realName ?: match.realId),
-                price = if (match.realPrice > 0) match.realPrice.toDouble() else (defaultPlan?.realPrice?.toDouble() ?: 0.0),
-                paymentUrl = fixedPaymentUrl,
-                durationDays = match.realDurationDays,
-                savingText = if (match.realSavingText.isNotBlank()) match.realSavingText else (defaultPlan?.realSavingText ?: ""),
-                maxDevices = 1,
-                rawSortOrder = effectiveSortOrder
-            )
         }
-        return result.sortedWith(compareBy<SubscriptionPlanDto> { it.sortOrder }.thenBy { it.realId })
+    }
+
+    fun updateSubscriptionPlansAdmin(settings: Map<String, Any?>, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val plans = settings["plans"] as? List<*> ?: emptyList<Any?>()
+                val page: Map<String, Any> = (settings - "plans").mapValues { it.value ?: "" }
+                val body: Map<String, Any> = mapOf("plans" to plans, "page" to page)
+                val api = NetworkClient.getApi(_serverUrl.value)
+                val response = api.updateSubscriptionPlansAdmin(body)
+                if (response.success) {
+                    _subscriptionPlansAdmin.value = response.settings
+                    fetchSubscriptionPlans()
+                    withContext(Dispatchers.Main) { onResult(true, "ذخیره شد.") }
+                } else withContext(Dispatchers.Main) { onResult(false, "ذخیره تنظیمات پلن‌ها ناموفق بود.") }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { onResult(false, "خطا در ذخیره تنظیمات پلن‌ها.") }
+            }
+        }
     }
 
     fun fetchSubscriptionPlans() {
@@ -5112,7 +5114,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val api = NetworkClient.getApi(_serverUrl.value)
-                val success = api.setLicensePassword(SetPasswordRequest(licenseCode, password))
+                val savedPhone = decryptSetting("enc_user_phone").trim().ifBlank { null }
+                val activationSecret = decryptSetting("enc_pending_activation_secret").trim().ifBlank { null }
+                val success = api.setLicensePassword(SetPasswordRequest(licenseCode, password, activationSecret, savedPhone, getDeviceId()))
+                if (success) encryptSetting("enc_pending_activation_secret", "")
                 withContext(Dispatchers.Main) { onResult(success) }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) { onResult(false) }
@@ -5255,7 +5260,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     encryptSetting("enc_auth_phone", effectivePhone)
                     encryptSetting("enc_auth_role", effectiveRole)
                     encryptSetting("enc_auth_email", effectiveEmail)
-                    encryptSetting("enc_auth_password", cleanPassword)
+                    encryptSetting("enc_auth_password", "")
                     if (effectivePhone.isNotBlank()) {
                         encryptSetting("enc_user_phone", effectivePhone)
                     }
@@ -5279,8 +5284,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         onResult(true, "ثبت‌نام با موفقیت انجام شد. خوش آمدید!")
                     }
                 } else {
-                    // Fallback to local session creation on register
-                    createLocalRegistrationSession(cleanUsername, cleanPassword, cleanPhone, cleanEmail, onResult)
+                    val errorMsg = response.error.ifBlank { response.message }.ifBlank { "ثبت‌نام در سرور ناموفق بود." }
+                    _authState.value = AuthState.AuthenticationError(errorMsg)
+                    withContext(Dispatchers.Main) { onResult(false, errorMsg) }
                 }
             } catch (e: Exception) {
                 if (e is retrofit2.HttpException && e.code() == 409) {
@@ -5290,52 +5296,11 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         onResult(false, errorMsg)
                     }
                 } else {
-                    // Fail-safe registration on first launch / server error
-                    createLocalRegistrationSession(cleanUsername, cleanPassword, cleanPhone, cleanEmail, onResult)
+                    val errorMsg = "ثبت‌نام نیازمند اتصال موفق به سرور است."
+                    _authState.value = AuthState.AuthenticationError(errorMsg)
+                    withContext(Dispatchers.Main) { onResult(false, errorMsg) }
                 }
             }
-        }
-    }
-
-    private suspend fun createLocalRegistrationSession(
-        username: String,
-        password: String,
-        phone: String,
-        email: String,
-        onResult: (Boolean, String) -> Unit
-    ) {
-        val localUserId = "usr_" + System.currentTimeMillis()
-        val localToken = "token_" + java.util.UUID.randomUUID().toString()
-
-        encryptSetting("enc_auth_token", localToken)
-        encryptSetting("enc_user_id", localUserId)
-        encryptSetting("enc_auth_username", username)
-        encryptSetting("enc_auth_phone", phone)
-        encryptSetting("enc_auth_role", "OPERATOR")
-        encryptSetting("enc_auth_email", email)
-        encryptSetting("enc_auth_password", password)
-        if (phone.isNotBlank()) {
-            encryptSetting("enc_user_phone", phone)
-        }
-
-        NetworkClient.authToken = localToken
-
-        _authState.value = AuthState.Authenticated(
-            userId = localUserId,
-            username = username,
-            phone = phone,
-            role = "OPERATOR",
-            email = email,
-            token = localToken
-        )
-        _showAuthDialog.value = false
-
-        try {
-            bindDeviceToUser(localUserId)
-        } catch (ignored: Exception) {}
-
-        withContext(Dispatchers.Main) {
-            onResult(true, "ثبت‌نام و ایجاد حساب کاربری با موفقیت انجام شد. خوش آمدید!")
         }
     }
 
@@ -5384,7 +5349,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     encryptSetting("enc_auth_phone", effectivePhone)
                     encryptSetting("enc_auth_role", effectiveRole)
                     encryptSetting("enc_auth_email", effectiveEmail)
-                    encryptSetting("enc_auth_password", cleanPassword)
+                    encryptSetting("enc_auth_password", "")
                     if (effectivePhone.isNotBlank()) {
                         encryptSetting("enc_user_phone", effectivePhone)
                     }
@@ -5414,75 +5379,24 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         onResult(true, "ورود با موفقیت انجام شد.")
                     }
                 } else {
-                    if (!tryLocalLoginFallback(cleanUsername, cleanPassword, onResult)) {
-                        val errorMsg = response.error.ifBlank { response.message }.ifBlank { "نام کاربری یا رمز عبور اشتباه است." }
-                        _authState.value = AuthState.AuthenticationError(errorMsg)
-                        withContext(Dispatchers.Main) {
-                            onResult(false, errorMsg)
-                        }
-                    }
+                    val errorMsg = response.error.ifBlank { response.message }.ifBlank { "نام کاربری یا رمز عبور اشتباه است." }
+                    _authState.value = AuthState.AuthenticationError(errorMsg)
+                    withContext(Dispatchers.Main) { onResult(false, errorMsg) }
                 }
             } catch (e: Exception) {
-                if (!tryLocalLoginFallback(cleanUsername, cleanPassword, onResult)) {
-                    val errorMsg = when {
-                        e is retrofit2.HttpException && e.code() == 401 -> "نام کاربری یا رمز عبور اشتباه است."
-                        e is retrofit2.HttpException && e.code() == 403 -> {
-                            val errorBody = e.response()?.errorBody()?.string() ?: ""
-                            if (errorBody.contains("DEVICE_MISMATCH")) {
-                                "این حساب قبلاً روی دستگاه دیگری فعال شده است.nبرای استفاده از GameNexa روی این دستگاه باید یک حساب جدید تهیه کنید."
-                            } else {
-                                "دسترسی به این حساب مسدود شده است."
-                            }
-                        }
-                        e is java.net.UnknownHostException || e is java.net.ConnectException -> "خطا در اتصال به سرور. در صورت ذخیره نشست، استفاده آفلاین فعال است."
-                        else -> "خطا در ورود: ${e.message}"
+                val errorMsg = when {
+                    e is retrofit2.HttpException && e.code() == 401 -> "نام کاربری یا رمز عبور اشتباه است."
+                    e is retrofit2.HttpException && e.code() == 403 -> {
+                        val errorBody = e.response()?.errorBody()?.string() ?: ""
+                        if (errorBody.contains("DEVICE_MISMATCH")) "این حساب قبلاً روی دستگاه دیگری فعال شده است." else "دسترسی به این حساب مسدود شده است."
                     }
-                    _authState.value = AuthState.AuthenticationError(errorMsg)
-                    withContext(Dispatchers.Main) {
-                        onResult(false, errorMsg)
-                    }
+                    e is java.net.UnknownHostException || e is java.net.ConnectException -> "خطا در اتصال به سرور."
+                    else -> "خطا در ورود: ${e.message}"
                 }
+                _authState.value = AuthState.AuthenticationError(errorMsg)
+                withContext(Dispatchers.Main) { onResult(false, errorMsg) }
             }
         }
-    }
-
-    private suspend fun tryLocalLoginFallback(
-        usernameInput: String,
-        passwordInput: String,
-        onResult: (Boolean, String) -> Unit
-    ): Boolean {
-        val savedUsername = decryptSetting("enc_auth_username")
-        val savedPhone = decryptSetting("enc_auth_phone")
-        val savedEmail = decryptSetting("enc_auth_email")
-        val savedPassword = decryptSetting("enc_auth_password")
-
-        val matchesUser = (usernameInput.equals(savedUsername, ignoreCase = true) ||
-                usernameInput.equals(savedPhone, ignoreCase = true) ||
-                usernameInput.equals(savedEmail, ignoreCase = true))
-
-        if (matchesUser && passwordInput == savedPassword) {
-            val savedUserId = decryptSetting("enc_user_id").ifBlank { "usr_" + System.currentTimeMillis() }
-            val savedToken = decryptSetting("enc_auth_token").ifBlank { "token_" + java.util.UUID.randomUUID().toString() }
-            val savedRole = decryptSetting("enc_auth_role").ifBlank { "OPERATOR" }
-
-            NetworkClient.authToken = savedToken
-
-            _authState.value = AuthState.Authenticated(
-                userId = savedUserId,
-                username = savedUsername.ifBlank { usernameInput },
-                phone = savedPhone,
-                role = savedRole,
-                email = savedEmail,
-                token = savedToken
-            )
-            _showAuthDialog.value = false
-
-            withContext(Dispatchers.Main) {
-                onResult(true, "ورود با موفقیت انجام شد.")
-            }
-            return true
-        }
-        return false
     }
 
     fun checkAuthStatusOnServer() {
