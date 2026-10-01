@@ -169,8 +169,26 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
                 )
             }
             if (selectedSubTab == 0 && currentAdminRole != "VIEWER") {
-                Button(
-                    onClick = { showSettlementDialog = true },
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = {
+                            if (isTrialActive || currentAdminRole == "TRIAL_USER") {
+                                showTrialLimitDialog = true
+                            } else {
+                                editingCustomer = null
+                                showCustomerDialog = true
+                            }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.height(36.dp)
+                    ) {
+                        Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(if (lang == "fa") "مشتری" else "Customer", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Button(
+                        onClick = { showSettlementDialog = true },
                     shape = RoundedCornerShape(8.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
@@ -179,6 +197,7 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
                     Icon(Icons.Default.Calculate, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(if (lang == "fa") "تسویه سالن" else "Hall Settlement", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
