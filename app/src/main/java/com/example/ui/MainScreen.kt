@@ -927,37 +927,6 @@ fun StationCard(
                                 }
                             )
                         }
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            textStyle = MaterialTheme.typography.bodySmall.copy(
-                                fontWeight = FontWeight.ExtraBold,
-                                textAlign = TextAlign.Center,
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            ),
-                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(32.dp)
-                                .border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.7f), RoundedCornerShape(6.dp)),
-                            decorationBox = { innerTextField ->
-                                Box(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (payInput.isEmpty()) {
-                                        Text(
-                                            text = Localization.get("prepay_amount", lang),
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                            textAlign = TextAlign.Center
-                                        )
-                                    }
-                                    innerTextField()
-                                }
-                            }
-                        )
 
                         if (selectedCustomerNames.size >= 2) {
                             TextButton(
