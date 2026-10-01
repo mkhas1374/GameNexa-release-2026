@@ -1204,7 +1204,7 @@ fun CustomerTransactionCard(
                                         fontSize = 13.sp
                                     )
                                     Text(
-                                        text = "%,d تومان".format(java.util.Locale.US, if (hasDiscount) finalAmount else origTotal),
+                                        text = "%,.0f تومان".format(java.util.Locale.US, if (hasDiscount) finalAmount else origTotal),
                                         fontWeight = FontWeight.Black,
                                         fontSize = 14.sp,
                                         color = MaterialTheme.colorScheme.primary
