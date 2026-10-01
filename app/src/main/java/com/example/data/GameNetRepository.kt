@@ -55,14 +55,9 @@ class GameNetRepository(private val db: AppDatabase) {
     val allBehaviorRules: Flow<List<BehaviorRule>> = behaviorRuleDao.getAllRules()
     val allBehaviorLogs: Flow<List<BehaviorLog>> = behaviorLogDao.getAllLogs()
 
+    // Authentication logout must never erase business data. Explicit reset/delete flows are responsible for destructive data removal.
     suspend fun clearAllDataExceptSettings() {
-        withContext(Dispatchers.IO) {
-            val allSettings = appSettingDao.getAllSync()
-            db.clearAllTables()
-            for (setting in allSettings) {
-                appSettingDao.insert(setting)
-            }
-        }
+        // Kept for compatibility with older callers. Intentionally a no-op.
     }
 
     fun getGnLedgerForCustomer(customerId: Long): Flow<List<GnLedgerEntry>> = gnLedgerDao.getByCustomerId(customerId)
@@ -797,9 +792,9 @@ class GameNetRepository(private val db: AppDatabase) {
     }
 
     suspend fun insertCustomer(customer: Customer): Long {
-        if (com.example.data.network.NetworkClient.isTrialMode) return -1L
         val localId = customerDao.insert(customer)
         val finalCust = if (customer.id == 0L) customer.copy(id = localId) else customer
+        if (com.example.data.network.NetworkClient.isTrialMode) return if (customer.id == 0L) localId else customer.id
         try {
             com.example.data.network.SelfHostedManager.upsertCustomer(finalCust)
         } catch (ignored: Exception) {}
