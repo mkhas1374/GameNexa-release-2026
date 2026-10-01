@@ -64,7 +64,7 @@ jobs:
           GAMENEXA_KEYSTORE_PATH: ${{ runner.temp }}/gamenexa-ci-release.jks
           GAMENEXA_STORE_PASSWORD: gamenexa-ci-store
           GAMENEXA_KEY_ALIAS: gamenexa-ci
-          GAMENEXA_KEY_PASSWORD: gamenexa-ci-key
+          GAMENEXA_KEY_PASSWORD: gamenexa-ci-store
         run: ./gradlew bundleRelease --stacktrace
 
       - name: Upload Debug APK
