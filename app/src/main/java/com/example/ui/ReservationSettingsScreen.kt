@@ -19,15 +19,49 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 @Composable
-private fun RuleField(label: String, value: String, onValueChange: (String) -> Unit, multiline: Boolean = false) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = { Text(label) },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = !multiline,
-        minLines = if (multiline) 3 else 1
-    )
+private fun RuleField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    multiline: Boolean = false,
+    preview: String? = null
+) {
+    var editing by remember(value) { mutableStateOf(false) }
+
+    if (multiline && preview != null && !editing) {
+        OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                Text(text = preview, style = MaterialTheme.typography.bodyMedium)
+                TextButton(
+                    onClick = { editing = true },
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("ویرایش متن")
+                }
+            }
+        }
+    } else {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = { Text(label) },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = !multiline,
+            minLines = if (multiline) 3 else 1
+        )
+        if (multiline && preview != null) {
+            TextButton(
+                onClick = { editing = false },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("نمایش متن نهایی")
+            }
+        }
+    }
 }
 
 @Composable
@@ -146,6 +180,57 @@ fun ReservationSettingsScreen(managerId: String, onNavigateBack: () -> Unit) {
             messages[it] = m.optString(it, "")
         }
 
+    }
+
+    fun renderMessage(template: String): String {
+        if (template.isBlank()) return ""
+        var out = template
+        out = out.replace("({duration})", "مدت انتخابی")
+            .replace("({minutes_before_arrival})", arrivalWarningMinutes.toIntOrNull()?.toString() ?: "0")
+        return out
+    }
+
+    fun renderMessageForKey(key: String, template: String): String {
+        if (template.isBlank()) return ""
+        var out = renderMessage(template)
+        val stageKey = when (key) {
+            "cancel24" -> "24"
+            "cancel15" -> "15"
+            "cancel5" -> "5"
+            "cancel2" -> "2"
+            else -> ""
+        }
+        if (stageKey.isNotBlank()) {
+            val threshold = when (key) {
+                "cancel24" -> threshold24
+                "cancel15" -> threshold15
+                "cancel5" -> threshold5
+                "cancel2" -> threshold2
+                else -> "0"
+            }
+            out = out
+                .replace("({threshold_minutes})", threshold.ifBlank { "0" })
+                .replace("({refund_percent})", wallet[stageKey] ?: "0")
+                .replace("({gn_penalty})", gn[stageKey] ?: "0")
+                .replace("({lp_penalty})", lp[stageKey] ?: "0")
+        }
+        if (key == "arrival") {
+            out = out
+                .replace("({gn_penalty})", gn["noShow"] ?: "0")
+                .replace("({lp_penalty})", lp["noShow"] ?: "0")
+        }
+        if (key == "cancel2") {
+            out = out
+                .replace("({restriction_days})", restrictionDays.ifBlank { "0" })
+                .replace("({surcharge_percent})", surchargePercent.ifBlank { "0" })
+        }
+        if (key == "payment") {
+            out = out.replace("({payment_deadline})", paymentDeadline.toIntOrNull()?.toString() ?: "0")
+        }
+        if (key == "vipPaymentDeadline") {
+            out = out.replace("({payment_deadline})", vipPaymentDeadline.toIntOrNull()?.toString() ?: "0")
+        }
+        return out
     }
 
     fun buildSettings(): JSONObject {
@@ -298,16 +383,16 @@ RulesSection("پاداش VIP") {
                                 }
                 if (selectedSection == "تمام متن‌ها و تذکرهای قابل ویرایش") {
 RulesSection("تمام متن‌ها و تذکرهای قابل ویرایش") {
-                    RuleField("متن مهلت پرداخت رزرو", messages["payment"] ?: "", { messages["payment"] = it }, true)
-                    RuleField("متن هشدار حضور/لغو", messages["arrival"] ?: "", { messages["arrival"] = it }, true)
-                    RuleField("متن قوانین/تأیید VIP", messages["vip"] ?: "", { messages["vip"] = it }, true)
-                    RuleField("متن لغو 24 ساعت یا بیشتر", messages["cancel24"] ?: "", { messages["cancel24"] = it }, true)
-                    RuleField("متن لغو 15 ساعت", messages["cancel15"] ?: "", { messages["cancel15"] = it }, true)
-                    RuleField("متن لغو 5 ساعت", messages["cancel5"] ?: "", { messages["cancel5"] = it }, true)
-                    RuleField("متن لغو 2 ساعت", messages["cancel2"] ?: "", { messages["cancel2"] = it }, true)
-                    RuleField("متن لغو دیرهنگام", messages["lateCancellation"] ?: "", { messages["lateCancellation"] = it }, true)
-                    RuleField("متن No Show", messages["noShow"] ?: "", { messages["noShow"] = it }, true)
-                    RuleField("متن مهلت پرداخت VIP", messages["vipPaymentDeadline"] ?: "", { messages["vipPaymentDeadline"] = it }, true)
+                    RuleField("متن مهلت پرداخت رزرو", messages["payment"] ?: "", { messages["payment"] = it }, true, renderMessageForKey("payment", messages["payment"] ?: ""))
+                    RuleField("متن هشدار حضور/لغو", messages["arrival"] ?: "", { messages["arrival"] = it }, true, renderMessageForKey("arrival", messages["arrival"] ?: ""))
+                    RuleField("متن قوانین/تأیید VIP", messages["vip"] ?: "", { messages["vip"] = it }, true, renderMessageForKey("vip", messages["vip"] ?: ""))
+                    RuleField("متن لغو 24 ساعت یا بیشتر", messages["cancel24"] ?: "", { messages["cancel24"] = it }, true, renderMessageForKey("cancel24", messages["cancel24"] ?: ""))
+                    RuleField("متن لغو 15 ساعت", messages["cancel15"] ?: "", { messages["cancel15"] = it }, true, renderMessageForKey("cancel15", messages["cancel15"] ?: ""))
+                    RuleField("متن لغو 5 ساعت", messages["cancel5"] ?: "", { messages["cancel5"] = it }, true, renderMessageForKey("cancel5", messages["cancel5"] ?: ""))
+                    RuleField("متن لغو 2 ساعت", messages["cancel2"] ?: "", { messages["cancel2"] = it }, true, renderMessageForKey("cancel2", messages["cancel2"] ?: ""))
+                    RuleField("متن لغو دیرهنگام", messages["lateCancellation"] ?: "", { messages["lateCancellation"] = it }, true, renderMessageForKey("lateCancellation", messages["lateCancellation"] ?: ""))
+                    RuleField("متن No Show", messages["noShow"] ?: "", { messages["noShow"] = it }, true, renderMessageForKey("noShow", messages["noShow"] ?: ""))
+                    RuleField("متن مهلت پرداخت VIP", messages["vipPaymentDeadline"] ?: "", { messages["vipPaymentDeadline"] = it }, true, renderMessageForKey("vipPaymentDeadline", messages["vipPaymentDeadline"] ?: ""))
                 }
 
                 }

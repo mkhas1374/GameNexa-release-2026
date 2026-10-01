@@ -946,6 +946,15 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
 
         viewModelScope.launch(Dispatchers.IO) {
+            // Customer authentication is always server-authoritative. Recover the Manager scope
+            // from the encrypted session if the in-memory singleton was lost during recreation.
+            val persistedManagerId = SelfHostedManager.currentManagerId.trim().ifBlank {
+                decryptSetting("enc_manager_id").trim()
+            }
+            if (persistedManagerId.isNotBlank() && SelfHostedManager.currentManagerId != persistedManagerId) {
+                SelfHostedManager.setManagerId(persistedManagerId)
+            }
+
             // 1. Try real-time online verification with self-hosted server first to ensure account is not deleted
             val onlineResult = SelfHostedManager.loginCustomer(cleanPhone, cleanPass)
             if (onlineResult.isSuccess) {
