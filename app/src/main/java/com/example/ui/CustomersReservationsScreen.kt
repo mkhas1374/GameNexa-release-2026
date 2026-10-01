@@ -783,7 +783,7 @@ IconButton(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(filteredTrans, key = { it.id }) { trans ->
+                        itemsIndexed(filteredTrans, key = { index, trans -> "unreviewed_${trans.id}_${trans.timestamp}_$index" }) { _, trans ->
                             CustomerTransactionCard(
                                 transaction = trans,
                                 lang = lang,
@@ -830,7 +830,7 @@ IconButton(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(filteredReviewed, key = { it.id }) { trans ->
+                        itemsIndexed(filteredReviewed, key = { index, trans -> "reviewed_${trans.id}_${trans.timestamp}_$index" }) { _, trans ->
                             CustomerTransactionCard(
                                 transaction = trans,
                                 lang = lang,
