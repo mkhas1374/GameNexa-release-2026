@@ -105,8 +105,10 @@ class MainActivity : ComponentActivity() {
                     val isVpnActive by com.example.util.VpnDetector.isVpnActiveFlow(context).collectAsState(initial = false)
                     var vpnWarningDismissed by remember { mutableStateOf(false) }
                     
-                    val hasNetworkIssues = networkStatus.failedRequests > 0 || !networkStatus.isConnected || 
-                        (networkStatus.lastErrorTimestamp != null && System.currentTimeMillis() - networkStatus.lastErrorTimestamp!! < 60000)
+                    val hasNetworkIssues = !networkStatus.isConnected ||
+                        (networkStatus.lastErrorType != null &&
+                            networkStatus.lastErrorTimestamp != null &&
+                            System.currentTimeMillis() - networkStatus.lastErrorTimestamp!! < 60000)
 
                     Surface(
                         modifier = Modifier

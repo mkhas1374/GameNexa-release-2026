@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.security.MessageDigest
 
 /**
  * LicenseViewModel: Dedicated ViewModel managing device licensing,
@@ -29,10 +31,24 @@ class LicenseViewModel(application: Application) : AndroidViewModel(application)
     val isServerConnected: StateFlow<Boolean> = _isServerConnected.asStateFlow()
 
     private var expirationJob: Job? = null
+    @Volatile private var stableDeviceId: String? = null
 
-    // 1. Hardware Fallback Device ID
-    val deviceId: String by lazy {
-        getHardwareDeviceId()
+    val deviceId: String
+        get() = stableDeviceId ?: getHardwareDeviceId()
+
+    private suspend fun resolveStableDeviceId(): String = withContext(Dispatchers.IO) {
+        stableDeviceId?.let { return@withContext it }
+        val appSetId = runCatching {
+            val info = com.google.android.gms.appset.AppSet.getClient(getApplication<Application>()).appSetIdInfo
+            com.google.android.gms.tasks.Tasks.await(info).id
+        }.getOrNull()?.trim().orEmpty()
+        if (appSetId.isNotBlank()) {
+            val digest = MessageDigest.getInstance("SHA-256")
+                .digest(appSetId.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+            stableDeviceId = "DEV_APPSET_$digest"
+        }
+        stableDeviceId ?: getHardwareDeviceId()
     }
 
     fun getHardwareDeviceId(): String {
@@ -67,7 +83,7 @@ class LicenseViewModel(application: Application) : AndroidViewModel(application)
     fun checkTrialAndLicenseStatus(serverUrl: String = "https://api.gamenermayket.ir/") {
         viewModelScope.launch(Dispatchers.IO) {
             _accessState.value = AppAccessState.Checking
-            val currentDeviceId = deviceId
+            val currentDeviceId = resolveStableDeviceId()
             try {
                 val api = NetworkClient.getApi(serverUrl)
                 _isServerConnected.value = true
@@ -84,8 +100,8 @@ class LicenseViewModel(application: Application) : AndroidViewModel(application)
                         trialCheck.responseMessage.ifBlank { "مهلت تست ۲۴ ساعته به پایان رسید." }
                     )
                 } else {
-                    val remainingMs = (trialCheck.remainingHours * 3600 * 1000L).toLong()
-                    val expiresAt = System.currentTimeMillis() + remainingMs
+                    val serverNow = trialCheck.serverTime ?: System.currentTimeMillis()
+                    val expiresAt = trialCheck.expiresAt ?: (serverNow + trialCheck.remainingMilliseconds)
                     _accessState.value = AppAccessState.Allowed(expiresAt, "TRIAL")
                     scheduleExpiration(expiresAt)
                 }

@@ -219,7 +219,7 @@ fun SettingsMenuHub(
     onOpenServerTest: () -> Unit
 ) {
     val networkStatus by com.example.data.network.NetworkLogger.status.collectAsState()
-    val hasErrors = networkStatus.failedRequests > 0 || !networkStatus.isConnected
+    val hasErrors = !networkStatus.isConnected
 
     LazyColumn(
         modifier = Modifier
@@ -3172,6 +3172,7 @@ private fun SubscriptionPlansAdminSubScreen(
     var loaded by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
+    var selectedSubscriptionSection by remember { mutableStateOf<String?>(null) }
 
     var titleFa by remember { mutableStateOf("") }
     var titleEn by remember { mutableStateOf("") }
@@ -3248,10 +3249,36 @@ private fun SubscriptionPlansAdminSubScreen(
         }
     }
 
+    if (selectedSubscriptionSection == null) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(if (lang == "fa") "مدیریت پلن‌های اشتراک" else "Subscription Plans", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(if (lang == "fa") "هر گزینه را لمس کنید تا تنظیمات همان بخش باز شود." else "Tap an item to open its settings.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            listOf(
+                "page" to if (lang == "fa") "متن و ظاهر صفحه خرید" else "Purchase page texts",
+                "MONTHLY" to if (lang == "fa") "پلن ۱ ماهه" else "1 Month Plan",
+                "THREE_MONTHS" to if (lang == "fa") "پلن ۳ ماهه" else "3 Month Plan",
+                "YEARLY" to if (lang == "fa") "پلن ۱ ساله" else "1 Year Plan"
+            ).forEach { (key, title) ->
+                Card(Modifier.fillMaxWidth().clickable { selectedSubscriptionSection = key }) {
+                    Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(title, fontWeight = FontWeight.SemiBold)
+                        Text("←", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    } else {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item {
+            TextButton(onClick = { selectedSubscriptionSection = null }) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text(if (lang == "fa") "بازگشت به فهرست" else "Back to list")
+            }
+        }
         item {
             Text(
                 if (lang == "fa") "مدیریت کامل صفحه خرید اشتراک" else "Subscription Purchase Management",
@@ -3265,7 +3292,7 @@ private fun SubscriptionPlansAdminSubScreen(
             )
         }
 
-        item {
+        if (selectedSubscriptionSection == "page") item {
             SubscriptionTextField("عنوان فارسی", titleFa) { titleFa = it }
             SubscriptionTextField("عنوان انگلیسی", titleEn) { titleEn = it }
             SubscriptionTextField("زیرعنوان فارسی", subtitleFa) { subtitleFa = it }
@@ -3280,7 +3307,9 @@ private fun SubscriptionPlansAdminSubScreen(
             SubscriptionTextField("Support / verification message (English)", supportEn, minLines = 3) { supportEn = it }
         }
 
-        items(drafts.size) { index ->
+        val selectedDraftIndex = drafts.indexOfFirst { it.id == selectedSubscriptionSection }
+        if (selectedDraftIndex >= 0) item {
+            val index = selectedDraftIndex
             val d = drafts[index]
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -3366,6 +3395,7 @@ private fun SubscriptionPlansAdminSubScreen(
                 Text(message, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
             }
         }
+    }
     }
 }
 

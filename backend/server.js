@@ -757,10 +757,26 @@ async function getManagerConfiguration(client, managerId) {
     return created.rows[0];
 }
 
+function normalizeConsoleType(value) {
+    const raw = String(value || "").trim();
+    const key = raw.toUpperCase().replace(/\s+/g, "");
+    if (["PS5", "PLAYSTATION5", "PLAYSTATION5CONSOLE", "PS5CONSOLE"].includes(key)) return "PS5";
+    if (["PS4", "PLAYSTATION4", "PLAYSTATION4CONSOLE", "PS4CONSOLE"].includes(key)) return "PS4";
+    if (["SIMD", "SIMULATOR", "DRIVINGSIMULATOR", "DRIVING", "SHABIHSAZRAHANDEGI"].includes(key)) return "SimD";
+    if (["XBOX", "XBOXSERIESX", "XBOXSERIES"].includes(key)) return "Xbox Series X";
+    return raw;
+}
+
 function configuredHourlyRate(configuration, consoleType, controllerCount) {
-    const consoles = configuration?.settings?.pricing?.consoles || {};
-    const typeKey = String(consoleType || "").trim();
-    const rates = consoles[typeKey] || consoles[typeKey.toUpperCase()] || consoles[typeKey === "SimD" ? "SIMD" : typeKey];
+    const settings = configuration?.settings || {};
+    const consoles = settings?.pricing?.consoles || {};
+    const typeKey = normalizeConsoleType(consoleType);
+    let rates = consoles[typeKey] || consoles[typeKey.toUpperCase()] || consoles[typeKey === "SimD" ? "SIMD" : typeKey];
+    // Legacy Manager configurations store consoleTypes as an array.
+    if (!rates && Array.isArray(settings.consoleTypes)) {
+        const legacy = settings.consoleTypes.find(c => normalizeConsoleType(c?.name) === typeKey);
+        if (legacy) rates = { "1": legacy.price1, "2": legacy.price2, "3": legacy.price3, "4": legacy.price4 };
+    }
     const raw = rates?.[String(controllerCount)];
     const text = String(raw ?? "").trim();
     if (!/^\d+(\.\d+)?$/.test(text) || Number(text) <= 0) return null;
@@ -831,7 +847,7 @@ function sessionEventActiveSeconds(events, startAt, endAt) {
 app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rateLimit({windowMs:60000,max:20}), async (req,res) => {
     const managerId = sessionManagerId(req);
     const stationId = Number(req.body?.stationId);
-    const consoleType = String(req.body?.consoleType || "").trim();
+    const consoleType = normalizeConsoleType(req.body?.consoleType);
     const controllerCount = Number(req.body?.controllerCount);
     const requestedRate = Number(req.body?.hourlyRate);
     const raw = Array.isArray(req.body?.participants) ? req.body.participants : (Array.isArray(req.body?.selectedCustomers) ? req.body.selectedCustomers : []);
@@ -884,8 +900,8 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
                 return res.status(409).json({success:false,code:"CUSTOMER_ALREADY_IN_ACTIVE_SESSION",conflicts:conflict.rows});
             }
         }
-        const canonicalConsoleType = String(station.rows[0].console_type || consoleType).trim();
-        if (canonicalConsoleType && consoleType && canonicalConsoleType.toUpperCase() !== consoleType.toUpperCase()) {
+        const canonicalConsoleType = normalizeConsoleType(station.rows[0].console_type || consoleType);
+        if (canonicalConsoleType && consoleType && normalizeConsoleType(canonicalConsoleType).toUpperCase() !== normalizeConsoleType(consoleType).toUpperCase()) {
             await client.query("ROLLBACK");
             return res.status(409).json({success:false,code:"STATION_CONSOLE_TYPE_MISMATCH",stationConsoleType:canonicalConsoleType});
         }
@@ -908,7 +924,7 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
         };
         const created = await client.query(
             "INSERT INTO game_sessions(manager_id,station_id,status,console_type,controller_count,started_at,pricing_snapshot) VALUES($1,$2,'ACTIVE',$3,$4,$5,$6::jsonb) RETURNING id,manager_id,station_id,status,console_type,controller_count,started_at,pricing_snapshot",
-            [managerId,stationId,consoleType,controllerCount,now.toISOString(),JSON.stringify(pricingSnapshot)]
+            [managerId,stationId,canonicalConsoleType,controllerCount,now.toISOString(),JSON.stringify(pricingSnapshot)]
         );
         const session = created.rows[0];
         const eventId = String(req.headers["idempotency-key"] || "start:" + session.id);
@@ -952,7 +968,7 @@ app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlem
         const active = await client.query("SELECT id FROM game_sessions WHERE manager_id=$1 AND station_id=$2 AND status IN ('ACTIVE','PAUSED') FOR UPDATE",[managerId,stationId]);
         if (active.rows[0]) { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"ACTIVE_SESSION_EXISTS",sessionId:active.rows[0].id}); }
         const configuration = await getManagerConfiguration(client, managerId);
-        const canonicalConsoleType = String(station.rows[0].console_type || consoleType);
+        const canonicalConsoleType = normalizeConsoleType(station.rows[0].console_type || consoleType);
         const configuredRate = configuredHourlyRate(configuration, canonicalConsoleType, controllerCount);
         if (!configuredRate) { await client.query("ROLLBACK"); return res.status(422).json({success:false,code:"SERVER_PRICING_NOT_CONFIGURED"}); }
         const nowMs = Date.now();

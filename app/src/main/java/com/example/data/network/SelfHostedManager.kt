@@ -81,6 +81,7 @@ data class CloudAuditLog(
 )
 
 object SelfHostedManager {
+    @Volatile var lastStationStartWasTransportFailure: Boolean = false
     private const val TAG = "SelfHostedManager"
     
     // Dedicated Production Backend Server
@@ -1718,6 +1719,7 @@ object SelfHostedManager {
         consoleType: String = "",
         controllerCount: Int = 1
     ): Pair<String, Long>? = withContext(Dispatchers.IO) {
+        lastStationStartWasTransportFailure = false
         try {
             if (_currentManagerId.isBlank()) return@withContext null
             val participants = JSONArray()
@@ -1752,6 +1754,9 @@ object SelfHostedManager {
                 sessionId to JSONObject(body).optLong("serverStartedAt", System.currentTimeMillis())
             }
         } catch (e: Exception) {
+            // Only an actual transport-layer failure may fall back to an offline session.
+            // HTTP 4xx/5xx and malformed server responses must never be mistaken for Offline.
+            lastStationStartWasTransportFailure = e is java.io.IOException
             Log.e(TAG, "startStationSession error: " + e.message, e)
             null
         }

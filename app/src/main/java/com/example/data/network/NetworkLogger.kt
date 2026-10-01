@@ -72,6 +72,14 @@ object NetworkLogger {
                     successfulRequests = current.successfulRequests + 1,
                     lastSuccessTimestamp = entry.id
                 )
+            } else if (entry.statusCode != null && entry.statusCode >= 100) {
+                // An HTTP response proves the transport is alive. 4xx/5xx are API/application
+                // errors and must never make the global connectivity state say "Offline".
+                current.copy(
+                    isConnected = true,
+                    totalRequests = total,
+                    lastSuccessTimestamp = entry.id
+                )
             } else {
                 val userMsg = formatUserFriendlyErrorMessage(entry)
                 current.copy(

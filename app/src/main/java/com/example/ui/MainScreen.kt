@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.items
+import androidx.compose.foundation.lazy.staggeredgrid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -127,11 +128,14 @@ fun MainScreen(
             
             val filteredStations by remember(selectedFilter, visibleStations) {
                 derivedStateOf {
-                    when (selectedFilter) {
+                    val filtered = when (selectedFilter) {
                         "READY" -> visibleStations.filter { it.status == "FREE" }
                         "ACTIVE" -> visibleStations.filter { it.status == "RUNNING" || it.status == "PAUSED" }
                         else -> visibleStations
                     }
+                    // Backend IDs remain stable; UI numbers are derived from the full station list
+                    // so filtering never renumbers a station unexpectedly.
+                    filtered.sortedBy { it.id }
                 }
             }
             
@@ -243,16 +247,18 @@ fun MainScreen(
                     verticalItemSpacing = 8.dp,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(
+                    itemsIndexed(
                         items = filteredStations,
-                        key = { it.id },
-                        contentType = { "station_card" }
-                    ) { station ->
+                        key = { _, station -> station.id },
+                        contentType = { _, _ -> "station_card" }
+                    ) { index, station ->
+                        val displayStationNumber = visibleStations.sortedBy { it.id }.indexOfFirst { it.id == station.id } + 1
                         val orders = ordersMap[station.id] ?: emptyList()
                         val hourlyRate = viewModel.getHourlyRateSync(station.consoleType, station.controllerCount)
 
                         StationCard(
                             station = station,
+                            displayStationNumber = displayStationNumber,
                             orders = orders,
                             consoleList = consoleList,
                             productList = productList,
@@ -281,6 +287,7 @@ fun MainScreen(
 @Composable
 fun StationCard(
     station: StationState,
+    displayStationNumber: Int,
     orders: List<com.example.data.StationOrder>,
     consoleList: List<ConsoleType>,
     productList: List<Product>,
@@ -481,7 +488,7 @@ fun StationCard(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "${station.id}",
+                        text = "$displayStationNumber",
                         style = MaterialTheme.typography.bodyMedium,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Black,

@@ -804,6 +804,7 @@ data class CheckTrialResponse(
             if (status != null) {
                 return status.equals("expired", ignoreCase = true) || status.equals("TAMPERED_BLOCKED", ignoreCase = true)
             }
+            if (expiresAt != null && serverTime != null && expiresAt <= serverTime) return true
             if (remainingHoursField != null) return remainingHoursField <= 0
             if (hoursLeft != null) return hoursLeft <= 0
             if (altHoursLeft != null) return altHoursLeft <= 0
@@ -814,7 +815,10 @@ data class CheckTrialResponse(
         get() = if (isTampered) 0.0 else (remainingHoursField ?: hoursLeft ?: altHoursLeft ?: (if (isExpired) 0.0 else 24.0))
 
     val remainingMilliseconds: Long
-        get() = (remainingHours * 3600 * 1000L).toLong()
+        get() = when {
+            expiresAt != null && serverTime != null -> (expiresAt - serverTime).coerceAtLeast(0L)
+            else -> (remainingHours * 3600 * 1000L).toLong().coerceAtLeast(0L)
+        }
 
     val responseMessage: String
         get() = if (isTampered) "اکانت اشتراک ۲۴ ساعته شما به علت تقلب و دستکاری در زمان و تاریخ گوشی تان مسدود شده است در حال حاضر اجازه ورود به حساب های خریداری شده و یا تهیه اشتراک را دارید با تشکر ادمین برنامه GameNexa"

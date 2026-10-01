@@ -692,10 +692,10 @@ class GameNetRepository(private val db: AppDatabase) {
         // Trial customer state lives in Room and survives process recreation/reload.
         if (customerDao.getAllList().isEmpty()) {
             customerDao.insertAll(listOf(
-                Customer(id = 1L, fullName = "مشتری تستی ۱", phoneNumber = "09120000001"),
-                Customer(id = 2L, fullName = "مشتری تستی ۲", phoneNumber = "09120000002", credit = 50000L),
-                Customer(id = 3L, fullName = "مشتری تستی ۳", phoneNumber = "09120000003", debt = 35000L),
-                Customer(id = 4L, fullName = "مشتری تستی ۴", phoneNumber = "09120000004")
+                Customer(id = 1L, fullName = "مشتری تستی ۱", phoneNumber = "09120000001", description = "__GN_TRIAL_TEST_CONTACT__"),
+                Customer(id = 2L, fullName = "مشتری تستی ۲", phoneNumber = "09120000002", credit = 50000L, description = "__GN_TRIAL_TEST_CONTACT__"),
+                Customer(id = 3L, fullName = "مشتری تستی ۳", phoneNumber = "09120000003", debt = 35000L, description = "__GN_TRIAL_TEST_CONTACT__"),
+                Customer(id = 4L, fullName = "مشتری تستی ۴", phoneNumber = "09120000004", description = "__GN_TRIAL_TEST_CONTACT__")
             ))
         }
     }

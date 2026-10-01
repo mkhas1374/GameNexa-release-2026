@@ -26,6 +26,7 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 import java.io.File
+import java.security.MessageDigest
 
 sealed class AuthState {
     object Unauthenticated : AuthState()
@@ -70,6 +71,22 @@ sealed class LicenseState {
 }
 
 class GameNetViewModel(application: Application) : AndroidViewModel(application) {
+    @Volatile private var stableTrialDeviceId: String? = null
+
+    private suspend fun initializeStableTrialDeviceId() = withContext(Dispatchers.IO) {
+        if (!stableTrialDeviceId.isNullOrBlank()) return@withContext
+        val context = getApplication<Application>()
+        val appSetId = runCatching {
+            val info = com.google.android.gms.appset.AppSet.getClient(context).appSetIdInfo
+            com.google.android.gms.tasks.Tasks.await(info).id
+        }.getOrNull()?.trim().orEmpty()
+        if (appSetId.isNotBlank()) {
+            val digest = MessageDigest.getInstance("SHA-256")
+                .digest(appSetId.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+            stableTrialDeviceId = "DEV_APPSET_$digest"
+        }
+    }
 
     private val db = AppDatabase.getDatabase(application)
     val repository = GameNetRepository(db)
@@ -1727,7 +1744,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         repository.customerDao.getAll(),
         isTrialModeFlow
     ) { dbList, isTrial ->
-        dbList
+        if (isTrial) dbList
+        else dbList.filterNot { it.description == "__GN_TRIAL_TEST_CONTACT__" }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _adminBroadcastMessage = MutableStateFlow<String?>(null)
@@ -2094,6 +2112,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             repository.initializeDatabaseIfEmpty()
             loadSettings()
+            initializeStableTrialDeviceId()
             _deviceId.value = getDeviceId()
             loadSavedAuthSession()
             verifyLicenseStatus()
@@ -2467,6 +2486,12 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     consoleType = station.consoleType,
                     controllerCount = station.controllerCount
                 )
+                if (sessionStart == null && !SelfHostedManager.lastStationStartWasTransportFailure) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "شروع نشست از سرور رد شد؛ جایگاه به حالت آفلاین منتقل نشد تا فاکتور ناقص ایجاد نشود.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
                 if (sessionStart == null) {
                     sessionId = java.util.UUID.randomUUID().toString()
                     authoritativeStart = requestedStart
@@ -4190,6 +4215,32 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         return finalDeviceId
     }
 
+    /** Device identity used only for the server-authoritative 24h Trial.
+     * App Set ID survives normal app reinstall/update cycles and is not coupled
+     * to the signing key, unlike ANDROID_ID on modern Android versions.
+     */
+    fun getTrialDeviceId(): String {
+        stableTrialDeviceId?.let { return it }
+        val context = getApplication<Application>()
+        val appSetId = runCatching {
+            val info = com.google.android.gms.appset.AppSet.getClient(context).appSetIdInfo
+            com.google.android.gms.tasks.Tasks.await(info).id
+        }.getOrNull()?.trim().orEmpty()
+        if (appSetId.isNotBlank()) {
+            val digest = MessageDigest.getInstance("SHA-256")
+                .digest(appSetId.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+            val id = "DEV_APPSET_$digest"
+            stableTrialDeviceId = id
+            return id
+        }
+        val fallback = getDeviceId()
+        stableTrialDeviceId = fallback
+        return fallback
+    }
+
+    fun getTrialDeviceFingerprint(): String = getTrialDeviceId()
+
     fun getDeviceFingerprint(): String {
         return getDeviceId()
     }
@@ -4235,6 +4286,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                       _currentAdminRole.value == "TRIAL_USER")
 
         val deviceId = getDeviceId()
+        val trialDeviceId = getTrialDeviceId()
         
         if (isTrial) {
             _currentAdminRole.value = "TRIAL_USER"
@@ -4246,7 +4298,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             for (candidateUrl in candidateTrialUrls) {
                 try {
                     val api = NetworkClient.getApi(candidateUrl)
-                    val res = api.checkTrialStatus(com.example.data.network.CheckTrialRequest(deviceId = deviceId, deviceFingerprint = getDeviceFingerprint(), altDeviceId = deviceId, deviceName = android.os.Build.MODEL ?: "Unknown"))
+                    val res = api.checkTrialStatus(com.example.data.network.CheckTrialRequest(deviceId = trialDeviceId, deviceFingerprint = getTrialDeviceFingerprint(), altDeviceId = trialDeviceId, deviceName = android.os.Build.MODEL ?: "Unknown"))
                     trialCheck = res
                     _isServerConnected.value = true
                     _serverUrl.value = candidateUrl
@@ -4264,8 +4316,13 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     return
                 }
                 
-                val remainingMs = if (trialCheck.remainingMilliseconds > 0) trialCheck.remainingMilliseconds else (trialCheck.remainingHours * 3600 * 1000L).toLong()
-                val expiresAt = now + (if (remainingMs > 0) remainingMs else 24 * 3600 * 1000L)
+                val serverNow = trialCheck.serverTime ?: now
+                val remainingMs = when {
+                    trialCheck.expiresAt != null && trialCheck.expiresAt > 0L -> (trialCheck.expiresAt - serverNow).coerceAtLeast(0L)
+                    trialCheck.remainingMilliseconds > 0L -> trialCheck.remainingMilliseconds
+                    else -> 0L
+                }
+                val expiresAt = trialCheck.expiresAt ?: (serverNow + remainingMs)
                 
                 // Schedule local kill-switch timer
                 scheduleExpiration(expiresAt)
@@ -4281,10 +4338,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 _licenseState.value = LicenseState.Active(
                     planType = "TRIAL",
                     expiresAt = expiresAt,
-                    activatedAt = now,
+                    activatedAt = serverNow,
                     licenseCode = "TRIAL_24H",
                     hasPassword = true,
-                    lastServerValidationTime = now
+                    lastServerValidationTime = serverNow
                 )
                 return
             } else {
@@ -4529,7 +4586,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     fun activateFreeTrial(onResult: (Boolean, String) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val deviceId = getDeviceId()
+                val deviceId = getTrialDeviceId()
                 val now = System.currentTimeMillis()
                 
                 var serverTrialStatus: com.example.data.network.CheckTrialResponse? = null
@@ -4540,7 +4597,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         val startRes = api.startFreeTrial(
                             com.example.data.network.TrialStartRequest(
                                 deviceId = deviceId,
-                                deviceFingerprint = getDeviceFingerprint()
+                                deviceFingerprint = getTrialDeviceFingerprint()
                             )
                         )
                         serverTrialStatus = com.example.data.network.CheckTrialResponse(
@@ -4584,7 +4641,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         encryptSetting("enc_license_status", "TRIAL")
                         encryptSetting("enc_plan_type", "TRIAL")
                         encryptSetting("enc_expire_time", effectiveExpire.toString())
-                        encryptSetting("enc_last_server_validation_time", now.toString())
+                        encryptSetting("enc_last_server_validation_time", (serverTrialStatus.serverTime ?: now).toString())
                         encryptSetting("enc_last_validation_elapsed", android.os.SystemClock.elapsedRealtime().toString())
                         
                         try {
@@ -4593,7 +4650,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                             Log.e("GameNetViewModel", "ensureTrialDataExists error: ${repoErr.message}")
                         }
                         
-                        _licenseState.value = LicenseState.Active("TRIAL", effectiveExpire, now, "TRIAL_24H", true, now)
+                        _licenseState.value = LicenseState.Active("TRIAL", effectiveExpire, serverTrialStatus.serverTime ?: now, "TRIAL_24H", true, serverTrialStatus.serverTime ?: now)
                         withContext(Dispatchers.Main) {
                             onResult(true, serverTrialStatus.responseMessage)
                         }

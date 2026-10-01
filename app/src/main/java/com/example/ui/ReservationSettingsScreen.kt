@@ -3,6 +3,7 @@ package com.example.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Save
@@ -88,6 +89,7 @@ fun ReservationSettingsScreen(managerId: String, onNavigateBack: () -> Unit) {
 
     var restrictionDays by remember { mutableStateOf("") }
     var surchargePercent by remember { mutableStateOf("") }
+    var selectedSection by remember { mutableStateOf<String?>(null) }
 
     val messages = remember {
         mutableStateMapOf(
@@ -214,14 +216,35 @@ fun ReservationSettingsScreen(managerId: String, onNavigateBack: () -> Unit) {
     ) { padding ->
         if (loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        } else if (selectedSection == null) {
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("قوانین رزرو و قیمت‌گذاری", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("برای ویرایش، هر بخش را لمس کنید.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                listOf(
+                    "مدت‌ها و زمان VIP", "پرداخت", "قیمت VIP", "جریمه، Wallet و محدودیت", "پاداش VIP", "تمام متن‌ها و تذکرهای قابل ویرایش"
+                ).forEach { title ->
+                    Card(Modifier.fillMaxWidth().clickable { selectedSection = title }) {
+                        Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text(title, fontWeight = FontWeight.SemiBold)
+                            Text("←", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
         } else {
             Column(
                 Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                TextButton(onClick = { selectedSection = null }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("بازگشت به فهرست")
+                }
                 if (message.isNotBlank()) Text(message, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
 
-                RulesSection("مدت‌ها و زمان VIP") {
+                                if (selectedSection == "مدت‌ها و زمان VIP") {
+RulesSection("مدت‌ها و زمان VIP") {
                     RuleField("مدت‌های عادی، دقیقه و جداشده با کاما", normalDurations) { normalDurations = it }
                     RuleField("مدت‌های VIP، دقیقه و جداشده با کاما", vipDurations) { vipDurations = it }
                     RuleField("حداقل مدت VIP، دقیقه", vipMin) { vipMin = it }
@@ -229,7 +252,9 @@ fun ReservationSettingsScreen(managerId: String, onNavigateBack: () -> Unit) {
                     RuleField("ساعت پایان VIP", vipEnd) { vipEnd = it }
                 }
 
-                RulesSection("پرداخت") {
+                                }
+                if (selectedSection == "پرداخت") {
+RulesSection("پرداخت") {
                     RuleField("مهلت پرداخت رزرو، دقیقه", paymentDeadline) { paymentDeadline = it }
                     RuleField("مهلت پرداخت VIP، دقیقه", vipPaymentDeadline) { vipPaymentDeadline = it }
                     RuleField("هشدار حضور قبل از رزرو، دقیقه", arrivalWarningMinutes) { arrivalWarningMinutes = it }
@@ -240,11 +265,15 @@ fun ReservationSettingsScreen(managerId: String, onNavigateBack: () -> Unit) {
                     RuleField("آستانه قانون 2 ساعت، دقیقه", threshold2) { threshold2 = it }
                 }
 
-                RulesSection("قیمت VIP") {
+                                }
+                if (selectedSection == "قیمت VIP") {
+RulesSection("قیمت VIP") {
                     RuleField("قیمت VIP", vipPrice) { vipPrice = it }
                 }
 
-                RulesSection("جریمه، Wallet و محدودیت") {
+                                }
+                if (selectedSection == "جریمه، Wallet و محدودیت") {
+RulesSection("جریمه، Wallet و محدودیت") {
                     listOf(
                         "24" to "24 ساعت یا بیشتر", "15" to "کمتر از 24 و بیشتر از 15 ساعت",
                         "5" to "15 ساعت یا کمتر و بیشتر از 5 ساعت", "2" to "5 ساعت یا کمتر و بیشتر از 2 ساعت",
@@ -259,12 +288,16 @@ fun ReservationSettingsScreen(managerId: String, onNavigateBack: () -> Unit) {
                     RuleField("افزایش هزینه رزرو بعدی، درصد", surchargePercent) { surchargePercent = it }
                 }
 
-                RulesSection("پاداش VIP") {
+                                }
+                if (selectedSection == "پاداش VIP") {
+RulesSection("پاداش VIP") {
                     RuleField("GN پاداش VIP", vipGn) { vipGn = it }
                     RuleField("LP پاداش VIP", vipLp) { vipLp = it }
                 }
 
-                RulesSection("تمام متن‌ها و تذکرهای قابل ویرایش") {
+                                }
+                if (selectedSection == "تمام متن‌ها و تذکرهای قابل ویرایش") {
+RulesSection("تمام متن‌ها و تذکرهای قابل ویرایش") {
                     RuleField("متن مهلت پرداخت رزرو", messages["payment"] ?: "", { messages["payment"] = it }, true)
                     RuleField("متن هشدار حضور/لغو", messages["arrival"] ?: "", { messages["arrival"] = it }, true)
                     RuleField("متن قوانین/تأیید VIP", messages["vip"] ?: "", { messages["vip"] = it }, true)
@@ -275,9 +308,9 @@ fun ReservationSettingsScreen(managerId: String, onNavigateBack: () -> Unit) {
                     RuleField("متن لغو دیرهنگام", messages["lateCancellation"] ?: "", { messages["lateCancellation"] = it }, true)
                     RuleField("متن No Show", messages["noShow"] ?: "", { messages["noShow"] = it }, true)
                     RuleField("متن مهلت پرداخت VIP", messages["vipPaymentDeadline"] ?: "", { messages["vipPaymentDeadline"] = it }, true)
-                    Text("Placeholderهای پویا مثل {duration}، {payment_deadline}، {minutes_before_arrival}، {gn_penalty}، {lp_penalty}، {refund_percent}، {restriction_days} و {surcharge_percent} باید توسط Backend هنگام نمایش جایگزین شوند.", style = MaterialTheme.typography.bodySmall)
                 }
 
+                }
                 Button(enabled = !saving, onClick = ::save, modifier = Modifier.fillMaxWidth()) {
                     Text(if (saving) "در حال ذخیره..." else "ذخیره همه تنظیمات")
                 }
