@@ -835,6 +835,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    }
+
     fun toEnglishDigits(text: String): String {
         var result = text
         val persian = arrayOf("۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹")

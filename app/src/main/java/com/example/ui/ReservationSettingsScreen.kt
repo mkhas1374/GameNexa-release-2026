@@ -278,7 +278,7 @@ fun ReservationSettingsScreen(managerId: String, onNavigateBack: () -> Unit) {
                     Text("Placeholderهای پویا مثل {duration}، {payment_deadline}، {minutes_before_arrival}، {gn_penalty}، {lp_penalty}، {refund_percent}، {restriction_days} و {surcharge_percent} باید توسط Backend هنگام نمایش جایگزین شوند.", style = MaterialTheme.typography.bodySmall)
                 }
 
-                Button(enabled = !saving, onClick = ::save, Modifier.fillMaxWidth()) {
+                Button(enabled = !saving, onClick = ::save, modifier = Modifier.fillMaxWidth()) {
                     Text(if (saving) "در حال ذخیره..." else "ذخیره همه تنظیمات")
                 }
             }

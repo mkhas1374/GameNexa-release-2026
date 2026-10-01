@@ -164,7 +164,7 @@ fun CustomerFullHallTab(viewModel: GameNetViewModel) {
                         lastReservationAmount = selectedPrice.toLong()
                     }
                 },
-                Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Default.Event, null)
                 Spacer(Modifier.width(8.dp))
