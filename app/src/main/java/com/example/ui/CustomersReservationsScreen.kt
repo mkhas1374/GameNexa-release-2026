@@ -321,6 +321,9 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
                     }
                 )
             }
+            }
+        }
+
     // Customer Add/Edit Dialog
     
 
