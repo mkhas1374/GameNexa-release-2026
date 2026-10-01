@@ -2052,9 +2052,9 @@ fun SubscriptionWarningBanner(
         }
     }
 
-    if (serverClockWarningVisible) {
+    if (viewModel.serverClockWarningVisible.collectAsState().value) {
         ServerClockWarningOverlay(
-            serverTimeMillis = serverClockMillis ?: System.currentTimeMillis(),
+            serverTimeMillis = viewModel.serverClockMillis.collectAsState().value ?: System.currentTimeMillis(),
             lang = lang,
             onDismiss = { viewModel.dismissServerClockWarning() }
         )
