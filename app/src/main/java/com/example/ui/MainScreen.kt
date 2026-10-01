@@ -34,6 +34,7 @@ import android.widget.Toast
 import android.os.SystemClock
 import java.text.SimpleDateFormat
 import java.math.BigDecimal
+import java.math.RoundingMode
 import com.example.util.ExactBilling
 import androidx.compose.ui.platform.LocalFocusManager
 import com.example.util.JalaliCalendarHelper
@@ -308,7 +309,9 @@ fun StationCard(
 
     // Is countdown or stopwatch?
     val isCountdown = remember(station.prepaymentAmount) { station.prepaymentAmount > 0L }
-    val durationLimitMillis = remember(station.durationLimitMinutes) { station.durationLimitMinutes * 60L * 1000L }
+    val durationLimitMillis = remember(station.prepaymentAmount, hourlyRate, station.durationLimitMinutes) {
+        exactPrepaymentDurationMillis(station.prepaymentAmount, hourlyRate, station.durationLimitMinutes)
+    }
 
     val segmentsDurationMs = remember(station.segmentsJson) {
         station.getSegmentsList().sumOf { it.endTimeMs - it.startTimeMs }
@@ -430,8 +433,9 @@ fun StationCard(
     var buffetExpanded by remember { mutableStateOf(false) }
     var showBuffetDetails by remember { mutableStateOf(false) }
 
-    // Prepayment input state
+    // Start-time pricing inputs: amount and duration (minutes) update each other live.
     var payInput by remember { mutableStateOf("") }
+    var durationInput by remember { mutableStateOf("") }
     var showBehaviorDialog by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
 
@@ -855,8 +859,9 @@ fun StationCard(
                         }
 
                         val inputPrice = payInput.toLongOrNull() ?: 0L
-                        val durationFeedback = if (inputPrice > 0L) {
-                            formatPrepayDuration(inputPrice, hourlyRate, lang)
+                        val amountDurationMillis = exactPrepaymentDurationMillis(inputPrice, hourlyRate, 0)
+                        val durationFeedback = if (inputPrice > 0L && hourlyRate > 0L) {
+                            if (lang == "fa") "زمان معادل: ${formatTime(amountDurationMillis)}" else "Equivalent time: ${formatTime(amountDurationMillis)}"
                         } else ""
 
                         if (durationFeedback.isNotEmpty()) {
@@ -866,13 +871,62 @@ fun StationCard(
                                 fontWeight = FontWeight.ExtraBold,
                                 color = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.padding(bottom = 2.dp)
-                              )
+                            )
                         }
 
-                        // Custom styled BasicTextField for perfect 30.dp height alignment
-                        BasicTextField(
-                            value = payInput,
-                            onValueChange = { payInput = it },
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            BasicTextField(
+                                value = payInput,
+                                onValueChange = { value ->
+                                    payInput = value.filter(Char::isDigit)
+                                    if (payInput.isNotEmpty() && hourlyRate > 0L) {
+                                        val millis = exactPrepaymentDurationMillis(payInput.toLongOrNull() ?: 0L, hourlyRate, 0)
+                                        durationInput = (millis / 60000L).toString()
+                                    } else if (payInput.isEmpty()) {
+                                        durationInput = ""
+                                    }
+                                },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                textStyle = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface),
+                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                modifier = Modifier.weight(1f).height(32.dp).border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.7f), RoundedCornerShape(6.dp)),
+                                decorationBox = { innerTextField ->
+                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                        if (payInput.isEmpty()) Text(text = Localization.get("prepay_amount", lang), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f), textAlign = TextAlign.Center)
+                                        innerTextField()
+                                    }
+                                }
+                            )
+                            BasicTextField(
+                                value = durationInput,
+                                onValueChange = { value ->
+                                    durationInput = value.filter(Char::isDigit)
+                                    val minutes = durationInput.toLongOrNull() ?: 0L
+                                    if (minutes > 0L && hourlyRate > 0L) {
+                                        payInput = BigDecimal.valueOf(hourlyRate).multiply(BigDecimal.valueOf(minutes))
+                                            .divide(BigDecimal.valueOf(60L), 0, RoundingMode.HALF_UP).toLong().toString()
+                                    } else if (durationInput.isEmpty()) {
+                                        payInput = ""
+                                    }
+                                },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                textStyle = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface),
+                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                modifier = Modifier.weight(0.72f).height(32.dp).border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.7f), RoundedCornerShape(6.dp)),
+                                decorationBox = { innerTextField ->
+                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                        if (durationInput.isEmpty()) Text(text = if (lang == "fa") "مدت (دقیقه)" else "Minutes", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f), textAlign = TextAlign.Center)
+                                        innerTextField()
+                                    }
+                                }
+                            )
+                        }
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             textStyle = MaterialTheme.typography.bodySmall.copy(
@@ -1726,23 +1780,14 @@ fun StationCard(
     }
 }
 
-private fun formatPrepayDuration(price: Long, hourlyRate: Long, lang: String): String {
-    if (hourlyRate <= 0L || price <= 0L) return ""
-    val totalMinutes = (price / hourlyRate) * 60L
-    val hours = totalMinutes.toInt() / 60
-    val mins = totalMinutes.toInt() % 60
-    return if (lang == "fa") {
-        if (hours > 0) {
-            "~ $hours ساعت ${if (mins > 0) "و $mins دقیقه" else ""}"
-        } else {
-            "~ $mins دقیقه"
-        }
-    } else {
-        if (hours > 0) {
-            "~ ${hours}h${if (mins > 0) " ${mins}m" else ""}"
-        } else {
-            "~ ${mins}m"
-        }
+private fun exactPrepaymentDurationMillis(price: Long, hourlyRate: Long, fallbackMinutes: Int = 0): Long {
+    if (price <= 0L || hourlyRate <= 0L) return fallbackMinutes.coerceAtLeast(0).toLong() * 60_000L
+    return try {
+        BigDecimal.valueOf(price).multiply(BigDecimal.valueOf(3_600_000L))
+            .divide(BigDecimal.valueOf(hourlyRate), 0, RoundingMode.DOWN)
+            .longValueExact().coerceAtLeast(0L)
+    } catch (_: ArithmeticException) {
+        0L
     }
 }
 
