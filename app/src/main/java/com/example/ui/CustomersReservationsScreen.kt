@@ -302,29 +302,6 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
                     }
                 )
             }
-            if (selectedSubTab == 0 && currentAdminRole != "VIEWER") {
-                androidx.compose.material3.FloatingActionButton(
-                    onClick = {
-                        if (isTrialActive || currentAdminRole == "TRIAL_USER") {
-                            showTrialLimitDialog = true
-                        } else {
-                            editingCustomer = null
-                            showCustomerDialog = true
-                        }
-                    },
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(16.dp)
-                        .testTag("btn_add_customer"),
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                ) {
-                    Icon(Icons.Default.PersonAdd, contentDescription = "Add Customer")
-                }
-            }
-        }
-    }
-
     // Customer Add/Edit Dialog
     
 
