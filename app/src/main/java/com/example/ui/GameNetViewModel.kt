@@ -2425,6 +2425,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             val station = repository.getStationStateByIdLocal(stationId)
                 ?: stationStates.value.find { it.id == stationId }
                 ?: return@launch
+            if (isTrialUser && !station.consoleType.equals("PlayStation 5", ignoreCase = true)) return@launch
 
             // STRICT BUSINESS RULE: A customer cannot have concurrent active sessions in multiple stations
             val assignedCustomerIds = station.getCustomerIds().filter { it > 0 }
