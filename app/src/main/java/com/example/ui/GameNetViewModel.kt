@@ -2112,7 +2112,6 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             repository.initializeDatabaseIfEmpty()
             loadSettings()
-            initializeStableTrialDeviceId()
             _deviceId.value = getDeviceId()
             loadSavedAuthSession()
             verifyLicenseStatus()
