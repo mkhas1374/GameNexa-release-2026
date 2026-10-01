@@ -987,7 +987,7 @@ fun StationCard(
                                 expanded = activeConsoleMenuExpanded,
                                 onDismissRequest = { activeConsoleMenuExpanded = false }
                             ) {
-                                listOf("PlayStation 5", "PlayStation 4", "شبیه‌ساز رانندگی (Sim)").forEach { cType ->
+                                (if (viewModel.isTrialUser) listOf("PlayStation 5") else listOf("PlayStation 5", "PlayStation 4", "شبیه‌ساز رانندگی (Sim)")).forEach { cType ->
                                     DropdownMenuItem(
                                         text = { Text(formatConsoleName(cType), fontSize = 12.sp) },
                                         onClick = {
