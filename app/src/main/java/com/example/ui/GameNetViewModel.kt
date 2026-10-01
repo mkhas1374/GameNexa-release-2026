@@ -1994,7 +1994,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         _showAuthDialog.value = false
     }
 
-    private val initializationJob = viewModelScope.launch {
+    init {
+        viewModelScope.launch {
             _licenseState.collect { state ->
                 when (state) {
                     is LicenseState.Active -> {
