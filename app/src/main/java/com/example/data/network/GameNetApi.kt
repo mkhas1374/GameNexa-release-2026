@@ -21,6 +21,9 @@ interface GameNetApi {
     @GET("api/v1/time")
     suspend fun getServerTime(): ServerClockResponse
 
+    @GET("api/v1/time")
+    suspend fun healthCheck(): retrofit2.Response<ServerClockResponse>
+
     @GET("api/v1/super-manager/managers")
     suspend fun getSuperManagers(): List<AdminManagerDto>
 
@@ -41,6 +44,12 @@ interface GameNetApi {
     @GET("api/v1/super-manager/trial-devices")
     suspend fun getAllDeviceTrials(): okhttp3.ResponseBody
 
+    @DELETE("api/v1/super-manager/trial-devices/{id}")
+    suspend fun deleteDeviceTrial(@Path("id") id: String): retrofit2.Response<okhttp3.ResponseBody>
+
+    @POST("api/v1/super-manager/trial-devices/{id}/extend")
+    suspend fun extendDeviceTrial(@Path("id") id: String): retrofit2.Response<okhttp3.ResponseBody>
+
 
 
     @POST("api/v1/super-manager/managers")
@@ -48,6 +57,12 @@ interface GameNetApi {
 
     @PUT("api/v1/super-manager/managers/{id}")
     suspend fun updateManagerStatus(@Path("id") id: String, @Body request: UpdateManagerRequestDto): retrofit2.Response<okhttp3.ResponseBody>
+
+    @PUT("api/v1/super-manager/managers/{id}")
+    suspend fun updateManager(@Path("id") id: String, @Body request: EditManagerRequestDto): retrofit2.Response<okhttp3.ResponseBody>
+
+    @DELETE("api/v1/super-manager/managers/{id}")
+    suspend fun deleteManager(@Path("id") id: String): retrofit2.Response<okhttp3.ResponseBody>
 
 
     @POST("api/v1/super-manager/create-manager")

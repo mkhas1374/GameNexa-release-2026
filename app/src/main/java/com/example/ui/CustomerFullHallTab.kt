@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.data.network.AtomicReservationRequest
@@ -133,7 +134,7 @@ fun CustomerFullHallTab(viewModel: GameNetViewModel) {
                         cal.get(Calendar.YEAR), cal.get(Calendar.MONTH), cal.get(Calendar.DAY_OF_MONTH)
                     ).show()
                 },
-                Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Default.Schedule, null)
                 Spacer(Modifier.width(8.dp))

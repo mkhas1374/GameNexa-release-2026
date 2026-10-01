@@ -835,6 +835,7 @@ fun CustomerHistoryTab(viewModel: GameNetViewModel) {
 
 @Composable
 fun CustomerReservationTab(viewModel: GameNetViewModel) {
+    val context = LocalContext.current
     val stationStates by viewModel.stationStates.collectAsState()
     val reservations by viewModel.reservations.collectAsState()
     val currentCustomerAuth by SelfHostedManager.currentLoggedInCustomer.collectAsState()
@@ -1134,7 +1135,7 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
                             if (selectedStartMillis > 0L) timeInMillis = selectedStartMillis
                         }
                         DatePickerDialog(
-                            LocalContext.current,
+                            context,
                             { _, year, month, day ->
                                 val picked = Calendar.getInstance(tz).apply {
                                     set(Calendar.YEAR, year)
@@ -1146,7 +1147,7 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
                                     set(Calendar.MILLISECOND, 0)
                                 }
                                 TimePickerDialog(
-                                    LocalContext.current,
+                                    context,
                                     { _, hour, minute ->
                                         picked.set(Calendar.HOUR_OF_DAY, hour)
                                         picked.set(Calendar.MINUTE, minute)

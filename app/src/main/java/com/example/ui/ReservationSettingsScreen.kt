@@ -30,6 +30,11 @@ private fun RuleField(label: String, value: String, onValueChange: (String) -> U
 }
 
 @Composable
+private fun RuleField(label: String, value: String, onValueChange: (String) -> Unit) {
+    RuleField(label, value, onValueChange, false)
+}
+
+@Composable
 private fun RulesSection(title: String, content: @Composable ColumnScope.() -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
