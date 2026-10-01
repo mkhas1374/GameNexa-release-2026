@@ -975,29 +975,42 @@ private fun IranTehranClock(
         }
     }
 
-    val formatter = remember {
+    val timeFormatter = remember {
         SimpleDateFormat("HH:mm:ss", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("Asia/Tehran")
+        }
+    }
+    val dateFormatter = remember {
+        SimpleDateFormat("yyyy/MM/dd", Locale.US).apply {
             timeZone = TimeZone.getTimeZone("Asia/Tehran")
         }
     }
 
     Surface(
-        modifier = modifier.height(30.dp),
+        modifier = modifier
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .height(38.dp),
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 2.dp
     ) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "🇮🇷  ${formatter.format(Date(liveServerTime))}",
+                text = dateFormatter.format(Date(liveServerTime)),
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "🇮🇷  ${timeFormatter.format(Date(liveServerTime))}",
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Black,
                 fontSize = 15.sp,
-                color = MaterialTheme.colorScheme.primary,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                maxLines = 1
+                color = MaterialTheme.colorScheme.primary
             )
         }
     }
