@@ -242,6 +242,8 @@ class GameNetRepository(private val db: AppDatabase) {
                 saveSetting("station_count", remoteStations.size.toString())
                 for (st in remoteStations) {
                     try {
+                        // Server is authoritative. Empty remote orders must clear stale local rows.
+                        stationOrderDao.clearForStation(st.id)
                         val orders = api.getOrders(st.id)
                         if (orders.isNotEmpty()) {
                             stationOrderDao.insertAll(orders)
