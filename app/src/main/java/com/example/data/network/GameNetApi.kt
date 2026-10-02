@@ -895,7 +895,15 @@ object NetworkClient {
     private var api: GameNetApi? = null
 
     @Volatile
-    var authToken: String? = null
+    var managerAuthToken: String? = null
+    @Volatile
+    var customerAuthToken: String? = null
+
+    // Backward-compatible alias for existing Manager-authenticated call sites.
+    var authToken: String?
+        get() = managerAuthToken
+        set(value) { managerAuthToken = value }
+
     @Volatile
     var isTrialMode: Boolean = false
 
@@ -954,8 +962,9 @@ object NetworkClient {
 
                     val path = original.url.encodedPath
                     val isPublicAuthEndpoint = path.contains("auth/register") || path.contains("auth/login")
+                    val isCustomerEndpoint = path.startsWith("/api/v1/customer/") || path.startsWith("/api/auth/customer/")
 
-                    val token = authToken
+                    val token = if (isCustomerEndpoint) customerAuthToken else managerAuthToken
                     if (!token.isNullOrBlank() && !isPublicAuthEndpoint) {
                         requestBuilder.header("Authorization", "Bearer $token")
                     }

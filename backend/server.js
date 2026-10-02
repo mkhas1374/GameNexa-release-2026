@@ -19,6 +19,7 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'X-GameNet-Timestamp', 'X-GameNet-Signature', 'X-Manager-ID', 'Idempotency-Key']
 }));
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '256kb' }));
+app.use((req,res,next)=>{const started=Date.now();res.on('finish',()=>recordServerDiagnostic(req,res.statusCode,Date.now()-started));next();});
 app.disable('x-powered-by');
 app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -718,6 +719,21 @@ app.post('/api/v1/super-manager/managers/purge', requireSuperManagerAuth, async 
 const pingHandler = (req, res) => res.json({ success: true, message: 'pong' });
 app.get('/api/v1/super-manager/ping', pingHandler);
 app.post('/api/v1/super-manager/ping', pingHandler);
+
+const serverDiagnosticLog = [];
+const SERVER_DIAGNOSTIC_MAX = 200;
+function recordServerDiagnostic(req, statusCode, durationMs) {
+    const path = String(req.path || req.originalUrl || '').split('?')[0];
+    if (path === '/api/v1/manager/diagnostics') return;
+    const managerId = req.user?.managerId || req.user?.id || null;
+    if (!managerId) return;
+    serverDiagnosticLog.unshift({timestamp:Date.now(),method:req.method,path,statusCode,durationMs,managerId,role:req.user?.role||null});
+    if (serverDiagnosticLog.length > SERVER_DIAGNOSTIC_MAX) serverDiagnosticLog.length = SERVER_DIAGNOSTIC_MAX;
+}
+app.get('/api/v1/manager/diagnostics', requireManagerAuth, requireActiveEntitlement, async (req,res) => {
+    const managerId=String(req.user.managerId||req.user.id);
+    return res.json({success:true,serverTime:Date.now(),logs:serverDiagnosticLog.filter(x=>String(x.managerId)===managerId).slice(0,100)});
+});
 
 
 

@@ -219,7 +219,6 @@ fun SettingsMenuHub(
     onOpenServerTest: () -> Unit
 ) {
     val networkStatus by com.example.data.network.NetworkLogger.status.collectAsState()
-    val hasErrors = !networkStatus.isConnected
 
     LazyColumn(
         modifier = Modifier
@@ -275,7 +274,7 @@ fun SettingsMenuHub(
         }
 
         // Server Connection Test Quick Action Card (Debug Inspector)
-        if (currentRole == "SUPER_MANAGER" && hasErrors) {
+        if (currentRole == "SUPER_MANAGER") {
             item {
                 Card(
                 shape = RoundedCornerShape(14.dp),
@@ -337,7 +336,7 @@ fun SettingsMenuHub(
                 }
             }
         }
-        } // End of if (currentRole == "SUPER_MANAGER" && hasErrors)
+        } // End of Super Manager diagnostics card
 
         item {
             Text(
