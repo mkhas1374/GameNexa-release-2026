@@ -1389,12 +1389,12 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
             if (!Array.isArray(clubLevels)) clubLevels = [];
             for (let payerIndex = 0; payerIndex < payers.length; payerIndex += 1) {
                 const payer = payers[payerIndex];
-                if (!payer.customer_id) continue;
+                // Guest payers are valid invoice principals too; customer_id remains NULL for them.
                 // Every invoice amount is an integer Toman. Any indivisible remainder
                 // is assigned to the final payer so the invoice totals still reconcile.
                 const shareGame = (baseGame + (payerIndex === payers.length - 1 ? gameRemainder : 0n)).toString();
                 const shareBuffet = (baseBuffet + (payerIndex === payers.length - 1 ? buffetRemainder : 0n)).toString();
-                const customerRow = await client.query("SELECT club_tier FROM customers WHERE id=$1 AND manager_id=$2",[payer.customer_id,managerId]);
+                const customerRow = payer.customer_id ? await client.query("SELECT club_tier FROM customers WHERE id=$1 AND manager_id=$2",[payer.customer_id,managerId]) : {rows:[]};
                 const tier = String(customerRow.rows[0]?.club_tier || "BRONZE").toLowerCase();
                 const level = clubLevels.find(x => String(x?.id || "").toLowerCase() === tier) || {};
                 const gameDiscountPercent = Math.max(0,Math.min(100,Number(level.gameDiscountPercent || 0)));
@@ -1415,11 +1415,15 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
                     remainingFixed -= buffetDeduction;
                     if (remainingFixed > 0n) invoiceGameCost = invoiceGameCost > remainingFixed ? invoiceGameCost - remainingFixed : 0n;
                 }
-                const invoiceNumber = "GN-" + new Date().toISOString().replace(/[-:TZ.]/g,"").slice(0,14) + "-" + payer.customer_id + "-" + sessionId.slice(0,8);
-                const invoicePricingSnapshot = {...pricing,clubTier:tier,gameDiscountPercent,buffetDiscountPercent,fixedDiscountToman};
+                const prepayment = BigInt(String(payer.prepayment_amount || "0"));
+                const invoiceTotal = invoiceGameCost + invoiceBuffetCost;
+                const appliedPrepayment = prepayment > invoiceTotal ? invoiceTotal : prepayment;
+                const invoiceStatus = appliedPrepayment >= invoiceTotal ? 'PAID' : 'UNPAID';
+                const invoiceNumber = "GN-" + new Date().toISOString().replace(/[-:TZ.]/g,"").slice(0,14) + "-" + (payer.customer_id || "GUEST") + "-" + sessionId.slice(0,8);
+                const invoicePricingSnapshot = {...pricing,clubTier:tier,gameDiscountPercent,buffetDiscountPercent,fixedDiscountToman,prepaymentAmount:prepayment.toString(),appliedPrepayment:appliedPrepayment.toString()};
                 await client.query(
-                    "INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,$3,$4,$5,'UNPAID','IRT',$6,$7,($6::numeric+$7::numeric),0,$8,$9::jsonb,$10::jsonb,$11::jsonb) ON CONFLICT(session_id,customer_id) DO UPDATE SET game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,settlement_idempotency_key=COALESCE(invoices.settlement_idempotency_key,EXCLUDED.settlement_idempotency_key),pricing_snapshot=EXCLUDED.pricing_snapshot,updated_at=NOW()",
-                    [invoiceNumber,managerId,payer.customer_id,sessionId,session.station_id,invoiceGameCost.toString(),invoiceBuffetCost.toString(),"settle_"+sessionId+"_"+payer.customer_id,JSON.stringify(invoicePricingSnapshot),JSON.stringify({id:payer.customer_id,name:payer.participant_name}),JSON.stringify({id:managerId})]
+                    "INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,$3,$4,$5,$6,'IRT',$7,$8,($7::numeric+$8::numeric),$9,$10,$11::jsonb,$12::jsonb,$13::jsonb) ON CONFLICT(session_id,customer_id) DO UPDATE SET status=EXCLUDED.status,game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,paid_amount=EXCLUDED.paid_amount,settlement_idempotency_key=COALESCE(invoices.settlement_idempotency_key,EXCLUDED.settlement_idempotency_key),pricing_snapshot=EXCLUDED.pricing_snapshot,updated_at=NOW()",
+                    [invoiceNumber,managerId,payer.customer_id,sessionId,session.station_id,invoiceStatus,invoiceGameCost.toString(),invoiceBuffetCost.toString(),appliedPrepayment.toString(),"settle_"+sessionId+"_"+(payer.customer_id || "guest")+"_"+payer.participant_key,JSON.stringify(invoicePricingSnapshot),JSON.stringify({id:payer.customer_id || null,name:payer.participant_name,isGuest:Boolean(payer.is_guest)}),JSON.stringify({id:managerId})]
                 );
             }
         }
@@ -1485,8 +1489,20 @@ const expireDueReservationPayments = async () => {
     }
 };
 
+const ensureRuntimeSchema = async () => {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('ALTER TABLE invoices ALTER COLUMN customer_id DROP NOT NULL');
+        await client.query('COMMIT');
+    } catch (e) {
+        try { await client.query('ROLLBACK'); } catch (_) {}
+        if (!String(e.message || '').includes('already allows null')) throw e;
+    } finally { client.release(); }
+};
+
 setInterval(expireDueReservationPayments, 30000);
-expireDueReservationPayments()
+ensureRuntimeSchema().then(() => expireDueReservationPayments())
     .then(() => app.listen(PORT, '0.0.0.0', () => console.log(`API running on port ${PORT}`)))
     .catch((e) => { console.error('Reservation expiry initialization failed:', e); process.exit(1); });
 

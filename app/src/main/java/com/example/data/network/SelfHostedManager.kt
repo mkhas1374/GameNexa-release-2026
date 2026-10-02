@@ -456,7 +456,7 @@ object SelfHostedManager {
             val managerId = currentManagerId.trim()
             val normPhone = normalizePhone(phone)
             if (managerId.isBlank()) return@withContext Result.failure(Exception("شناسه مدیر برای ثبت‌نام مشتری مشخص نشده است."))
-            if (passwordText.trim().length < 4) return@withContext Result.failure(Exception("رمز عبور باید حداقل 4 کاراکتر باشد."))
+            if (passwordText.trim().length < 8) return@withContext Result.failure(Exception("رمز عبور باید حداقل 8 کاراکتر باشد."))
             
             val json = JSONObject().apply {
                 put("full_name", fullName.trim())
@@ -1373,7 +1373,7 @@ object SelfHostedManager {
         try {
             val encoded = java.net.URLEncoder.encode(timeSlot, "UTF-8")
             val url = "$SERVER_URL/api/v1/customer/reservations/rules?durationMinutes=" + durationMinutes + "&timeSlot=" + encoded
-            val request = Request.Builder().url(url).headers(getBaseHeaders()).get().build()
+            val request = Request.Builder().url(url).headers(getCustomerHeaders()).get().build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext null
                 JSONObject(response.body?.string() ?: "{}")
@@ -1701,10 +1701,9 @@ object SelfHostedManager {
         try {
             val trkCode = trackingCode.ifBlank { "GN_BUY_" + System.currentTimeMillis().toString().takeLast(6) }
             val json = JSONObject().apply {
-                put("customerId", customer.id)
                 put("amount", totalToman.toLong())
                 put("gnAmount", gnAmount)
-                put("transactionType", "BUY_GN")
+                put("purpose", "BUY_GN")
                 put("trackingCode", trkCode)
                 put("description", "خرید آنلاین اعتبار GN")
             }

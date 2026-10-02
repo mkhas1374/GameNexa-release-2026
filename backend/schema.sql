@@ -379,7 +379,7 @@ CREATE TABLE public.invoices (
     id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
     invoice_number character varying(80) NOT NULL,
     manager_id character varying(50) NOT NULL,
-    customer_id integer NOT NULL,
+    customer_id integer,
     session_id uuid,
     station_id integer,
     status character varying(30) DEFAULT 'UNPAID'::character varying NOT NULL,
