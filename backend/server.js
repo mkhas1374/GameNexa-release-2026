@@ -557,7 +557,13 @@ app.post('/api/v1/super-manager/managers/:id/subscription/extend', requireSuperM
     if (!managerId || !planId) return res.status(400).json({success:false,error:'managerId and planId are required'});
     try {
         const storeRaw = (await pool.query('SELECT settings FROM subscription_store_config WHERE id=1')).rows[0]?.settings || {};
-        const plan = Array.isArray(storeRaw.plans) ? storeRaw.plans.find(p => String(p.id || '') === planId && p.active !== false) : null;
+        const defaultPlans = [
+            {id:'MONTHLY',nameFa:'یک ماهه',nameEn:'Monthly',price:500,durationDays:30,active:true},
+            {id:'THREE_MONTHS',nameFa:'سه ماهه',nameEn:'3 Months',price:1200,durationDays:90,active:true},
+            {id:'YEARLY',nameFa:'یک ساله',nameEn:'Yearly',price:3259,durationDays:365,active:true}
+        ];
+        const planList = Array.isArray(storeRaw.plans) && storeRaw.plans.length ? storeRaw.plans : defaultPlans;
+        const plan = planList.find(p => String(p.id || '') === planId && p.active !== false);
         if (!plan) return res.status(400).json({success:false,error:'Subscription plan is unavailable'});
         const days = Number(plan.durationDays || 0);
         if (!Number.isInteger(days) || days <= 0) return res.status(400).json({success:false,error:'Invalid subscription duration'});
