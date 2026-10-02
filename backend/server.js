@@ -268,7 +268,7 @@ app.post('/api/auth/customer/register', rateLimit({ windowMs: 60_000, max: 5 }),
             [managerId, phoneNumber, fullName, hash]);
         const customer = created.rows[0];
         const token = jwt.sign({ id: customer.id, managerId, role: 'CUSTOMER' }, JWT_SECRET, { expiresIn: '24h' });
-        res.status(201).json({ success: true, token, customerId: customer.id, customer });
+        res.status(201).json({ success: true, token, customerId: customer.id, customer, user: { id: customer.id, username: customer.phone_number, phone: customer.phone_number, role: 'CUSTOMER', email: null } });
     } catch (e) {
         console.error('Customer registration error:', e);
         res.status(500).json({ error: 'Internal server error' });

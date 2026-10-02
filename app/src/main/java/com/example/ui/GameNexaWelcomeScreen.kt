@@ -492,8 +492,8 @@ fun GameNexaWelcomeScreen(
                                             localErrorMessage = "لطفاً آدرس ایمیل معتبر (مثال: name@domain.com) وارد کنید."
                                             return@Button
                                         }
-                                        if (regPassword.trim().length < 4) {
-                                            localErrorMessage = "رمز عبور باید حداقل 4 کاراکتر باشد."
+                                        if (regPassword.trim().length < 8) {
+                                            localErrorMessage = "رمز عبور باید حداقل 8 کاراکتر باشد."
                                             return@Button
                                         }
                                         if (regPassword != regConfirmPassword) {

@@ -258,11 +258,10 @@ interface GameNetApi {
 
 @com.squareup.moshi.JsonClass(generateAdapter = true)
 data class UserRegisterRequest(
-    @com.squareup.moshi.Json(name = "username") val username: String,
-    @com.squareup.moshi.Json(name = "password") val password: String,
-    @com.squareup.moshi.Json(name = "phone") val phone: String? = null,
-    @com.squareup.moshi.Json(name = "email") val email: String? = null,
-    @com.squareup.moshi.Json(name = "role") val role: String = "OPERATOR"
+    @com.squareup.moshi.Json(name = "phone_number") val phoneNumber: String,
+    @com.squareup.moshi.Json(name = "manager_id") val managerId: String,
+    @com.squareup.moshi.Json(name = "full_name") val fullName: String,
+    @com.squareup.moshi.Json(name = "password") val password: String
 )
 
 @com.squareup.moshi.JsonClass(generateAdapter = true)

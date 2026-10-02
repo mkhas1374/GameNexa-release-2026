@@ -5307,98 +5307,24 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         email: String? = null,
         onResult: (Boolean, String) -> Unit
     ) {
-        val cleanUsername = username.trim()
+        val cleanName = username.trim()
         val cleanPassword = password.trim()
         val cleanPhone = phone?.trim()?.ifBlank { null }
-        val cleanEmail = email?.trim()?.ifBlank { null }
-
-        if (cleanUsername.length < 3) {
-            onResult(false, "نام کاربری باید حداقل 3 کاراکتر باشد.")
-            return
-        }
-        if (cleanPhone.isNullOrBlank() || cleanPhone.length < 10) {
-            onResult(false, "لطفاً شماره موبایل معتبر (مثال: 09123456789) وارد کنید.")
-            return
-        }
-        if (cleanEmail.isNullOrBlank() || !cleanEmail.contains("@") || !cleanEmail.contains(".")) {
-            onResult(false, "لطفاً آدرس ایمیل معتبر (مثال: name@domain.com) وارد کنید.")
-            return
-        }
-        if (cleanPassword.length < 4) {
-            onResult(false, "رمز عبور باید حداقل 4 کاراکتر باشد.")
-            return
-        }
+        if (cleanName.length < 3) { onResult(false, "نام و نام خانوادگی باید حداقل 3 کاراکتر باشد."); return }
+        if (cleanPhone.isNullOrBlank() || cleanPhone.length < 10) { onResult(false, "لطفاً شماره موبایل معتبر (مثال: 09123456789) وارد کنید."); return }
+        if (cleanPassword.length < 8) { onResult(false, "رمز عبور باید حداقل 8 کاراکتر باشد."); return }
+        if (password != cleanPassword) { onResult(false, "رمز عبور نمی‌تواند با فاصله ابتدا یا انتها ذخیره شود."); return }
 
         _authState.value = AuthState.Authenticating
-
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                NetworkClient.authToken = null
-                val api = NetworkClient.getApi(_serverUrl.value)
-                val req = UserRegisterRequest(
-                    username = cleanUsername,
-                    password = cleanPassword,
-                    phone = cleanPhone,
-                    email = cleanEmail,
-                    role = "OPERATOR"
-                )
-                val response = api.registerUser(req)
-                val token = response.token
-                val user = response.user
-
-                if (response.success && !token.isNullOrBlank() && user != null && user.realId.isNotBlank()) {
-                    val userId = user.realId
-                    val effectiveUsername = user.username ?: cleanUsername
-                    val effectivePhone = user.phone ?: cleanPhone
-                    val effectiveRole = user.role ?: "OPERATOR"
-                    val effectiveEmail = user.email ?: cleanEmail
-
-                    // Encrypted local session storage
-                    encryptSetting("enc_auth_token", token)
-                    encryptSetting("enc_user_id", userId)
-                    encryptSetting("enc_auth_username", effectiveUsername)
-                    encryptSetting("enc_auth_phone", effectivePhone)
-                    encryptSetting("enc_auth_role", effectiveRole)
-                    encryptSetting("enc_auth_email", effectiveEmail)
-                    encryptSetting("enc_auth_password", "")
-                    if (effectivePhone.isNotBlank()) {
-                        encryptSetting("enc_user_phone", effectivePhone)
-                    }
-
-                    NetworkClient.authToken = token
-
-                    _authState.value = AuthState.Authenticated(
-                        userId = userId,
-                        username = effectiveUsername,
-                        phone = effectivePhone,
-                        role = effectiveRole,
-                        email = effectiveEmail,
-                        token = token
-                    )
-                    _showAuthDialog.value = false
-
-                    // Idempotent device binding with real backend users.id
-                    bindDeviceToUser(userId)
-
-                    withContext(Dispatchers.Main) {
-                        onResult(true, "ثبت‌نام با موفقیت انجام شد. خوش آمدید!")
-                    }
+            val result = SelfHostedManager.registerCustomer(cleanName, cleanPhone, cleanPassword)
+            withContext(Dispatchers.Main) {
+                if (result.isSuccess) {
+                    _authState.value = AuthState.Unauthenticated
+                    onResult(true, "ثبت‌نام مشتری با موفقیت انجام شد.")
                 } else {
-                    val errorMsg = response.error.ifBlank { response.message }.ifBlank { "ثبت‌نام در سرور ناموفق بود." }
-                    _authState.value = AuthState.AuthenticationError(errorMsg)
-                    withContext(Dispatchers.Main) { onResult(false, errorMsg) }
-                }
-            } catch (e: Exception) {
-                if (e is retrofit2.HttpException && e.code() == 409) {
-                    val errorMsg = "این نام کاربری، شماره موبایل یا ایمیل قبلاً در سامانه ثبت شده است. لطفاً از تب «ورود» استفاده کنید."
-                    _authState.value = AuthState.AuthenticationError(errorMsg)
-                    withContext(Dispatchers.Main) {
-                        onResult(false, errorMsg)
-                    }
-                } else {
-                    val errorMsg = "ثبت‌نام نیازمند اتصال موفق به سرور است."
-                    _authState.value = AuthState.AuthenticationError(errorMsg)
-                    withContext(Dispatchers.Main) { onResult(false, errorMsg) }
+                    _authState.value = AuthState.Unauthenticated
+                    onResult(false, result.exceptionOrNull()?.message ?: "ثبت‌نام ناموفق بود.")
                 }
             }
         }
