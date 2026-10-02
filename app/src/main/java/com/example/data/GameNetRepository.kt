@@ -240,7 +240,7 @@ class GameNetRepository(private val db: AppDatabase) {
                 stationStateDao.insertAll(remoteStations)
                 // Server is authoritative. Clear the complete local buffet-order cache first.
                 // A FREE/disabled station must never display or upload an old order.
-                stationOrderDao.clearAll()
+                for (st in remoteStations) stationOrderDao.clearForStation(st.id)
                 // Update local setting to match the number of active stations, not disabled rows.
                 saveSetting("station_count", remoteStations.count { it.status != "DISABLED" }.toString())
                 for (st in remoteStations) {
