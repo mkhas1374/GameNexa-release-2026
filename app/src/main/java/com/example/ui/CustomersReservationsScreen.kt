@@ -1647,56 +1647,12 @@ fun CustomerCard(
                         }
                     }
 
-                    if (customer.password.isNotBlank() && canManagePasswords) {
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
-                            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.Key,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Text(
-                                        text = "رمز اپلیکیشن مشتری: ${customer.password}",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-
-                                FilledTonalButton(
-                                    onClick = {
-                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                        val clip = android.content.ClipData.newPlainText(
-                                            "GameNexa Account",
-                                            "نام کاربری: ${customer.phoneNumber.trim()}\nرمز عبور: ${customer.password}\nاپلیکیشن مشتریان GameNexa"
-                                        )
-                                        clipboard.setPrimaryClip(clip)
-                                        Toast.makeText(context, "اطلاعات حساب مشتری کپی شد!", Toast.LENGTH_SHORT).show()
-                                    },
-                                    shape = RoundedCornerShape(4.dp),
-                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-                                    modifier = Modifier.height(24.dp)
-                                ) {
-                                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(10.dp))
-                                    Spacer(modifier = Modifier.width(2.dp))
-                                    Text("کپی", fontSize = 9.sp)
-                                }
-                            }
-                        }
+                    if (canManagePasswords) {
+                        Text(
+                            text = "رمز عبور مشتری در مدیریت نمایش یا کپی نمی‌شود.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
 
                     val cleanInviteCode = customer.inviteCode.trim()

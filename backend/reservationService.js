@@ -224,7 +224,7 @@ async function bookReservation(params, externalClient = null) {
 
         if (targetStations && targetStations.length > 0) {
             const stRes = await client.query(
-                'SELECT * FROM stations WHERE id = ANY($1) AND manager_id = $2',
+                'SELECT * FROM stations WHERE id = ANY($1) AND manager_id = $2 AND active = TRUE AND reservable = TRUE',
                 [targetStations, managerId]
             );
 

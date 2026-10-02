@@ -1,0 +1,77 @@
+name: GameNexa Backend Integration
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  backend-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gamenexa
+          POSTGRES_PASSWORD: gamenexa
+          POSTGRES_DB: gamenexa_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gamenexa -d gamenexa_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install backend dependencies deterministically
+        working-directory: backend
+        run: npm ci
+      - name: Initialize isolated PostgreSQL schema
+        env:
+          PGPASSWORD: gamenexa
+        run: psql -h 127.0.0.1 -U gamenexa -d gamenexa_test -f backend/schema.sql
+      - name: Start isolated API
+        env:
+          DATABASE_URL: postgresql://gamenexa:gamenexa@127.0.0.1:5432/gamenexa_test
+          JWT_SECRET: ci-only-test-secret-change-me
+          SUPER_ADMIN_PASSWORD: ci-only-super-password-1234
+          CORS_ORIGINS: http://127.0.0.1
+          PORT: 3000
+        run: |
+          nohup node backend/server.js >/tmp/gamenexa-api.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3000/api/v1/time && exit 0
+            sleep 1
+          done
+          cat /tmp/gamenexa-api.log
+          exit 1
+      - name: Run backend release test suite
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://gamenexa:gamenexa@127.0.0.1:5432/gamenexa_test
+          JWT_SECRET: ci-only-test-secret-change-me
+          SUPER_ADMIN_PASSWORD: ci-only-super-password-1234
+          PORT: 3000
+        run: npm test
+      - name: Upload API log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gamenexa-backend-api-log
+          path: /tmp/gamenexa-api.log
+          if-no-files-found: ignore
+          retention-days: 3

@@ -66,6 +66,17 @@ ok('station starts are serialized per manager and station', 'pg_advisory_xact_lo
 ok('stale customer claims are cleaned before active-session conflict', 'DELETE FROM active_session_customer_claims c' in SERVER and 'NOT EXISTS (SELECT 1 FROM game_sessions' in SERVER)
 ok('notch safe-area bar is disabled by default and manager-configurable', 'notchSafeBarEnabled = MutableStateFlow(false)' in VM and 'saveNotchSafeBarEnabled' in SET and 'windowInsetsTopHeight(WindowInsets.displayCutout)' in ACTIVITY)
 ok('fullscreen layout explicitly allows display cutout', 'LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES' in ACTIVITY)
+ok('customer password policy is at least 8 characters on Android', 'passwordText.trim().length < 8' in SH)
+ok('customer password policy is at least 8 characters on backend', 'b.password.length>=8' in CANON)
+ok('VIP supersession refunds verified payments atomically', 'VIP_PRIORITY_SUPERSEDE' in CANON and 'payment_transactions' in CANON and 'wallet_transactions' in CANON)
+ok('normal reservations reject inactive/non-reservable stations', 'active = TRUE AND reservable = TRUE' in (BACK/'reservationService.js').read_text(errors='ignore'))
+ok('BUY_GN contract is explicit end-to-end', 'put("purpose", "BUY_GN")' in SH and "'BUY_GN'" in CANON and 'MANUAL_GN_PURCHASE' in CANON)
+ok('manual payment approval is bounded and positive', 'approved>requested' in CANON and 'approved<=0' in CANON)
+ok('manager device registration enforces max_devices transactionally', 'DEVICE_LIMIT_REACHED' in CANON and 'pg_advisory_xact_lock(hashtext($1))' in CANON[CANON.find("/api/v1/manager/device"):CANON.find("/api/v1/manager/device")+5000])
+ok('station settlement applies participant prepayments', 'appliedPrepayment' in SERVER and 'prepaymentAmount' in SERVER[SERVER.find('/api/station/settle'):SERVER.find('/api/station/settle')+25000])
+ok('guest payers are included in settlement invoices', 'Guest payers are valid invoice principals' in SERVER and 'customer_id remains NULL' in SERVER)
+ok('invoice customer_id is nullable for guest settlement', 'ALTER TABLE invoices ALTER COLUMN customer_id DROP NOT NULL' in SERVER and 'customer_id integer,\n    session_id uuid' in (BACK/'schema.sql').read_text(errors='ignore'))
+
 
 failed=[n for n,v in checks if not v]
 for n,v in checks: print(('PASS' if v else 'FAIL')+': '+n)

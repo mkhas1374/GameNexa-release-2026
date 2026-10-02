@@ -445,6 +445,24 @@ object SelfHostedManager {
         }
     }
 
+    suspend fun refreshCurrentCustomerProfile(): Customer? = withContext(Dispatchers.IO) {
+        try {
+            if (NetworkClient.customerAuthToken.isNullOrBlank()) return@withContext null
+            val request = Request.Builder().url("$SERVER_URL/api/v1/customer/profile").headers(getCustomerHeaders()).get().build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body?.string().orEmpty()
+                if (body.isBlank()) return@withContext null
+                val customer = parseCustomerObject(JSONObject(body))
+                _currentLoggedInCustomer.value = customer
+                customer
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "refreshCurrentCustomerProfile error: " + e.message)
+            null
+        }
+    }
+
     suspend fun registerCustomer(
         fullName: String,
         phone: String,
@@ -456,7 +474,7 @@ object SelfHostedManager {
             val managerId = currentManagerId.trim()
             val normPhone = normalizePhone(phone)
             if (managerId.isBlank()) return@withContext Result.failure(Exception("شناسه مدیر برای ثبت‌نام مشتری مشخص نشده است."))
-            if (passwordText.trim().length < 4) return@withContext Result.failure(Exception("رمز عبور باید حداقل 4 کاراکتر باشد."))
+            if (passwordText.trim().length < 8) return@withContext Result.failure(Exception("رمز عبور باید حداقل 8 کاراکتر باشد."))
             
             val json = JSONObject().apply {
                 put("full_name", fullName.trim())
@@ -527,7 +545,7 @@ object SelfHostedManager {
     suspend fun upsertCustomer(customer: Customer): Boolean = withContext(Dispatchers.IO) {
         try {
             val json=JSONObject().apply {
-                put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber); put("password",customer.password)
+                put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber); if (customer.password.isNotBlank()) put("password",customer.password)
                 put("debt",customer.debt); put("credit",customer.credit); put("tier",customer.tier); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
             }
             val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
@@ -1373,7 +1391,7 @@ object SelfHostedManager {
         try {
             val encoded = java.net.URLEncoder.encode(timeSlot, "UTF-8")
             val url = "$SERVER_URL/api/v1/customer/reservations/rules?durationMinutes=" + durationMinutes + "&timeSlot=" + encoded
-            val request = Request.Builder().url(url).headers(getBaseHeaders()).get().build()
+            val request = Request.Builder().url(url).headers(getCustomerHeaders()).get().build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext null
                 JSONObject(response.body?.string() ?: "{}")
@@ -1701,10 +1719,9 @@ object SelfHostedManager {
         try {
             val trkCode = trackingCode.ifBlank { "GN_BUY_" + System.currentTimeMillis().toString().takeLast(6) }
             val json = JSONObject().apply {
-                put("customerId", customer.id)
                 put("amount", totalToman.toLong())
                 put("gnAmount", gnAmount)
-                put("transactionType", "BUY_GN")
+                put("purpose", "BUY_GN")
                 put("trackingCode", trkCode)
                 put("description", "خرید آنلاین اعتبار GN")
             }

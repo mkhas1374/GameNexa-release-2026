@@ -129,14 +129,8 @@ fun CustomerDashboardTab(
         while (isActive) {
             try {
                 SelfHostedManager.fetchLiveStationsFromCloud()
-                // Fetch ONLY the current customer's latest data to avoid Data Leakage
-                val loginRes = SelfHostedManager.loginCustomer(customer.phoneNumber, customer.password)
-                if (loginRes.isSuccess) {
-                    val updatedCust = loginRes.getOrNull()
-                    if (updatedCust != null) {
-                        SelfHostedManager.setCurrentCustomer(updatedCust)
-                    }
-                }
+                // Refresh the authenticated customer with the server token; never re-login with a locally stored password.
+                SelfHostedManager.refreshCurrentCustomerProfile()
             } catch (_: Exception) {}
             delay(3000L) // Polling every 3s for Real-Time Experience
         }
