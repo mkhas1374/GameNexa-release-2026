@@ -558,9 +558,9 @@ app.post('/api/v1/super-manager/managers/:id/subscription/extend', requireSuperM
     try {
         const storeRaw = (await pool.query('SELECT settings FROM subscription_store_config WHERE id=1')).rows[0]?.settings || {};
         const defaultPlans = [
-            {id:'MONTHLY',nameFa:'یک ماهه',nameEn:'Monthly',price:500,durationDays:30,active:true},
-            {id:'THREE_MONTHS',nameFa:'سه ماهه',nameEn:'3 Months',price:1200,durationDays:90,active:true},
-            {id:'YEARLY',nameFa:'یک ساله',nameEn:'Yearly',price:3259,durationDays:365,active:true}
+            {id:'MONTHLY',nameFa:'یک ماهه',nameEn:'Monthly',price:500000,durationDays:30,active:true},
+            {id:'THREE_MONTHS',nameFa:'سه ماهه',nameEn:'3 Months',price:1200000,durationDays:90,active:true},
+            {id:'YEARLY',nameFa:'یک ساله',nameEn:'Yearly',price:3259000,durationDays:365,active:true}
         ];
         const planList = Array.isArray(storeRaw.plans) && storeRaw.plans.length ? storeRaw.plans : defaultPlans;
         const plan = planList.find(p => String(p.id || '') === planId && p.active !== false);
