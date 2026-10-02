@@ -244,6 +244,49 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             repository.saveSetting("active_session_start_" + stationId, "")
             return true
         }
+
+        // A session started while offline has a local UUID and must be reconciled to the
+        // canonical server session before settlement. Sending /station/settle first produces
+        // a misleading 404 and leaves customer claims behind.
+        val pendingStartKey = "session_pending_start_" + stationId
+        val pendingStartRaw = repository.getSetting(pendingStartKey)
+        if (!pendingStartRaw.isNullOrBlank()) {
+            val pending = runCatching { org.json.JSONObject(pendingStartRaw) }.getOrNull()
+            if (pending?.optString("sessionId") == sessionId) {
+                val reconciled = SelfHostedManager.syncOfflineSessionStart(
+                    sessionId = sessionId,
+                    stationId = stationId,
+                    startTimeMillis = pending.optLong("startTimeMillis"),
+                    consoleType = pending.optString("consoleType"),
+                    controllerCount = pending.optInt("controllerCount", 1),
+                    hourlyRate = pending.optLong("hourlyRate"),
+                    participants = pending.optJSONArray("participants") ?: org.json.JSONArray(),
+                    prepaymentAmount = pending.optLong("prepaymentAmount", 0L),
+                    durationLimitMinutes = pending.optInt("durationLimitMinutes", 0),
+                    customerPrepayments = pending.optJSONObject("customerPrepayments")?.let { obj ->
+                        buildMap {
+                            obj.keys().forEach { key ->
+                                val customerId = key.toLongOrNull()
+                                val amount = obj.optLong(key, 0L)
+                                if (customerId != null && customerId > 0L && amount > 0L) put(customerId, amount)
+                            }
+                        }
+                    } ?: emptyMap()
+                )
+                if (!reconciled) {
+                    repository.saveSetting(
+                        "session_pending_settlement_" + stationId,
+                        org.json.JSONObject().apply {
+                            put("sessionId", sessionId)
+                            put("endedAt", endedAtMillis)
+                        }.toString()
+                    )
+                    return false
+                }
+                repository.saveSetting(pendingStartKey, "")
+            }
+        }
+
         val settled = SelfHostedManager.settleStationSession(sessionId, endedAtMillis)
         if (settled) {
             repository.saveSetting("active_session_" + stationId, "")
@@ -357,6 +400,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     private val _notificationsEnabled = MutableStateFlow(true)
     val notificationsEnabled: StateFlow<Boolean> = _notificationsEnabled.asStateFlow()
+
+    private val _notchSafeBarEnabled = MutableStateFlow(false)
+    val notchSafeBarEnabled: StateFlow<Boolean> = _notchSafeBarEnabled.asStateFlow()
 
     private val _language = MutableStateFlow("fa")
     val language: StateFlow<String> = _language.asStateFlow()
@@ -2187,6 +2233,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         val notif = repository.getSetting("notifications_enabled")?.toBoolean() ?: true
         _notificationsEnabled.value = notif
 
+        val notchSafeBar = repository.getSetting("notch_safe_bar_enabled")?.toBoolean() ?: false
+        _notchSafeBarEnabled.value = notchSafeBar
+
         val lang = repository.getSetting("language") ?: "fa"
         _language.value = lang
 
@@ -3781,6 +3830,13 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun saveNotchSafeBarEnabled(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.saveSetting("notch_safe_bar_enabled", enabled.toString())
+            _notchSafeBarEnabled.value = enabled
+        }
+    }
+
     fun saveLanguageSetting(lang: String) {
         viewModelScope.launch(Dispatchers.IO) {
             repository.saveSetting("language", lang)
@@ -4107,16 +4163,21 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     fun deleteCustomer(customer: Customer) {
         viewModelScope.launch(Dispatchers.IO) {
-            repository.deleteCustomer(customer)
-            try {
-                // Delete directly from self-hosted cloud database
+            // Server is authoritative for customer deletion/archival. Do not remove the local
+            // row first: a failed server write would otherwise be resurrected by the next sync.
+            val cloudDeleted = runCatching {
                 com.example.data.network.SelfHostedManager.deleteCustomer(customer.id, customer.phoneNumber)
-            } catch (e: Exception) {
-                android.util.Log.e("GameNetViewModel", "Failed to delete customer from self-hosted server", e)
+            }.getOrDefault(false)
+            if (!cloudDeleted) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "حذف مشتری از سرور انجام نشد؛ اطلاعات محلی حفظ شد.", Toast.LENGTH_LONG).show()
+                }
+                return@launch
             }
+            repository.deleteCustomer(customer)
             logOperatorActivity(
                 actionTitle = "حذف مشتری",
-                details = "مشتری ${customer.fullName} با شماره ${customer.phoneNumber} از سرور و پایگاه داده حذف شد."
+                details = "مشتری ${customer.fullName} با شماره ${customer.phoneNumber} از فهرست فعال مشتریان حذف شد و سوابق مالی حفظ شد."
             )
         }
     }
@@ -4124,16 +4185,20 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     fun deleteCustomersBatch(customersToDelete: List<Customer>) {
         if (customersToDelete.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
-            repository.deleteCustomersBatch(customersToDelete)
-            try {
-                val ids = customersToDelete.map { it.id }
+            val ids = customersToDelete.map { it.id }
+            val cloudDeleted = runCatching {
                 com.example.data.network.SelfHostedManager.deleteCustomersBatch(ids)
-            } catch (e: Exception) {
-                android.util.Log.e("GameNetViewModel", "Failed to delete batch customers from self-hosted server", e)
+            }.getOrDefault(false)
+            if (!cloudDeleted) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "حذف مشتریان از سرور انجام نشد؛ اطلاعات محلی حفظ شد.", Toast.LENGTH_LONG).show()
+                }
+                return@launch
             }
+            repository.deleteCustomersBatch(customersToDelete)
             logOperatorActivity(
                 actionTitle = "حذف دسته‌جمعی مخاطبان",
-                details = "تعداد ${customersToDelete.size} مخاطب به همراه تمامی لاگ‌ها و تراکنش‌های مرتبط حذف شدند."
+                details = "تعداد ${customersToDelete.size} مخاطب از فهرست فعال حذف شدند و سوابق مالی حفظ شدند."
             )
         }
     }

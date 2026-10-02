@@ -180,12 +180,26 @@ fun NetworkDiagnosticsDialog(
         }
     }
 
+    // A single HTTP request can appear once in the Android interceptor and once in the
+    // server diagnostics stream. Collapse those two representations into one visible log.
     val allLogs = remember(logs, serverLogs) {
-        (logs + serverLogs)
-            .distinctBy { "${it.id}:${it.method}:${it.url}:${it.statusCode}:${it.errorMessage}" }
+        val deduplicatedServerLogs = serverLogs.filterNot { server ->
+            logs.any { client ->
+                client.method.equals(server.method, ignoreCase = true) &&
+                    client.statusCode == server.statusCode &&
+                    client.url.substringBefore("?") == server.url.substringBefore("?") &&
+                    kotlin.math.abs((server.id - client.id) - client.durationMs) <= 5000L
+            }
+        }
+        (logs + deduplicatedServerLogs)
+            .distinctBy { it.id }
             .sortedByDescending { it.id }
             .take(150)
     }
+
+    val displayedTotalRequests = allLogs.size
+    val displayedSuccessfulRequests = allLogs.count { it.isSuccess }
+    val displayedFailedRequests = allLogs.count { !it.isSuccess }
     val filteredLogs = remember(allLogs, searchQuery, showOnlyErrors) {
         val filteredBySearch = if (searchQuery.isBlank()) allLogs
         else allLogs.filter {
@@ -302,9 +316,9 @@ fun NetworkDiagnosticsDialog(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        StatItem(title = "کل درخواست‌ها", value = statusInfo.totalRequests.toString(), color = MaterialTheme.colorScheme.onSurface)
-                        StatItem(title = "موفق", value = statusInfo.successfulRequests.toString(), color = Color(0xFF2E7D32))
-                        StatItem(title = "ناموفق", value = statusInfo.failedRequests.toString(), color = Color(0xFFC62828))
+                        StatItem(title = "کل لاگ‌های نمایش‌داده‌شده", value = displayedTotalRequests.toString(), color = MaterialTheme.colorScheme.onSurface)
+                        StatItem(title = "موفق", value = displayedSuccessfulRequests.toString(), color = Color(0xFF2E7D32))
+                        StatItem(title = "ناموفق", value = displayedFailedRequests.toString(), color = Color(0xFFC62828))
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))

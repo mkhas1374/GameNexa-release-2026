@@ -136,8 +136,16 @@ object NetworkLogger {
                 val isSuccessful = response.isSuccessful
                 val code = response.code
 
-                // Never retain response bodies: error payloads can contain customer/manager PII or tokens.
-                val responseSnippet: String? = null
+                // Never retain raw response bodies: they can contain customer/manager PII or tokens.
+                // Peek only enough bytes to extract a safe machine-readable error/code field.
+                val responseSnippet: String? = if (!isSuccessful) {
+                    runCatching {
+                        val raw = response.peekBody(32 * 1024).string()
+                        val code = Regex("""code"\s*:\s*"([A-Za-z0-9_.-]{1,120})"""").find(raw)?.groupValues?.getOrNull(1)
+                        val error = Regex("""error"\s*:\s*"([^"]{1,180})"""").find(raw)?.groupValues?.getOrNull(1)
+                        listOfNotNull(code, error).joinToString(" | ").ifBlank { null }
+                    }.getOrNull()
+                } else null
 
                 val logEntry = NetworkLogEntry(
                     method = method,
@@ -145,7 +153,10 @@ object NetworkLogger {
                     statusCode = code,
                     durationMs = duration,
                     isSuccess = isSuccessful,
-                    errorMessage = if (isSuccessful) null else "پاسخ HTTP $code از سرور دریافت شد",
+                    errorMessage = if (isSuccessful) null else {
+                        if (responseSnippet.isNullOrBlank()) "پاسخ HTTP $code از سرور دریافت شد"
+                        else "پاسخ HTTP $code از سرور دریافت شد: $responseSnippet"
+                    },
                     errorType = if (isSuccessful) null else "HTTP_$code",
                     requestHeadersCount = request.headers.size,
                     responseBodySnippet = responseSnippet

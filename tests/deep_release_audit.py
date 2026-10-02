@@ -55,6 +55,17 @@ ok('start uses current UI customer selection, not only persisted Room state', 's
 ok('custom duration can be used without initial payment', 'station.prepaymentAmount > 0L || station.durationLimitMinutes > 0' in MAIN)
 ok('customer selection is not capped by controller count', 'selectedMap[cust.id] = cust' in CUSTOMER_DIALOGS and 'selectedMap.size < maxControllers' not in CUSTOMER_DIALOGS)
 ok('Super Manager sees offline warning banner too', 'if (!isServerConnected && !isTrialUser && !isGracePeriodExpired)' in ACTIVITY)
+ok('visible log counters are derived from the same deduplicated 150 logs', 'displayedFailedRequests = allLogs.count { !it.isSuccess }' in DIAG and 'displayedTotalRequests = allLogs.size' in DIAG)
+ok('server/client duplicate diagnostics are collapsed', 'deduplicatedServerLogs' in DIAG and 'client.url.substringBefore("?") == server.url.substringBefore("?")' in DIAG)
+ok('HTTP error logs capture only safe server code/error fields', 'response.peekBody(32 * 1024)' in LOGGER and 'responseSnippet' in LOGGER)
+ok('customer deletion is server-authoritative and archival', 'GAMENEX_ARCHIVED:' in CANON and 'archived:true' in CANON)
+ok('local customer row is deleted only after server archival succeeds', 'val cloudDeleted = runCatching' in VM and 'repository.deleteCustomer(customer)' in VM)
+ok('archived customers cannot log in or start sessions', "NOT LIKE '[GAMENEX_ARCHIVED:%'" in SERVER and "NOT LIKE '[GAMENEX_ARCHIVED:%'" in CANON)
+ok('offline settlement reconciles pending start before settle', 'syncOfflineSessionStart(' in VM[VM.find('private suspend fun queueOrSettleSession'):VM.find('private suspend fun flushPendingSettlements')])
+ok('station starts are serialized per manager and station', 'pg_advisory_xact_lock(hashtext($1))' in SERVER and 'station-start:' in SERVER)
+ok('stale customer claims are cleaned before active-session conflict', 'DELETE FROM active_session_customer_claims c' in SERVER and 'NOT EXISTS (SELECT 1 FROM game_sessions' in SERVER)
+ok('notch safe-area bar is disabled by default and manager-configurable', 'notchSafeBarEnabled = MutableStateFlow(false)' in VM and 'saveNotchSafeBarEnabled' in SET and 'windowInsetsTopHeight(WindowInsets.displayCutout)' in ACTIVITY)
+ok('fullscreen layout explicitly allows display cutout', 'LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES' in ACTIVITY)
 
 failed=[n for n,v in checks if not v]
 for n,v in checks: print(('PASS' if v else 'FAIL')+': '+n)

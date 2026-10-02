@@ -1213,6 +1213,7 @@ fun DeputyAssignmentSubScreen(viewModel: GameNetViewModel, lang: String) {
 fun DeviceConfigSubScreen(viewModel: GameNetViewModel, lang: String) {
     val stationCount by viewModel.stationCount.collectAsState()
     val notificationsEnabled by viewModel.notificationsEnabled.collectAsState()
+    val notchSafeBarEnabled by viewModel.notchSafeBarEnabled.collectAsState()
     val consoleList by viewModel.consoleTypes.collectAsState()
     val selectedConsoleInSettings by viewModel.selectedConsoleInSettings.collectAsState()
 
@@ -1316,6 +1317,34 @@ fun DeviceConfigSubScreen(viewModel: GameNetViewModel, lang: String) {
                     Switch(
                         checked = notificationsEnabled,
                         onCheckedChange = { viewModel.saveNotificationsEnabled(it) }
+                    )
+                }
+
+                Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (lang == "fa") "نوار ایمنی ناچ/دوربین بالای صفحه" else "Notch / camera safe-area bar",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                        Text(
+                            text = if (lang == "fa")
+                                "به‌صورت پیش‌فرض خاموش است؛ فقط اگر ناچ با ساعت و تاریخ تداخل دارد فعال کنید."
+                            else
+                                "Off by default. Enable only when the device cutout overlaps the app clock/date.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = notchSafeBarEnabled,
+                        onCheckedChange = { viewModel.saveNotchSafeBarEnabled(it) }
                     )
                 }
             }

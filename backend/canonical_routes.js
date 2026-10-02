@@ -101,7 +101,7 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
 
   // Canonical manager customer resource. One route family; no manager id is accepted from the client.
   app.get('/api/v1/manager/customers', requireManagerAuth, requireActiveEntitlement, async (req,res)=>{ try {
-    const q=await pool.query('SELECT * FROM customers WHERE manager_id=$1 ORDER BY id DESC',[manager(req)]);
+    const q=await pool.query("SELECT * FROM customers WHERE manager_id=$1 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' ORDER BY id DESC",[manager(req)]);
     res.json(q.rows.map(normalizeCustomer));
   } catch(e){res.status(500).json({error:'Internal server error'});} });
 
@@ -116,11 +116,42 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
     res.status(existing.rows[0]?200:201).json(normalizeCustomer(q.rows[0]));
   } catch(e){res.status(500).json({error:'Internal server error'});} });
 
+  // Customer deletion is logical/archival: financial, invoice, reservation and session history
+  // remains intact, while the customer is removed from the active customer directory and login.
   app.delete('/api/v1/manager/customers/:id', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{
-    return res.status(405).json({error:'Physical customer deletion is disabled because reservation and financial history must be retained'});
+    const mid=manager(req), id=Number(req.params.id);
+    if(!Number.isInteger(id)||id<=0) return res.status(400).json({error:'Invalid customer id'});
+    const c=await pool.connect();
+    try {
+      await c.query('BEGIN');
+      const customer=(await c.query("SELECT id,phone_number,description FROM customers WHERE id=$1 AND manager_id=$2 FOR UPDATE",[id,mid])).rows[0];
+      if(!customer){await c.query('ROLLBACK');return res.status(404).json({error:'Customer not found'});}
+      const active=(await c.query("SELECT session_id FROM active_session_customer_claims WHERE customer_id=$1 AND manager_id=$2 LIMIT 1",[id,mid])).rows[0];
+      if(active){await c.query('ROLLBACK');return res.status(409).json({success:false,code:'CUSTOMER_IN_ACTIVE_SESSION',sessionId:active.session_id});}
+      const stamp=Date.now();
+      await c.query("UPDATE customers SET phone_number=$1,description=$2,updated_at=NOW() WHERE id=$3 AND manager_id=$4",['archived:'+id+':'+stamp,'[GAMENEX_ARCHIVED:'+stamp+'] '+String(customer.description||''),id,mid]);
+      await c.query('COMMIT');
+      return res.json({success:true,archived:true,customerId:id});
+    } catch(e){try{await c.query('ROLLBACK')}catch(_){} console.error('[customer-archive]',e?.message||e);return res.status(500).json({error:'Customer archive failed'});}
+    finally{c.release();}
   });
   app.post('/api/v1/manager/customers/delete-batch', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{
-    return res.status(405).json({error:'Physical customer deletion is disabled because reservation and financial history must be retained'});
+    const mid=manager(req), ids=Array.isArray(req.body?.customerIds)?req.body.customerIds.map(Number).filter(Number.isInteger):[];
+    if(!ids.length) return res.status(400).json({error:'customerIds are required'});
+    const c=await pool.connect();
+    try{
+      await c.query('BEGIN');
+      const active=await c.query("SELECT customer_id,session_id FROM active_session_customer_claims WHERE manager_id=$1 AND customer_id=ANY($2::int[]) LIMIT 1",[mid,ids]);
+      if(active.rows[0]){await c.query('ROLLBACK');return res.status(409).json({success:false,code:'CUSTOMER_IN_ACTIVE_SESSION',customerId:active.rows[0].customer_id,sessionId:active.rows[0].session_id});}
+      const rows=await c.query("SELECT id,description FROM customers WHERE manager_id=$1 AND id=ANY($2::int[]) FOR UPDATE",[mid,ids]);
+      for(const row of rows.rows){
+        const stamp=Date.now();
+        await c.query("UPDATE customers SET phone_number=$1,description=$2,updated_at=NOW() WHERE id=$3 AND manager_id=$4",['archived:'+row.id+':'+stamp,'[GAMENEX_ARCHIVED:'+stamp+'] '+String(row.description||''),row.id,mid]);
+      }
+      await c.query('COMMIT');
+      return res.json({success:true,archivedCustomerIds:rows.rows.map(r=>r.id),count:rows.rows.length});
+    }catch(e){try{await c.query('ROLLBACK')}catch(_){} return res.status(500).json({error:'Customer batch archive failed'});}
+    finally{c.release();}
   });
 
   // Canonical configuration/settings resource. JSONB is used only for manager-editable, variable settings.

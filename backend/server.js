@@ -120,7 +120,7 @@ const requireCustomerAuth = async (req, res, next) => {
         if (decoded.role !== 'CUSTOMER' || !decoded.id || !decoded.managerId) {
             return res.status(403).json({ error: 'Forbidden' });
         }
-        const account = await pool.query('SELECT id, manager_id FROM customers WHERE id = $1 AND manager_id = $2 LIMIT 1',[decoded.id, decoded.managerId]);
+        const account = await pool.query("SELECT id, manager_id FROM customers WHERE id = $1 AND manager_id = $2 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' LIMIT 1",[decoded.id, decoded.managerId]);
         if (!account.rows.length) return res.status(401).json({ error: 'Customer account no longer exists' });
         req.user = decoded;
         next();
@@ -281,7 +281,7 @@ app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), a
         return res.status(400).json({ error: 'phone_number, manager_id and password are required' });
     }
     try {
-        const result = await pool.query('SELECT * FROM customers WHERE phone_number = $1 AND manager_id = $2', [phone_number, manager_id]);
+        const result = await pool.query("SELECT * FROM customers WHERE phone_number = $1 AND manager_id = $2 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%'", [phone_number, manager_id]);
         const customer = result.rows[0];
         if (!customer) return res.status(401).json({ error: 'Customer not found' });
         if (!customer.password_hash) return res.status(401).json({ error: 'Customer password is not configured' });
@@ -904,6 +904,8 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
+        // Serialize starts per manager/station so two rapid taps cannot create two active sessions.
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))",["station-start:"+managerId+":"+stationId]);
         const startIdempotencyKey = String(req.headers["idempotency-key"] || "").trim();
         if (startIdempotencyKey) {
             const previous = await client.query(
@@ -940,19 +942,23 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
             res.locals.diagnosticCode='ACTIVE_SESSION_EXISTS';
             return res.status(409).json({success:false,code:"ACTIVE_SESSION_EXISTS",sessionId:active.rows[0].id,startedAt:active.rows[0].started_at});
         }
-        const ids = participants.filter(p => !p.isGuest).map(p => p.customerId);
+        const ids = [...new Set(participants.filter(p => !p.isGuest).map(p => p.customerId))];
         if (ids.length) {
-            const customerRows = await client.query("SELECT id FROM customers WHERE manager_id=$1 AND id=ANY($2::int[])",[managerId,ids]);
+            // Claims are lifecycle locks, not permanent customer flags. Remove claims whose
+            // session is no longer ACTIVE/PAUSED before deciding that a customer is busy.
+            await client.query("DELETE FROM active_session_customer_claims c WHERE c.manager_id=$1 AND c.customer_id=ANY($2::int[]) AND NOT EXISTS (SELECT 1 FROM game_sessions s WHERE s.id=c.session_id AND s.manager_id=c.manager_id AND s.status IN ('ACTIVE','PAUSED'))",[managerId,ids]);
+            const customerRows = await client.query("SELECT id FROM customers WHERE manager_id=$1 AND id=ANY($2::int[]) AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%'",[managerId,ids]);
             if (customerRows.rows.length !== ids.length) {
                 await client.query("ROLLBACK");
                 res.locals.diagnosticCode='CUSTOMER_NOT_FOUND';
                 return res.status(404).json({success:false,code:"CUSTOMER_NOT_FOUND"});
             }
-            const conflict = await client.query("SELECT customer_id,session_id FROM active_session_customer_claims WHERE customer_id=ANY($1::int[]) FOR UPDATE",[ids]);
+            const conflict = await client.query("SELECT c.customer_id,c.session_id,s.station_id FROM active_session_customer_claims c JOIN game_sessions s ON s.id=c.session_id AND s.manager_id=c.manager_id WHERE c.manager_id=$1 AND c.customer_id=ANY($2::int[]) AND s.status IN ('ACTIVE','PAUSED') FOR UPDATE",[managerId,ids]);
             if (conflict.rows.length) {
                 await client.query("ROLLBACK");
                 res.locals.diagnosticCode='CUSTOMER_ALREADY_IN_ACTIVE_SESSION';
-                return res.status(409).json({success:false,code:"CUSTOMER_ALREADY_IN_ACTIVE_SESSION",conflicts:conflict.rows});
+                res.locals.diagnosticMessage='Active customer conflict: '+conflict.rows.map(x=>String(x.customer_id)+'@station:'+String(x.station_id)).join(',');
+                return res.status(409).json({success:false,code:"CUSTOMER_ALREADY_IN_ACTIVE_SESSION",error:"Customer already has an active session",conflicts:conflict.rows});
             }
         }
         const canonicalConsoleType = normalizeConsoleType(station.rows[0].console_type || consoleType);
@@ -1036,12 +1042,22 @@ app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlem
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))",["station-start:"+managerId+":"+stationId]);
         const duplicate = await client.query("SELECT id FROM game_sessions WHERE id=$1 AND manager_id=$2 FOR UPDATE",[sessionId,managerId]);
         if (duplicate.rows[0]) { await client.query("COMMIT"); return res.json({success:true,duplicate:true,sessionId}); }
         const station = await client.query("SELECT id,manager_id,console_type,active FROM stations WHERE id=$1 AND manager_id=$2 FOR UPDATE",[stationId,managerId]);
         if (!station.rows[0] || !station.rows[0].active) { await client.query("ROLLBACK"); return res.status(404).json({success:false,error:"Station not found"}); }
         const active = await client.query("SELECT id FROM game_sessions WHERE manager_id=$1 AND station_id=$2 AND status IN ('ACTIVE','PAUSED') FOR UPDATE",[managerId,stationId]);
         if (active.rows[0]) { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"ACTIVE_SESSION_EXISTS",sessionId:active.rows[0].id}); }
+        const participantCustomerIds = [...new Set(participants.map(p => Number(p.customerId || 0)).filter(Number.isInteger).filter(v => v > 0))];
+        if (participantCustomerIds.length) {
+            await client.query("DELETE FROM active_session_customer_claims c WHERE c.manager_id=$1 AND c.customer_id=ANY($2::int[]) AND NOT EXISTS (SELECT 1 FROM game_sessions s WHERE s.id=c.session_id AND s.manager_id=c.manager_id AND s.status IN ('ACTIVE','PAUSED'))",[managerId,participantCustomerIds]);
+            const conflict = await client.query("SELECT customer_id,session_id FROM active_session_customer_claims WHERE manager_id=$1 AND customer_id=ANY($2::int[]) FOR UPDATE",[managerId,participantCustomerIds]);
+            if (conflict.rows.length) {
+                await client.query("ROLLBACK");
+                return res.status(409).json({success:false,code:"CUSTOMER_ALREADY_IN_ACTIVE_SESSION",conflicts:conflict.rows});
+            }
+        }
         const configuration = await getManagerConfiguration(client, managerId);
         const canonicalConsoleType = normalizeConsoleType(station.rows[0].console_type || consoleType);
         const configuredRate = configuredHourlyRate(configuration, canonicalConsoleType, controllerCount);
@@ -1057,7 +1073,7 @@ app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlem
             const participantKey = String(part.participantKey || (isGuest ? "guest:"+cid : "customer:"+cid));
             const participantName = String(part.name || part.participantName || "");
             if (!isGuest) {
-                const c = await client.query("SELECT id FROM customers WHERE id=$1 AND manager_id=$2",[cid,managerId]);
+                const c = await client.query("SELECT id FROM customers WHERE id=$1 AND manager_id=$2 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%'",[cid,managerId]);
                 if (!c.rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({success:false,code:"CUSTOMER_NOT_FOUND"}); }
             }
             await client.query("INSERT INTO session_participants(manager_id,session_id,customer_id,participant_key,participant_name,is_guest,is_payer) VALUES($1,$2,$3,$4,$5,$6,TRUE) ON CONFLICT DO NOTHING",[managerId,sessionId,isGuest?null:cid,participantKey,participantName,isGuest]);

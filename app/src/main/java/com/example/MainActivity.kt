@@ -9,6 +9,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -59,9 +60,13 @@ class MainActivity : ComponentActivity() {
         super.attachBaseContext(LocaleHelper.updateLocale(newBase, lang))
     }
 
+    @Suppress("DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        window.attributes = window.attributes.apply {
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.systemBars())
@@ -84,6 +89,7 @@ class MainActivity : ComponentActivity() {
                     val isFirstLaunch by viewModel.isFirstLaunch.collectAsState()
                     val lang by viewModel.language.collectAsState()
                     val currentAdminRole by viewModel.currentAdminRole.collectAsState()
+                    val notchSafeBarEnabled by viewModel.notchSafeBarEnabled.collectAsState()
 
                     val isAdminAuthenticated by viewModel.isAdminAuthenticated.collectAsState()
                     val isCustomerAuthenticated by viewModel.isCustomerAuthenticated.collectAsState()
@@ -125,6 +131,14 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Box(modifier = Modifier.fillMaxSize()) {
                             Column(modifier = Modifier.fillMaxSize()) {
+                                if (notchSafeBarEnabled) {
+                                    Spacer(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .windowInsetsTopHeight(WindowInsets.displayCutout)
+                                            .heightIn(min = 24.dp)
+                                    )
+                                }
                                 if (isAdminAuthenticated && serverClockMillis != null) {
                                     IranTehranClock(serverTimeMillis = serverClockMillis!!, modifier = Modifier.fillMaxWidth())
                                 }
