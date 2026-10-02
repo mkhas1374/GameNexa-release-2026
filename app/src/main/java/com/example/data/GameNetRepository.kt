@@ -748,7 +748,6 @@ class GameNetRepository(private val db: AppDatabase) {
                 val updated = targetLocal.copy(
                     fullName = if (cloud.fullName.isNotBlank()) cloud.fullName else targetLocal.fullName,
                     phoneNumber = if (cloud.phoneNumber.isNotBlank()) cloud.phoneNumber else targetLocal.phoneNumber,
-                    password = "",
                     debt = cloud.debt,
                     credit = cloud.credit,
                     points = cloud.points,
@@ -758,7 +757,7 @@ class GameNetRepository(private val db: AppDatabase) {
                 )
                 customerDao.insert(updated)
             } else {
-                customerDao.insert(cloud.copy(password = ""))
+                customerDao.insert(cloud)
             }
         }
 
@@ -768,7 +767,7 @@ class GameNetRepository(private val db: AppDatabase) {
         for (entry in groupedByPhone) {
             val group = entry.value
             if (group.size > 1) {
-                val sorted = group.sortedByDescending { (if (it.password.isNotBlank()) 10 else 0) + (if (it.credit > 0 || it.debt > 0) 5 else 0) - it.id }
+                val sorted = group.sortedByDescending { (if (it.credit > 0 || it.debt > 0) 5 else 0) - it.id }
                 val toDelete = sorted.drop(1)
                 for (dupe in toDelete) {
                     customerDao.delete(dupe)
@@ -778,7 +777,7 @@ class GameNetRepository(private val db: AppDatabase) {
     }
 
     suspend fun insertCustomer(customer: Customer): Long {
-        val localId = customerDao.insert(customer.copy(password = ""))
+        val localId = customerDao.insert(customer)
         val finalCust = if (customer.id == 0L) customer.copy(id = localId) else customer
         if (com.example.data.network.NetworkClient.isTrialMode) return if (customer.id == 0L) localId else customer.id
         try {

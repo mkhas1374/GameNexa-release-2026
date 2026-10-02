@@ -4040,7 +4040,6 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     inviteCode = existing.inviteCode
                     existingPoints = existing.points
                     invitePointsAwarded = existing.invitePointsAwarded
-                    if (finalPassword.isBlank()) finalPassword = existing.password
                 }
             }
 
@@ -4064,7 +4063,6 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 id = id,
                 fullName = trimmedName,
                 phoneNumber = trimmedPhone,
-                password = finalPassword,
                 debt = debt,
                 credit = credit,
                 description = description,
@@ -4122,7 +4120,6 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 id = 0L,
                 fullName = trimmedName,
                 phoneNumber = trimmedPhone,
-                password = cleanPass,
                 debt = debt,
                 credit = credit,
                 description = description.trim(),

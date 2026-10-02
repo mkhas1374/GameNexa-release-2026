@@ -2393,7 +2393,7 @@ fun CustomerFormDialog(
     var description by remember(customer) { mutableStateOf(customer?.description ?: "") }
     var invitedByCode by remember(customer) { mutableStateOf(if (customer?.invitedByCode.equals("null", ignoreCase = true)) "" else (customer?.invitedByCode ?: "")) }
     var manualPointsInput by remember(customer) { mutableStateOf("") }
-    var password by remember(customer) { mutableStateOf(customer?.password ?: "") }
+    var password by remember(customer) { mutableStateOf("") }
 
     val pickContactLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickContact()

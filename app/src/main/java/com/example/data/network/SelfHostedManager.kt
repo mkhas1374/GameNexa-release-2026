@@ -433,7 +433,7 @@ object SelfHostedManager {
                 return@withContext Result.failure(Exception("دریافت اطلاعات مشتری پس از ورود ناموفق بود."))
             }
 
-            val cust = parseCustomerObject(JSONObject(profileBody)).copy(password = cleanPass)
+            val cust = parseCustomerObject(JSONObject(profileBody))
             setManagerId(managerId)
             _currentLoggedInCustomer.value = cust
             _isConnected.value = true
@@ -498,7 +498,7 @@ object SelfHostedManager {
                 val jsonObj = JSONObject(body)
                 if (jsonObj.optBoolean("success", true)) {
                     val cObj = if (jsonObj.has("customer")) jsonObj.getJSONObject("customer") else jsonObj
-                    val newCust = parseCustomerObject(cObj).copy(password = passwordText.trim())
+                    val newCust = parseCustomerObject(cObj)
                     val authToken = jsonObj.optString("token", "")
                     if (authToken.isNotBlank()) NetworkClient.customerAuthToken = authToken
                     setManagerId(managerId)
@@ -545,7 +545,7 @@ object SelfHostedManager {
     suspend fun upsertCustomer(customer: Customer): Boolean = withContext(Dispatchers.IO) {
         try {
             val json=JSONObject().apply {
-                put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber); if (customer.password.isNotBlank()) put("password",customer.password)
+                put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber)
                 put("debt",customer.debt); put("credit",customer.credit); put("tier",customer.tier); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
             }
             val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
@@ -760,7 +760,6 @@ object SelfHostedManager {
             id = if (resolvedId > 0) resolvedId else System.currentTimeMillis(),
             fullName = name,
             phoneNumber = phone,
-            password = obj.optString("password", ""),
             debt = obj.optLong("debt", 0L),
             credit = obj.optLong("credit", 0L),
             points = obj.optLong("points", 0L),

@@ -179,7 +179,6 @@ data class Customer(
     @PrimaryKey(autoGenerate = true) val id: Long = 0L,
     val fullName: String,
     val phoneNumber: String,
-    val password: String = "",
     val debt: Long = 0L,
     val credit: Long = 0L,
     val description: String = "",
