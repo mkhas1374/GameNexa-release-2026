@@ -19,7 +19,11 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
     currencyEn: 'Toman',
     supportMessageFa: 'برای تأیید پرداخت، رسید را از طریق بله یا تلگرام برای Super Manager ارسال کنید.',
     supportMessageEn: 'For payment confirmation, send the receipt to the Super Manager via Bale or Telegram.',
-    plans: []
+    plans: [
+      {id:'MONTHLY',nameFa:'یک ماهه',nameEn:'Monthly',price:500,durationDays:30,active:true,sortOrder:1,paymentUrl:''},
+      {id:'THREE_MONTHS',nameFa:'سه ماهه',nameEn:'3 Months',price:1200,durationDays:90,active:true,sortOrder:2,paymentUrl:''},
+      {id:'YEARLY',nameFa:'یک ساله',nameEn:'Yearly',price:3259,durationDays:365,active:true,sortOrder:3,paymentUrl:''}
+    ]
   };
   async function getSubscriptionStore() {
     const q = await pool.query('SELECT settings, version_number FROM subscription_store_config WHERE id=1');
