@@ -748,7 +748,7 @@ class GameNetRepository(private val db: AppDatabase) {
                 val updated = targetLocal.copy(
                     fullName = if (cloud.fullName.isNotBlank()) cloud.fullName else targetLocal.fullName,
                     phoneNumber = if (cloud.phoneNumber.isNotBlank()) cloud.phoneNumber else targetLocal.phoneNumber,
-                    password = if (cloud.password.isNotBlank()) cloud.password else targetLocal.password,
+                    password = "",
                     debt = cloud.debt,
                     credit = cloud.credit,
                     points = cloud.points,
@@ -758,7 +758,7 @@ class GameNetRepository(private val db: AppDatabase) {
                 )
                 customerDao.insert(updated)
             } else {
-                customerDao.insert(cloud)
+                customerDao.insert(cloud.copy(password = ""))
             }
         }
 
@@ -778,7 +778,7 @@ class GameNetRepository(private val db: AppDatabase) {
     }
 
     suspend fun insertCustomer(customer: Customer): Long {
-        val localId = customerDao.insert(customer)
+        val localId = customerDao.insert(customer.copy(password = ""))
         val finalCust = if (customer.id == 0L) customer.copy(id = localId) else customer
         if (com.example.data.network.NetworkClient.isTrialMode) return if (customer.id == 0L) localId else customer.id
         try {

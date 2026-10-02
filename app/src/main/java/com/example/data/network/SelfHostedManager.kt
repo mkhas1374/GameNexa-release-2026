@@ -445,6 +445,24 @@ object SelfHostedManager {
         }
     }
 
+    suspend fun refreshCurrentCustomerProfile(): Customer? = withContext(Dispatchers.IO) {
+        try {
+            if (NetworkClient.customerAuthToken.isNullOrBlank()) return@withContext null
+            val request = Request.Builder().url("$SERVER_URL/api/v1/customer/profile").headers(getCustomerHeaders()).get().build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body?.string().orEmpty()
+                if (body.isBlank()) return@withContext null
+                val customer = parseCustomerObject(JSONObject(body))
+                _currentLoggedInCustomer.value = customer
+                customer
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "refreshCurrentCustomerProfile error: " + e.message)
+            null
+        }
+    }
+
     suspend fun registerCustomer(
         fullName: String,
         phone: String,
@@ -527,7 +545,7 @@ object SelfHostedManager {
     suspend fun upsertCustomer(customer: Customer): Boolean = withContext(Dispatchers.IO) {
         try {
             val json=JSONObject().apply {
-                put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber); put("password",customer.password)
+                put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber); if (customer.password.isNotBlank()) put("password",customer.password)
                 put("debt",customer.debt); put("credit",customer.credit); put("tier",customer.tier); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
             }
             val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
