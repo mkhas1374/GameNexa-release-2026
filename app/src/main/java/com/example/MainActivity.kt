@@ -541,7 +541,8 @@ fun AppContent(viewModel: GameNetViewModel) {
                 .padding(innerPadding)
                 .imePadding()
         ) {
-            // Persistent 24h Offline Grace Period Warning Banner
+            // Persistent 24h offline warning. Super Manager has lifetime entitlement and is
+            // never disabled by this grace timer, but must still see the same connectivity warning.
             if (!isServerConnected && !isTrialUser && !isGracePeriodExpired) {
                 OfflineGracePeriodBanner(
                     secondsRemaining = offlineGraceSecondsRemaining,

@@ -266,7 +266,9 @@ fun MainScreen(
                             viewModel = viewModel,
                             hourlyRate = hourlyRate,
                             lang = lang,
-                            onStart = { payText -> viewModel.startStation(station.id, payText) },
+                            onStart = { payText, durationText, customerIds, customerNames, customerPrepayments ->
+                                viewModel.startStation(station.id, payText, durationText, customerIds, customerNames, customerPrepayments)
+                            },
                             onPause = { viewModel.pauseStation(station.id) },
                             onResume = { viewModel.resumeStation(station.id) },
                             onFinish = { viewModel.finishStation(station.id) },
@@ -295,7 +297,7 @@ fun StationCard(
     viewModel: GameNetViewModel,
     hourlyRate: Long,
     lang: String,
-    onStart: (String) -> Unit,
+    onStart: (String, String, List<Long>, List<String>, Map<Long, Long>) -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onFinish: () -> Unit,
@@ -316,7 +318,7 @@ fun StationCard(
     val currentTime by tickerFlow.collectAsState(initial = 0L)
 
     // Is countdown or stopwatch?
-    val isCountdown = remember(station.prepaymentAmount) { station.prepaymentAmount > 0L }
+    val isCountdown = remember(station.prepaymentAmount, station.durationLimitMinutes) { station.prepaymentAmount > 0L || station.durationLimitMinutes > 0 }
     val durationLimitMillis = remember(station.prepaymentAmount, hourlyRate, station.durationLimitMinutes) {
         exactPrepaymentDurationMillis(station.prepaymentAmount, hourlyRate, station.durationLimitMinutes)
     }
@@ -442,7 +444,7 @@ fun StationCard(
     var buffetExpanded by remember { mutableStateOf(false) }
     var showBuffetDetails by remember { mutableStateOf(false) }
 
-    // Start-time pricing inputs: amount and duration (minutes) update each other live.
+    // Start-time pricing inputs are independent: payment can imply a duration, while a manually entered duration can be used without payment.
     var payInput by remember { mutableStateOf("") }
     var durationInput by remember { mutableStateOf("") }
     var showBehaviorDialog by remember { mutableStateOf(false) }
@@ -526,6 +528,9 @@ fun StationCard(
             val allCustomers by viewModel.customers.collectAsState()
             val selectedCustomerNames = station.getCustomerNames()
             val selectedCustomerIds = station.getCustomerIds()
+            var pendingCustomerPrepayments by remember(station.id, station.customerPrepaymentsJson) {
+                mutableStateOf(station.getEffectiveCustomerPrepaymentsMap())
+            }
 
             val occupiedCustomerStationMap = remember(allStations, station.id) {
                 val map = mutableMapOf<Long, Int>()
@@ -553,6 +558,7 @@ fun StationCard(
             if (showCustomerSelectionDialog) {
                 CustomerSelectionDialog(
                     maxControllers = station.controllerCount,
+                    maxSelectableCustomers = if (viewModel.isTrialUser) 4 else null,
                     currentSelectedIds = station.getCustomerIds(),
                     allCustomers = allCustomers,
                     occupiedCustomerStationMap = occupiedCustomerStationMap,
@@ -580,10 +586,11 @@ fun StationCard(
                 val stationCustomers = station.getStationCustomers(allCustomers)
                 MultiCustomerPrepaymentDialog(
                     selectedCustomers = stationCustomers,
-                    initialPrepayments = station.getEffectiveCustomerPrepaymentsMap(),
+                    initialPrepayments = pendingCustomerPrepayments,
                     onDismiss = { showMultiPrepaymentDialog = false },
                     onConfirm = { prepayMap, totalSum ->
                         showMultiPrepaymentDialog = false
+                        pendingCustomerPrepayments = prepayMap
                         payInput = totalSum.toInt().toString()
                         viewModel.updateStationCustomerPrepayments(station.id, prepayMap, totalSum)
                     }
@@ -892,12 +899,6 @@ fun StationCard(
                                 value = payInput,
                                 onValueChange = { value ->
                                     payInput = NumberConverter.toEnglishDigits(value).filter(Char::isDigit)
-                                    if (payInput.isNotEmpty() && hourlyRate > 0L) {
-                                        val millis = exactPrepaymentDurationMillis(payInput.toLongOrNull() ?: 0L, hourlyRate, 0)
-                                        durationInput = (millis / 60000L).toString()
-                                    } else if (payInput.isEmpty()) {
-                                        durationInput = ""
-                                    }
                                 },
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -915,13 +916,6 @@ fun StationCard(
                                 value = durationInput,
                                 onValueChange = { value ->
                                     durationInput = NumberConverter.toEnglishDigits(value).filter(Char::isDigit)
-                                    val minutes = durationInput.toLongOrNull() ?: 0L
-                                    if (minutes > 0L && hourlyRate > 0L) {
-                                        payInput = BigDecimal.valueOf(hourlyRate).multiply(BigDecimal.valueOf(minutes))
-                                            .divide(BigDecimal.valueOf(60L), 0, RoundingMode.HALF_UP).toLong().toString()
-                                    } else if (durationInput.isEmpty()) {
-                                        payInput = ""
-                                    }
                                 },
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -1329,9 +1323,16 @@ fun StationCard(
                                     return@Button
                                 }
                                 focusManager.clearFocus()
-                                onStart(payInput)
+                                onStart(
+                                    payInput,
+                                    durationInput,
+                                    selectedCustomerIds,
+                                    selectedCustomerNames,
+                                    pendingCustomerPrepayments
+                                )
                                 viewModel.requestFirstStartServerClockWarning()
                                 payInput = ""
+                                durationInput = ""
                             },
                             modifier = Modifier.weight(1.2f).height(30.dp),
                             shape = RoundedCornerShape(6.dp),

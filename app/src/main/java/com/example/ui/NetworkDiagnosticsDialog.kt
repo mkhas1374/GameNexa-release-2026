@@ -160,10 +160,10 @@ fun NetworkDiagnosticsDialog(
     LaunchedEffect(Unit) {
         isTestingConnection = true
         testResultText = null
-        serverLogs = withContext(Dispatchers.IO) { SelfHostedManager.fetchServerDiagnostics() }
         val res = withContext(Dispatchers.IO) {
             SelfHostedManager.testServerConnection()
         }
+        serverLogs = withContext(Dispatchers.IO) { SelfHostedManager.fetchServerDiagnostics() }
         isTestingConnection = false
         testResultText = if (res.isSuccess) {
             "✅ ${res.message} (پاسخ در ${res.latencyMs}ms - ایستگاه‌ها: ${res.liveStationsCount}، مشتریان: ${res.customersCount})"
@@ -172,7 +172,20 @@ fun NetworkDiagnosticsDialog(
         }
     }
 
-    val allLogs = remember(logs, serverLogs) { (logs + serverLogs).distinctBy { "${it.id}:${it.method}:${it.url}:${it.statusCode}" }.sortedByDescending { it.id } }
+    // Refresh server diagnostics continuously while this sheet is open.
+    LaunchedEffect(Unit) {
+        while (true) {
+            serverLogs = withContext(Dispatchers.IO) { SelfHostedManager.fetchServerDiagnostics() }
+            kotlinx.coroutines.delay(2000)
+        }
+    }
+
+    val allLogs = remember(logs, serverLogs) {
+        (logs + serverLogs)
+            .distinctBy { "${it.id}:${it.method}:${it.url}:${it.statusCode}:${it.errorMessage}" }
+            .sortedByDescending { it.id }
+            .take(150)
+    }
     val filteredLogs = remember(allLogs, searchQuery, showOnlyErrors) {
         val filteredBySearch = if (searchQuery.isBlank()) allLogs
         else allLogs.filter {

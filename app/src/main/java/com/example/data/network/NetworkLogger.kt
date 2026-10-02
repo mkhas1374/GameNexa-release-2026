@@ -39,7 +39,7 @@ data class NetworkStatusInfo(
 
 object NetworkLogger {
     private const val TAG = "NetworkLogger"
-    private const val MAX_LOGS = 100
+    private const val MAX_LOGS = 150
 
     private val _logs = MutableStateFlow<List<NetworkLogEntry>>(emptyList())
     val logs: StateFlow<List<NetworkLogEntry>> = _logs.asStateFlow()
@@ -65,36 +65,23 @@ object NetworkLogger {
 
         _status.update { current ->
             val total = current.totalRequests + 1
+            val failed = !entry.isSuccess
             val transportFailure = entry.statusCode == null || entry.statusCode == -1
-            if (entry.isSuccess || !transportFailure) {
-                current.copy(
-                    isConnected = true,
-                    totalRequests = total,
-                    successfulRequests = current.successfulRequests + if (entry.isSuccess) 1 else 0,
-                    lastSuccessTimestamp = entry.id
-                )
-            } else if (entry.statusCode != null && entry.statusCode >= 100) {
-                // An HTTP response proves the transport is alive. 4xx/5xx are API/application
-                // errors and must never make the global connectivity state say "Offline".
-                current.copy(
-                    isConnected = true,
-                    totalRequests = total,
-                    lastSuccessTimestamp = entry.id
-                )
-            } else {
-                val userMsg = formatUserFriendlyErrorMessage(entry)
-                // An HTTP error proves that the network path and server responded.
-                // Do not mark the device Offline for 4xx/5xx responses; only transport
-                // failures (timeouts, DNS, refused sockets, etc.) are connectivity failures.
-                current.copy(
-                    isConnected = false,
-                    totalRequests = total,
-                    failedRequests = current.failedRequests + if (transportFailure) 1 else 0,
-                    lastErrorTimestamp = if (transportFailure) entry.id else current.lastErrorTimestamp,
-                    lastErrorMessage = userMsg,
-                    lastErrorType = entry.errorType
-                )
-            }
+            val userMsg = if (failed) formatUserFriendlyErrorMessage(entry) else null
+
+            // Every non-2xx response is a failed request and must increment the failure
+            // counter. Connectivity is a separate signal: an HTTP 4xx/5xx proves that the
+            // network path reached the server, so only transport failures make us Offline.
+            current.copy(
+                isConnected = if (transportFailure) false else true,
+                totalRequests = total,
+                successfulRequests = current.successfulRequests + if (entry.isSuccess) 1 else 0,
+                failedRequests = current.failedRequests + if (failed) 1 else 0,
+                lastSuccessTimestamp = if (entry.isSuccess) entry.id else current.lastSuccessTimestamp,
+                lastErrorTimestamp = if (failed) entry.id else current.lastErrorTimestamp,
+                lastErrorMessage = userMsg ?: current.lastErrorMessage,
+                lastErrorType = if (failed) entry.errorType else current.lastErrorType
+            )
         }
 
         if (!entry.isSuccess) {
@@ -109,6 +96,13 @@ object NetworkLogger {
     fun clearLogs() {
         _logs.value = emptyList()
         _latestErrorBanner.value = null
+        _status.update { current ->
+            NetworkStatusInfo(
+                isConnected = current.isConnected,
+                targetBaseUrl = current.targetBaseUrl,
+                activeUrl = current.activeUrl
+            )
+        }
     }
 
     private fun formatUserFriendlyErrorMessage(entry: NetworkLogEntry): String {

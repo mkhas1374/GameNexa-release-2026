@@ -1785,7 +1785,10 @@ object SelfHostedManager {
         hourlyRate: Long,
         selectedCustomers: List<Pair<Any, String>>,
         consoleType: String = "",
-        controllerCount: Int = 1
+        controllerCount: Int = 1,
+        prepaymentAmount: Long = 0L,
+        durationLimitMinutes: Int = 0,
+        customerPrepayments: Map<Long, Long> = emptyMap()
     ): Pair<String, Long>? = withContext(Dispatchers.IO) {
         lastStationStartWasTransportFailure = false
         lastStationStartError = ""
@@ -1808,6 +1811,13 @@ object SelfHostedManager {
                 put("consoleType", consoleType)
                 put("controllerCount", controllerCount)
                 put("hourlyRate", hourlyRate)
+                put("prepaymentAmount", prepaymentAmount.coerceAtLeast(0L))
+                put("durationLimitMinutes", durationLimitMinutes.coerceAtLeast(0))
+                put("customerPrepayments", JSONObject().apply {
+                    customerPrepayments.forEach { (id, amount) ->
+                        if (id > 0L && amount > 0L) put(id.toString(), amount)
+                    }
+                })
                 put("participants", participants)
             }
             val request = Request.Builder()
@@ -1846,7 +1856,10 @@ object SelfHostedManager {
         consoleType: String,
         controllerCount: Int,
         hourlyRate: Long,
-        participants: JSONArray
+        participants: JSONArray,
+        prepaymentAmount: Long = 0L,
+        durationLimitMinutes: Int = 0,
+        customerPrepayments: Map<Long, Long> = emptyMap()
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             if (_currentManagerId.isBlank()) return@withContext false
@@ -1857,6 +1870,13 @@ object SelfHostedManager {
                 put("consoleType", consoleType)
                 put("controllerCount", controllerCount)
                 put("hourlyRate", hourlyRate)
+                put("prepaymentAmount", prepaymentAmount.coerceAtLeast(0L))
+                put("durationLimitMinutes", durationLimitMinutes.coerceAtLeast(0))
+                put("customerPrepayments", JSONObject().apply {
+                    customerPrepayments.forEach { (id, amount) ->
+                        if (id > 0L && amount > 0L) put(id.toString(), amount)
+                    }
+                })
                 put("participants", participants)
             }
             val request = Request.Builder()

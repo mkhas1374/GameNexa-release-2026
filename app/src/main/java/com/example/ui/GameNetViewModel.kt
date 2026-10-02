@@ -287,7 +287,18 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 consoleType = item.optString("consoleType"),
                 controllerCount = item.optInt("controllerCount", 1),
                 hourlyRate = item.optLong("hourlyRate"),
-                participants = item.optJSONArray("participants") ?: org.json.JSONArray()
+                participants = item.optJSONArray("participants") ?: org.json.JSONArray(),
+                prepaymentAmount = item.optLong("prepaymentAmount", 0L),
+                durationLimitMinutes = item.optInt("durationLimitMinutes", 0),
+                customerPrepayments = item.optJSONObject("customerPrepayments")?.let { obj ->
+                    buildMap {
+                        obj.keys().forEach { key ->
+                            val id = key.toLongOrNull()
+                            val amount = obj.optLong(key, 0L)
+                            if (id != null && id > 0L && amount > 0L) put(id, amount)
+                        }
+                    }
+                } ?: emptyMap()
             )
             if (ok) repository.saveSetting(setting.key, "")
         }
@@ -2451,7 +2462,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     fun startStation(
         stationId: Int,
         prepaymentText: String,
-        customerPrepaymentsMap: Map<Long, Long> = emptyMap()
+        durationText: String = "",
+        selectedCustomerIds: List<Long>? = null,
+        selectedCustomerNames: List<String>? = null,
+        customerPrepaymentsMap: Map<Long, Long>? = null
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             // Rehydrate the authenticated Manager identity before any action-triggered API call.
@@ -2471,7 +2485,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             if (isTrialUser && !station.consoleType.equals("PlayStation 5", ignoreCase = true)) return@launch
 
             // STRICT BUSINESS RULE: A customer cannot have concurrent active sessions in multiple stations
-            val assignedCustomerIds = station.getCustomerIds().filter { it > 0 }
+            val assignedCustomerIds = (selectedCustomerIds ?: station.getCustomerIds()).filter { it > 0 }
             if (assignedCustomerIds.isNotEmpty()) {
                 val otherActiveStations = stationStates.value.filter { it.id != stationId && it.status != "FREE" }
                 for (other in otherActiveStations) {
@@ -2493,9 +2507,34 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
             // Online: obtain the authoritative server start. Offline paid sessions are
             // created locally and queued for one-time server reconciliation.
-            val selectedForServer = station.getCustomerIds().mapIndexed { index, id ->
-                id to (station.getCustomerNames().getOrNull(index) ?: if (id < 0) "مهمان " + (-id) else "مشتری " + id)
+            // Use the values currently visible in the Start sheet instead of re-reading Room.
+            // This removes the race where customer/prepayment selection was still being persisted
+            // when the user immediately pressed Start.
+            val effectiveCustomerIds = selectedCustomerIds ?: station.getCustomerIds()
+            val effectiveCustomerNames = selectedCustomerNames ?: station.getCustomerNames()
+            val selectedForServer = effectiveCustomerIds.mapIndexed { index, id ->
+                id to (effectiveCustomerNames.getOrNull(index)?.takeIf { it.isNotBlank() }
+                    ?: if (id < 0) "مهمان " + (-id) else "مشتری " + id)
             }
+            val requestedPrepayment = prepaymentText.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+            // A manually entered duration is independent from prepayment. When duration is
+            // omitted, an explicit prepayment can still imply a time limit for backward
+            // compatibility.
+            val manuallyRequestedDuration = durationText.toLongOrNull()?.coerceAtLeast(0L)?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: 0
+            var durationMinutes = manuallyRequestedDuration
+            if (durationMinutes == 0 && requestedPrepayment > 0L) {
+                val hourlyRate = getHourlyRate(station.consoleType, station.controllerCount)
+                if (hourlyRate > 0L) {
+                    val exactMillis = exactPrepaymentDurationMillis(requestedPrepayment, hourlyRate, 0)
+                    durationMinutes = ((exactMillis + 59_999L) / 60_000L).coerceAtLeast(1L).toInt()
+                }
+            }
+
+            val finalPrepaymentsMap = mutableMapOf<Long, Long>()
+            customerPrepaymentsMap?.forEach { (id, amount) ->
+                if (id > 0L && amount > 0L) finalPrepaymentsMap[id] = amount
+            }
+
             val requestedStart = System.currentTimeMillis()
             var sessionId: String
             var authoritativeStart: Long
@@ -2509,7 +2548,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     hourlyRate = getHourlyRate(station.consoleType, station.controllerCount),
                     selectedCustomers = selectedForServer,
                     consoleType = station.consoleType,
-                    controllerCount = station.controllerCount
+                    controllerCount = station.controllerCount,
+                    prepaymentAmount = requestedPrepayment,
+                    durationLimitMinutes = durationMinutes,
+                    customerPrepayments = finalPrepaymentsMap
                 )
                 if (sessionStart == null && !SelfHostedManager.lastStationStartWasTransportFailure) {
                     withContext(Dispatchers.Main) {
@@ -2530,6 +2572,11 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                             put("consoleType", station.consoleType)
                             put("controllerCount", station.controllerCount)
                             put("hourlyRate", getHourlyRate(station.consoleType, station.controllerCount))
+                            put("prepaymentAmount", requestedPrepayment)
+                            put("durationLimitMinutes", durationMinutes)
+                            put("customerPrepayments", org.json.JSONObject().apply {
+                                finalPrepaymentsMap.forEach { (id, amount) -> put(id.toString(), amount) }
+                            })
                             put("participants", org.json.JSONArray().apply {
                                 selectedForServer.forEach { (id, name) ->
                                     put(org.json.JSONObject().apply {
@@ -2551,53 +2598,12 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
             val now = authoritativeStart
 
-            var prepayment = prepaymentText.toLongOrNull() ?: 0L
-            val finalPrepaymentsMap = mutableMapOf<Long, Long>()
-
-            if (customerPrepaymentsMap.isNotEmpty()) {
-                finalPrepaymentsMap.putAll(customerPrepaymentsMap)
-                val sum = customerPrepaymentsMap.values.sum()
-                if (sum > 0) prepayment = sum
-            } else {
-                val map = station.getCustomerPrepaymentsMap()
-                if (map.isNotEmpty()) {
-                    finalPrepaymentsMap.putAll(map)
-                    val sum = map.values.sum()
-                    if (sum > 0) prepayment = sum
-                } else if (prepayment == 0L) {
-                    val custIds = station.getCustomerIds()
-                    if (custIds.isNotEmpty()) {
-                        val allCusts = repository.getAllCustomersLocal()
-                        var totalCredit = 0L
-                        for (id in custIds) {
-                            val cust = allCusts.find { it.id == id }
-                            if (cust != null && cust.credit > 0L) {
-                                finalPrepaymentsMap[id] = cust.credit
-                                totalCredit += cust.credit
-                            }
-                        }
-                        if (totalCredit > 0L) {
-                            prepayment = totalCredit
-                        }
-                    }
-                }
-            }
+            val prepayment = requestedPrepayment
 
             val prepaymentsJson = if (finalPrepaymentsMap.isNotEmpty()) {
                 finalPrepaymentsMap.entries.joinToString(",") { "${it.key}:${it.value}" }
             } else {
-                station.customerPrepaymentsJson
-            }
-
-            var durationMinutes = 0
-
-            if (prepayment > 0L) {
-                // Calculate duration limit based on price
-                val hourlyRate = getHourlyRate(station.consoleType, station.controllerCount)
-                if (hourlyRate > 0L) {
-                    val exactMillis = exactPrepaymentDurationMillis(prepayment, hourlyRate, 0)
-                    durationMinutes = ((exactMillis + 59_999L) / 60_000L).coerceAtLeast(1L).toInt()
-                }
+                ""
             }
 
             val updated = station.copy(
@@ -2614,7 +2620,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             logOperatorActivity("شروع به کار ایستگاه", "ایستگاه $stationId (${station.consoleType}) شروع به کار کرد.")
 
             // Schedule notification alarm 1 minute before time finishes
-            if (prepayment > 0L && durationMinutes > 1) {
+            if (durationMinutes > 1) {
                 val warningTime = now + (durationMinutes * 60 * 1000) - (60 * 1000)
                 if (warningTime > now) {
                     scheduleAlarm(stationId, warningTime)
