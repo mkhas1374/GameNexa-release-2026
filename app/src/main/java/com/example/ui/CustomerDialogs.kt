@@ -26,6 +26,7 @@ import java.util.Locale
 @Composable
 fun CustomerSelectionDialog(
     maxControllers: Int,
+    maxSelectableCustomers: Int? = null,
     currentSelectedIds: List<Long>,
     allCustomers: List<Customer>,
     occupiedCustomerStationMap: Map<Long, Int> = emptyMap(),
@@ -281,7 +282,7 @@ fun CustomerSelectionDialog(
                                 onClick = {
                                     if (isSelected) {
                                         selectedMap.remove(cust.id)
-                                    } else {
+                                    } else if (maxSelectableCustomers == null || selectedMap.size < maxSelectableCustomers) {
                                         selectedMap[cust.id] = cust
                                     }
                                 },
@@ -315,8 +316,10 @@ fun CustomerSelectionDialog(
                                     Checkbox(
                                         checked = isSelected,
                                         onCheckedChange = { checked ->
+                                            // Controllers limit simultaneous controllers, not the number
+                                            // of people who may share/bill the same session.
                                             if (checked) {
-                                                if (selectedMap.size < maxControllers) {
+                                                if (maxSelectableCustomers == null || selectedMap.size < maxSelectableCustomers) {
                                                     selectedMap[cust.id] = cust
                                                 }
                                             } else {
