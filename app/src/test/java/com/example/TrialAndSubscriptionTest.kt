@@ -81,12 +81,12 @@ class TrialAndSubscriptionTest {
         }
         composeTestRule.waitForIdle()
         
-        composeTestRule.onNodeWithText("اجرای تست ۲۴ ساعته").performClick()
+        composeTestRule.onNodeWithText("اجرای تست 24 ساعته").performClick()
         composeTestRule.waitForIdle()
         Thread.sleep(1500)
         ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
         composeTestRule.waitForIdle()
-        println("Clicked اجرای تست ۲۴ ساعته successfully!")
+        println("Clicked اجرای تست 24 ساعته successfully!")
     }
 
     @Test
