@@ -11,8 +11,8 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   // Read versionCode and versionName dynamically from gradle.properties
-  val appVersionCode = 2
-  val appVersionName = "1.0.1"
+  val appVersionCode = providers.gradleProperty("app.versionCode").get().toInt()
+  val appVersionName = providers.gradleProperty("app.versionName").get()
 
   defaultConfig {
     applicationId = "com.MinmKhas.studio.GameNexa.wrtx"
@@ -29,9 +29,9 @@ android {
   }
 
   lint {
-    checkReleaseBuilds = false
-    abortOnError = false
-    checkDependencies = false
+    checkReleaseBuilds = true
+    abortOnError = true
+    checkDependencies = true
   }
 
   signingConfigs {
