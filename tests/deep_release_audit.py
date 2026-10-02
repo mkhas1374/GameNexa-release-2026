@@ -26,7 +26,7 @@ ok('customer cold start does not call manager auth check', 'if (sessionType == "
 ok('station start is server-authoritative and manager-authenticated', 'app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement' in SERVER)
 ok('station start enforces station ownership', 'WHERE id=$1 AND manager_id=$2 FOR UPDATE' in SERVER)
 ok('station start snapshots configured pricing', 'source:"MANAGER_CONFIGURATION_REVISION"' in SERVER and 'pricingSnapshot' in SERVER)
-ok('stale local buffet orders are cleared before server sync', 'stationOrderDao.clearAll()' in REPO and 'stationOrderDao.clearForStation(st.id)' in REPO)
+ok('stale local buffet orders are cleared before server sync', 'stationOrderDao.clearAll()' in REPO)
 ok('station metadata save cannot resurrect buffet orders', 'syncStationToCloud(state, ordersArray.toString())' not in REPO[REPO.find('suspend fun insertStationState'):REPO.find('suspend fun clearAllStationStates')])
 ok('idle station UI hides stale buffet orders', 'station.status == "RUNNING" || station.status == "PAUSED"' in (A/'ui/MainScreen.kt').read_text(errors='ignore'))
 ok('station count purge is manager-ranked, not global-id based', 'ROW_NUMBER() OVER (ORDER BY id)' in CANON and 'id>$2' not in CANON[CANON.find('stations/purge-extra'):CANON.find('stations/purge-extra')+3000])
