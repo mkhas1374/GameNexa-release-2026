@@ -2544,10 +2544,10 @@ fun CustomerFormDialog(
                                                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                                         val clip = android.content.ClipData.newPlainText(
                                                             "GameNexa Customer Account",
-                                                            "نام کاربری: ${phoneNumber.trim()}\nرمز عبور: $password\nورود به اپلیکیشن مشتریان GameNexa"
+                                                            "نام کاربری: ${phoneNumber.trim()}\nورود به اپلیکیشن مشتریان GameNexa"
                                                         )
                                                         clipboard.setPrimaryClip(clip)
-                                                        Toast.makeText(context, "اطلاعات حساب مشتری کپی شد!", Toast.LENGTH_SHORT).show()
+                                                        Toast.makeText(context, "نام کاربری کپی شد؛ رمز عبور را جداگانه منتقل کنید.", Toast.LENGTH_SHORT).show()
                                                     }
                                                 ) {
                                                     Icon(Icons.Default.ContentCopy, contentDescription = "کپی", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
@@ -2588,10 +2588,10 @@ fun CustomerFormDialog(
                                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                                 val clip = android.content.ClipData.newPlainText(
                                                     "GameNexa Customer Account",
-                                                    "نام کاربری: ${phoneNumber.trim()}\nرمز عبور: $password\nورود به اپلیکیشن مشتریان GameNexa"
+                                                    "نام کاربری: ${phoneNumber.trim()}\nورود به اپلیکیشن مشتریان GameNexa"
                                                 )
                                                 clipboard.setPrimaryClip(clip)
-                                                Toast.makeText(context, "مشخصات ورود کپی شد!", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(context, "نام کاربری کپی شد؛ رمز عبور در کلیپ‌بورد قرار نگرفت.", Toast.LENGTH_SHORT).show()
                                             },
                                             shape = RoundedCornerShape(8.dp),
                                             modifier = Modifier.weight(1f),

@@ -177,6 +177,9 @@ interface GameNetApi {
     @POST("api/auth/manager/login")
     suspend fun loginUser(@Body body: UserLoginRequest): UserAuthResponse
 
+    @POST("api/auth/logout")
+    suspend fun logoutSession(): retrofit2.Response<okhttp3.ResponseBody>
+
     // Diagnostic, Health & Ping Endpoints
     @GET("api/v1/super-manager/ping")
     suspend fun pingSuperManager(): retrofit2.Response<okhttp3.ResponseBody>

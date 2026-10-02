@@ -1042,9 +1042,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         _isCustomerAuthenticated.value = false
         SelfHostedManager.setCurrentCustomer(null)
         SelfHostedManager.setManagerId("")
-        NetworkClient.managerAuthToken = null
-        NetworkClient.customerAuthToken = null
         viewModelScope.launch(Dispatchers.IO) {
+            try { NetworkClient.getApi(_serverUrl.value).logoutSession() } catch (_: Exception) { /* local logout still completes */ }
+            NetworkClient.managerAuthToken = null
+            NetworkClient.customerAuthToken = null
             encryptSetting("enc_session_type", "")
             encryptSetting("enc_customer_phone", "")
             encryptSetting("enc_customer_auth_token", "")
@@ -5507,6 +5508,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     fun logout(onComplete: (() -> Unit)? = null) {
         viewModelScope.launch(Dispatchers.IO) {
+            try { NetworkClient.getApi(_serverUrl.value).logoutSession() } catch (_: Exception) { /* local logout still completes */ }
             encryptSetting("enc_auth_token", "")
             encryptSetting("enc_user_id", "")
             encryptSetting("enc_auth_username", "")

@@ -116,7 +116,7 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
     let q;
     if(existing.rows[0]) q=await pool.query("UPDATE customers SET full_name=$1,debt=COALESCE($2,debt),credit=COALESCE($3,credit),description=COALESCE($4,description),club_tier=COALESCE($5,club_tier),invite_code=COALESCE(NULLIF($6,''),invite_code),invited_by_code=COALESCE(NULLIF($7,''),invited_by_code),updated_at=NOW() WHERE id=$8 AND manager_id=$9 RETURNING *",[name,b.debt,b.credit,b.description,b.tier,b.inviteCode,b.invitedByCode,existing.rows[0].id,mid]);
     else q=await pool.query("INSERT INTO customers(manager_id,phone_number,full_name,debt,credit,description,club_tier,invite_code,invited_by_code,pending_gn,lp_balance,gn_balance,last_activity_at,last_tier_review_at) VALUES($1,$2,$3,COALESCE($4,0),COALESCE($5,0),COALESCE($6,''),COALESCE($7,'BRONZE'),NULLIF($8,''),NULLIF($9,''),0,0,0,NOW(),NOW()) RETURNING *",[mid,phone,name,b.debt,b.credit,b.description,b.tier,b.inviteCode,b.invitedByCode]);
-    if(typeof b.password==='string' && b.password.length>=8) await pool.query('UPDATE customers SET password_hash=$1 WHERE id=$2 AND manager_id=$3',[await bcrypt.hash(b.password,12),q.rows[0].id,mid]);
+    if(typeof b.password==='string' && b.password.length>=8) await pool.query('UPDATE customers SET password_hash=$1,token_version=token_version+1,updated_at=NOW() WHERE id=$2 AND manager_id=$3',[await bcrypt.hash(b.password,12),q.rows[0].id,mid]);
     res.status(existing.rows[0]?200:201).json(normalizeCustomer(q.rows[0]));
   } catch(e){res.status(500).json({error:'Internal server error'});} });
 
