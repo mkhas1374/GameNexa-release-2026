@@ -1,7 +1,7 @@
 const {Pool}=require('pg');
 const jwt=require('jsonwebtoken');
 require('dotenv').config();
-const BASE='https://api.gamenermayket.ir';
+const BASE=process.env.TEST_BASE_URL || 'http://127.0.0.1:3000';
 const pool=new Pool({connectionString:process.env.DATABASE_URL});
 const run='SEC_'+Date.now();
 const A='sec_a_'+run,B='sec_b_'+run;
