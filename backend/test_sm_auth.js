@@ -4,7 +4,7 @@ require('dotenv').config();
 const pool=new Pool({connectionString:process.env.DATABASE_URL});
 const base='http://127.0.0.1:3000';
 const id='sm_test_'+Date.now();
-const token=()=>jwt.sign({id,managerId:id,role:'SUPER_MANAGER'},process.env.JWT_SECRET,{expiresIn:'1h'});
+const token=()=>jwt.sign({id,managerId:id,role:'SUPER_MANAGER',tv:1},process.env.JWT_SECRET,{expiresIn:'1h'});
 async function main(){
  try{
   await pool.query('DELETE FROM managers WHERE id=$1',[id]);
@@ -14,7 +14,7 @@ async function main(){
   if(no.status!==401) throw Error('missing token was not rejected: '+no.status);
   const good=await fetch(base+'/api/v1/super-manager/managers',{headers:{Authorization:'Bearer '+token()}});
   if(good.status!==200) throw Error('valid Super Manager rejected: '+good.status+' '+await good.text());
-  const expired=jwt.sign({id,managerId:id,role:'SUPER_MANAGER'},process.env.JWT_SECRET,{expiresIn:'-1s'});
+  const expired=jwt.sign({id,managerId:id,role:'SUPER_MANAGER',tv:1},process.env.JWT_SECRET,{expiresIn:'-1s'});
   const ex=await fetch(base+'/api/v1/super-manager/managers',{headers:{Authorization:'Bearer '+expired}});
   if(ex.status!==401) throw Error('expired Super Manager accepted: '+ex.status);
   console.log('SUPER_MANAGER_AUTH_PASS');
