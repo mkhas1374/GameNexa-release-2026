@@ -150,6 +150,7 @@ fun NetworkDiagnosticsDialog(
 
     val statusInfo by NetworkLogger.status.collectAsState()
     val logs by NetworkLogger.logs.collectAsState()
+    var serverLogs by remember { mutableStateOf<List<NetworkLogEntry>>(emptyList()) }
 
     var isTestingConnection by remember { mutableStateOf(false) }
     var testResultText by remember { mutableStateOf<String?>(null) }
@@ -159,6 +160,7 @@ fun NetworkDiagnosticsDialog(
     LaunchedEffect(Unit) {
         isTestingConnection = true
         testResultText = null
+        serverLogs = withContext(Dispatchers.IO) { SelfHostedManager.fetchServerDiagnostics() }
         val res = withContext(Dispatchers.IO) {
             SelfHostedManager.testServerConnection()
         }
@@ -170,9 +172,10 @@ fun NetworkDiagnosticsDialog(
         }
     }
 
-    val filteredLogs = remember(logs, searchQuery, showOnlyErrors) {
-        val filteredBySearch = if (searchQuery.isBlank()) logs
-        else logs.filter {
+    val allLogs = remember(logs, serverLogs) { (logs + serverLogs).distinctBy { "${it.id}:${it.method}:${it.url}:${it.statusCode}" }.sortedByDescending { it.id } }
+    val filteredLogs = remember(allLogs, searchQuery, showOnlyErrors) {
+        val filteredBySearch = if (searchQuery.isBlank()) allLogs
+        else allLogs.filter {
             it.url.contains(searchQuery, ignoreCase = true) ||
                     it.method.contains(searchQuery, ignoreCase = true) ||
                     (it.errorMessage?.contains(searchQuery, ignoreCase = true) == true) ||

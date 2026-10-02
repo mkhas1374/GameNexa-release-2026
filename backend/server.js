@@ -19,6 +19,7 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'X-GameNet-Timestamp', 'X-GameNet-Signature', 'X-Manager-ID', 'Idempotency-Key']
 }));
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '256kb' }));
+app.use((req,res,next)=>{const started=Date.now();res.on('finish',()=>recordServerDiagnostic(req,res.statusCode,Date.now()-started));next();});
 app.disable('x-powered-by');
 app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -719,6 +720,23 @@ const pingHandler = (req, res) => res.json({ success: true, message: 'pong' });
 app.get('/api/v1/super-manager/ping', pingHandler);
 app.post('/api/v1/super-manager/ping', pingHandler);
 
+const serverDiagnosticLog = [];
+const SERVER_DIAGNOSTIC_MAX = 200;
+function recordServerDiagnostic(req, statusCode, durationMs) {
+    const path = String(req.path || req.originalUrl || '').split('?')[0];
+    if (path === '/api/v1/manager/diagnostics') return;
+    const managerId = req.user?.managerId || req.user?.id || null;
+    if (!managerId) return;
+    const safeCode = String(req.res?.locals?.diagnosticCode || '').slice(0,120) || null;
+    const safeMessage = String(req.res?.locals?.diagnosticMessage || '').replace(/[\r\n]/g,' ').slice(0,300) || null;
+    serverDiagnosticLog.unshift({timestamp:Date.now(),method:req.method,path,statusCode,durationMs,managerId,role:req.user?.role||null,code:safeCode,message:safeMessage});
+    if (serverDiagnosticLog.length > SERVER_DIAGNOSTIC_MAX) serverDiagnosticLog.length = SERVER_DIAGNOSTIC_MAX;
+}
+app.get('/api/v1/manager/diagnostics', requireManagerAuth, requireActiveEntitlement, async (req,res) => {
+    const managerId=String(req.user.managerId||req.user.id);
+    return res.json({success:true,serverTime:Date.now(),logs:serverDiagnosticLog.filter(x=>String(x.managerId)===managerId).slice(0,100)});
+});
+
 
 
 /* Canonical Manager configuration: server-owned and versioned per Manager. */
@@ -861,6 +879,7 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
     const requestedRate = Number(req.body?.hourlyRate);
     const raw = Array.isArray(req.body?.participants) ? req.body.participants : (Array.isArray(req.body?.selectedCustomers) ? req.body.selectedCustomers : []);
     if (!managerId || !Number.isInteger(stationId) || !consoleType || !Number.isInteger(controllerCount) || controllerCount < 1 || controllerCount > 4) {
+        res.locals.diagnosticCode='INVALID_SESSION_START_PAYLOAD';
         return res.status(400).json({success:false,error:"Invalid session start payload"});
     }
     const participants = raw.map(normalizeParticipant);
@@ -894,11 +913,13 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
         const station = await client.query("SELECT id,manager_id,console_type,active FROM stations WHERE id=$1 AND manager_id=$2 FOR UPDATE",[stationId,managerId]);
         if (!station.rows[0] || !station.rows[0].active) {
             await client.query("ROLLBACK");
+            res.locals.diagnosticCode='STATION_NOT_FOUND_OR_DISABLED';
             return res.status(404).json({success:false,error:"Station not found"});
         }
         const active = await client.query("SELECT id,status,started_at FROM game_sessions WHERE manager_id=$1 AND station_id=$2 AND status IN ('ACTIVE','PAUSED') ORDER BY started_at DESC LIMIT 1 FOR UPDATE",[managerId,stationId]);
         if (active.rows[0]) {
             await client.query("ROLLBACK");
+            res.locals.diagnosticCode='ACTIVE_SESSION_EXISTS';
             return res.status(409).json({success:false,code:"ACTIVE_SESSION_EXISTS",sessionId:active.rows[0].id,startedAt:active.rows[0].started_at});
         }
         const ids = participants.filter(p => !p.isGuest).map(p => p.customerId);
@@ -906,18 +927,21 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
             const conflict = await client.query("SELECT customer_id,session_id FROM active_session_customer_claims WHERE customer_id=ANY($1::int[]) FOR UPDATE",[ids]);
             if (conflict.rows.length) {
                 await client.query("ROLLBACK");
+                res.locals.diagnosticCode='CUSTOMER_ALREADY_IN_ACTIVE_SESSION';
                 return res.status(409).json({success:false,code:"CUSTOMER_ALREADY_IN_ACTIVE_SESSION",conflicts:conflict.rows});
             }
         }
         const canonicalConsoleType = normalizeConsoleType(station.rows[0].console_type || consoleType);
         if (canonicalConsoleType && consoleType && normalizeConsoleType(canonicalConsoleType).toUpperCase() !== normalizeConsoleType(consoleType).toUpperCase()) {
             await client.query("ROLLBACK");
+            res.locals.diagnosticCode='STATION_CONSOLE_TYPE_MISMATCH';
             return res.status(409).json({success:false,code:"STATION_CONSOLE_TYPE_MISMATCH",stationConsoleType:canonicalConsoleType});
         }
         const configuration = await getManagerConfiguration(client, managerId);
         const configuredRate = configuredHourlyRate(configuration, canonicalConsoleType, controllerCount);
         if (!configuredRate) {
             await client.query("ROLLBACK");
+            res.locals.diagnosticCode='SERVER_PRICING_NOT_CONFIGURED';
             return res.status(422).json({success:false,code:"SERVER_PRICING_NOT_CONFIGURED",consoleType:canonicalConsoleType,controllerCount});
         }
         const now = new Date();
@@ -955,7 +979,9 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
     } catch(e) {
         try { await client.query("ROLLBACK"); } catch(_) {}
         console.error("Session start error:",e);
-        return res.status(500).json({success:false,error:"Session start failed"});
+        res.locals.diagnosticCode='SESSION_START_FAILED';
+        res.locals.diagnosticMessage=String(e?.message||'').slice(0,300);
+        return res.status(500).json({success:false,error:"Session start failed",code:"SESSION_START_FAILED"});
     } finally { client.release(); }
 });
 

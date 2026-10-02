@@ -953,7 +953,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 encryptSetting("enc_session_type", "CUSTOMER")
                 encryptSetting("enc_customer_phone", cloudCust.phoneNumber.ifBlank { cleanPhone })
                 encryptSetting("enc_manager_id", SelfHostedManager.currentManagerId)
-                encryptSetting("enc_auth_token", com.example.data.network.NetworkClient.authToken ?: "")
+                encryptSetting("enc_customer_auth_token", com.example.data.network.NetworkClient.customerAuthToken ?: "")
                 fetchCustomerAppConfigsFromCloud()
                 withContext(Dispatchers.Main) {
                     onResult(true, "ورود با موفقیت انجام شد.")
@@ -985,10 +985,13 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         _isCustomerAuthenticated.value = false
         SelfHostedManager.setCurrentCustomer(null)
         SelfHostedManager.setManagerId("")
-        NetworkClient.authToken = null
+        NetworkClient.managerAuthToken = null
+        NetworkClient.customerAuthToken = null
         viewModelScope.launch(Dispatchers.IO) {
             encryptSetting("enc_session_type", "")
             encryptSetting("enc_customer_phone", "")
+            encryptSetting("enc_customer_auth_token", "")
+            encryptSetting("enc_auth_token", "")
             encryptSetting("enc_admin_role", "")
             encryptSetting("enc_manager_id", "")
             // Authentication logout must not erase business data; Room data remains available after re-login.
@@ -2451,6 +2454,16 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         customerPrepaymentsMap: Map<Long, Long> = emptyMap()
     ) {
         viewModelScope.launch(Dispatchers.IO) {
+            // Rehydrate the authenticated Manager identity before any action-triggered API call.
+            // A recreated ViewModel can lose the in-memory singleton even though the encrypted
+            // server session is still valid; that must never turn Start into a false "offline" error.
+            val persistedManagerId = SelfHostedManager.currentManagerId.trim()
+                .ifBlank { decryptSetting("enc_manager_id").trim().ifBlank { decryptSetting("enc_user_id").trim() } }
+            if (persistedManagerId.isNotBlank()) SelfHostedManager.setManagerId(persistedManagerId)
+            if (com.example.data.network.NetworkClient.managerAuthToken.isNullOrBlank()) {
+                val persistedToken = decryptSetting("enc_auth_token").trim()
+                if (persistedToken.isNotBlank()) com.example.data.network.NetworkClient.managerAuthToken = persistedToken
+            }
             if (isTrialUser && stationId !in 1..2) return@launch
             val station = repository.getStationStateByIdLocal(stationId)
                 ?: stationStates.value.find { it.id == stationId }
@@ -2500,7 +2513,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 )
                 if (sessionStart == null && !SelfHostedManager.lastStationStartWasTransportFailure) {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(getApplication(), "شروع نشست از سرور رد شد؛ جایگاه به حالت آفلاین منتقل نشد تا فاکتور ناقص ایجاد نشود.", Toast.LENGTH_LONG).show()
+                        val detail = SelfHostedManager.lastStationStartError.takeIf { it.isNotBlank() }?.let { " [$it]" } ?: ""
+                        Toast.makeText(getApplication(), "شروع نشست از سرور رد شد؛ جایگاه به حالت آفلاین منتقل نشد.$detail", Toast.LENGTH_LONG).show()
                     }
                     return@launch
                 }
@@ -5101,15 +5115,16 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     // ==============================================================
 
     suspend fun loadSavedAuthSession() {
-        // Restore the bearer token before any session-specific cloud request.
-        var token = decryptSetting("enc_auth_token")
-        if (token.isNotBlank()) {
-            NetworkClient.authToken = token
-        } else {
-            NetworkClient.authToken = null
-        }
-
+        // Restore the correct bearer token for the current session type. Manager and Customer
+        // sessions are intentionally isolated so a Customer login can never replace the Manager
+        // bearer used by station/configuration APIs.
         val sessionType = decryptSetting("enc_session_type")
+        var token = if (sessionType == "CUSTOMER") decryptSetting("enc_customer_auth_token") else decryptSetting("enc_auth_token")
+        if (token.isNotBlank()) {
+            if (sessionType == "CUSTOMER") NetworkClient.customerAuthToken = token else NetworkClient.managerAuthToken = token
+        } else {
+            if (sessionType == "CUSTOMER") NetworkClient.customerAuthToken = null else NetworkClient.managerAuthToken = null
+        }
         if (sessionType == "CUSTOMER") {
             // Customer authentication is server-authoritative. A cached phone/customer record
             // must never restore an authenticated session by itself after app restart.
@@ -5128,22 +5143,22 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     }
                 } catch (_: Exception) {
                     SelfHostedManager.setCurrentCustomer(null)
-                    NetworkClient.authToken = null
+                    NetworkClient.customerAuthToken = null
                     token = ""
                     encryptSetting("enc_session_type", "")
                     encryptSetting("enc_customer_phone", "")
                     encryptSetting("enc_manager_id", "")
-                    encryptSetting("enc_auth_token", "")
+                    encryptSetting("enc_customer_auth_token", "")
                     _isCustomerAuthenticated.value = false
                     _isAdminAuthenticated.value = false
                 }
             } else {
                 SelfHostedManager.setCurrentCustomer(null)
                 _isCustomerAuthenticated.value = false
-                NetworkClient.authToken = null
+                NetworkClient.customerAuthToken = null
                 token = ""
                 encryptSetting("enc_session_type", "")
-                encryptSetting("enc_auth_token", "")
+                encryptSetting("enc_customer_auth_token", "")
             }
         } else if (sessionType == "ADMIN") {
             val planType = decryptSetting("enc_plan_type")
@@ -5179,7 +5194,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 encryptSetting("enc_admin_role", "")
                 encryptSetting("enc_manager_id", "")
                 encryptSetting("enc_auth_token", "")
-                NetworkClient.authToken = null
+                NetworkClient.managerAuthToken = null
                 token = ""
             }
         }
@@ -5190,18 +5205,25 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         val role = decryptSetting("enc_auth_role").ifBlank { "OPERATOR" }
         val email = decryptSetting("enc_auth_email")
 
-        if (token.isNotBlank() && userId.isNotBlank()) {
-            NetworkClient.authToken = token
-            _authState.value = AuthState.Authenticated(
-                userId = userId,
-                username = username.ifBlank { "کاربر" },
-                phone = phone,
-                role = role,
-                email = email,
-                token = token
-            )
-            checkAuthStatusOnServer()
-            bindDeviceToUser(userId)
+        if (token.isNotBlank()) {
+            if (sessionType == "CUSTOMER") {
+                NetworkClient.customerAuthToken = token
+                _authState.value = AuthState.Unauthenticated
+            } else if (userId.isNotBlank()) {
+                NetworkClient.managerAuthToken = token
+                _authState.value = AuthState.Authenticated(
+                    userId = userId,
+                    username = username.ifBlank { "کاربر" },
+                    phone = phone,
+                    role = role,
+                    email = email,
+                    token = token
+                )
+                checkAuthStatusOnServer()
+                bindDeviceToUser(userId)
+            } else {
+                _authState.value = AuthState.Unauthenticated
+            }
         } else {
             _authState.value = AuthState.Unauthenticated
         }
@@ -5499,7 +5521,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             encryptSetting("enc_auth_email", "")
             encryptSetting("enc_device_bound_user_id", "")
 
-            NetworkClient.authToken = null
+            NetworkClient.managerAuthToken = null
+            NetworkClient.customerAuthToken = null
+            encryptSetting("enc_customer_auth_token", "")
             _authState.value = AuthState.Unauthenticated
 
             // Authentication logout must not erase business data; Room data remains available after re-login.

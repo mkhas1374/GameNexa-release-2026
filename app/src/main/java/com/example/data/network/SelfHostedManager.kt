@@ -82,6 +82,7 @@ data class CloudAuditLog(
 
 object SelfHostedManager {
     @Volatile var lastStationStartWasTransportFailure: Boolean = false
+    @Volatile var lastStationStartError: String = ""
     private const val TAG = "SelfHostedManager"
     
     // Dedicated Production Backend Server
@@ -239,6 +240,16 @@ object SelfHostedManager {
         return builder.build()
     }
 
+    fun getCustomerHeaders(): Headers {
+        val builder = Headers.Builder()
+            .add("Content-Type", "application/json")
+            .add("Accept", "application/json")
+        NetworkClient.customerAuthToken?.takeIf { it.isNotBlank() }?.let {
+            builder.add("Authorization", "Bearer $it")
+        }
+        return builder.build()
+    }
+
     // --- Customer Authentication & Management ---
 
     suspend fun addPointLog(log: PointLog): Boolean = withContext(Dispatchers.IO) {
@@ -348,10 +359,10 @@ object SelfHostedManager {
         if (mid.isBlank() || authToken.isBlank()) return@withContext null
         try {
             setManagerId(mid)
-            NetworkClient.authToken = authToken
+            NetworkClient.customerAuthToken = authToken
             val request = Request.Builder()
                 .url("$SERVER_URL/api/v1/customer/profile")
-                .headers(getBaseHeaders().newBuilder().set("Authorization", "Bearer $authToken").build())
+                .headers(getCustomerHeaders())
                 .get()
                 .build()
             client.newCall(request).execute().use { response ->
@@ -409,16 +420,16 @@ object SelfHostedManager {
                 return@withContext Result.failure(Exception("پاسخ احراز هویت مشتری معتبر نیست."))
             }
 
-            NetworkClient.authToken = token
+            NetworkClient.customerAuthToken = token
             val profileRequest = Request.Builder()
                 .url("$SERVER_URL/api/v1/customer/profile")
-                .headers(getBaseHeaders().newBuilder().add("Authorization", "Bearer $token").build())
+                .headers(getCustomerHeaders())
                 .get()
                 .build()
             val profileResponse = client.newCall(profileRequest).execute()
             val profileBody = profileResponse.body?.string() ?: ""
             if (!profileResponse.isSuccessful || profileBody.isBlank()) {
-                NetworkClient.authToken = null
+                NetworkClient.customerAuthToken = null
                 return@withContext Result.failure(Exception("دریافت اطلاعات مشتری پس از ورود ناموفق بود."))
             }
 
@@ -471,7 +482,7 @@ object SelfHostedManager {
                     val cObj = if (jsonObj.has("customer")) jsonObj.getJSONObject("customer") else jsonObj
                     val newCust = parseCustomerObject(cObj).copy(password = passwordText.trim())
                     val authToken = jsonObj.optString("token", "")
-                    if (authToken.isNotBlank()) NetworkClient.authToken = authToken
+                    if (authToken.isNotBlank()) NetworkClient.customerAuthToken = authToken
                     setManagerId(managerId)
                     
                     val currentList = _allCloudCustomers.value.toMutableList()
@@ -765,7 +776,7 @@ object SelfHostedManager {
 
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/customer/manual-payment-requests")
-                .headers(getBaseHeaders())
+                .headers(getCustomerHeaders())
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
 
@@ -998,7 +1009,7 @@ object SelfHostedManager {
         try {
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/customer/club/ledger")
-                .headers(getBaseHeaders())
+                .headers(getCustomerHeaders())
                 .get()
                 .build()
 
@@ -1057,6 +1068,39 @@ object SelfHostedManager {
             Log.w(TAG, "Authenticated manager session check failed: " + e.message)
             _isConnected.value = false
             false
+        }
+    }
+
+    suspend fun fetchServerDiagnostics(): List<NetworkLogEntry> = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/diagnostics")
+                .headers(getBaseHeaders())
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext emptyList()
+                val root = JSONObject(response.body?.string().orEmpty())
+                val rows = root.optJSONArray("logs") ?: JSONArray()
+                buildList {
+                    for (i in 0 until rows.length()) {
+                        val row = rows.optJSONObject(i) ?: continue
+                        add(NetworkLogEntry(
+                            id = row.optLong("timestamp", System.currentTimeMillis()) + i,
+                            method = row.optString("method", "SERVER"),
+                            url = SERVER_URL + row.optString("path", ""),
+                            statusCode = row.optInt("statusCode", 0),
+                            durationMs = row.optLong("durationMs", 0L),
+                            isSuccess = row.optInt("statusCode", 500) in 200..399,
+                            errorMessage = row.optString("code", "").ifBlank { if (row.optInt("statusCode", 500) >= 400) "Server HTTP ${row.optInt("statusCode", 500)}" else null },
+                            errorType = row.optString("code", "SERVER_REQUEST").ifBlank { "SERVER_REQUEST" }
+                        ))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchServerDiagnostics error: ${e.message}")
+            emptyList()
         }
     }
 
@@ -1141,7 +1185,7 @@ object SelfHostedManager {
         try {
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/customer/transactions")
-                .headers(getBaseHeaders())
+                .headers(getCustomerHeaders())
                 .get()
                 .build()
             val resp = client.newCall(req).execute()
@@ -1280,7 +1324,7 @@ object SelfHostedManager {
         try {
             val request = Request.Builder()
                 .url("$SERVER_URL/api/v1/customer/reservations")
-                .headers(getBaseHeaders())
+                .headers(getCustomerHeaders())
                 .get()
                 .build()
             client.newCall(request).execute().use { response ->
@@ -1312,7 +1356,7 @@ object SelfHostedManager {
         try {
             val request = Request.Builder()
                 .url("$SERVER_URL/api/v1/customer/stations")
-                .headers(getBaseHeaders())
+                .headers(getCustomerHeaders())
                 .get()
                 .build()
             client.newCall(request).execute().use { response ->
@@ -1351,7 +1395,7 @@ object SelfHostedManager {
                 put("timeSlot", req.reservationTimeMillis)
             }
             req.stationId?.let { json.put("stationId", it) }
-            val request = Request.Builder().url("$SERVER_URL/api/v1/customer/reservations/pricing-preview").headers(getBaseHeaders()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
+            val request = Request.Builder().url("$SERVER_URL/api/v1/customer/reservations/pricing-preview").headers(getCustomerHeaders()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext null
                 val data = JSONObject(response.body?.string() ?: "{}").optJSONObject("data") ?: JSONObject()
@@ -1370,7 +1414,7 @@ object SelfHostedManager {
                 .toString().toRequestBody(JSON_MEDIA)
             val request = Request.Builder()
                 .url("$SERVER_URL/api/v1/customer/reservations/$reservationId/cancel")
-                .headers(getBaseHeaders().newBuilder().add("Idempotency-Key", idempotencyKey).build())
+                .headers(getCustomerHeaders().newBuilder().add("Idempotency-Key", idempotencyKey).build())
                 .post(body)
                 .build()
             client.newCall(request).execute().use { it.isSuccessful }
@@ -1394,7 +1438,7 @@ object SelfHostedManager {
                 req.customerName?.let { put("customerName", it) }
                 req.customerPhone?.let { put("customerPhone", it) }
             }
-            val request = Request.Builder().url("$SERVER_URL/api/v1/customer/reservations/atomic").headers(getBaseHeaders().newBuilder().add("Idempotency-Key", key).build()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
+            val request = Request.Builder().url("$SERVER_URL/api/v1/customer/reservations/atomic").headers(getCustomerHeaders().newBuilder().add("Idempotency-Key", key).build()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
             client.newCall(request).execute().use { response ->
                 val obj = JSONObject(response.body?.string() ?: "{}")
                 if (!response.isSuccessful) return@withContext null
@@ -1552,7 +1596,7 @@ object SelfHostedManager {
 
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/customer/club/transfer")
-                .headers(getBaseHeaders().newBuilder().add("Idempotency-Key", transferKey).build())
+                .headers(getCustomerHeaders().newBuilder().add("Idempotency-Key", transferKey).build())
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
 
@@ -1600,7 +1644,7 @@ object SelfHostedManager {
             }
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/customer/manual-payment-requests")
-                .headers(getBaseHeaders().newBuilder().add("Idempotency-Key", "reservation-payment:$reservationId:$trkCode").build())
+                .headers(getCustomerHeaders().newBuilder().add("Idempotency-Key", "reservation-payment:$reservationId:$trkCode").build())
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
             client.newCall(req).execute().use { resp ->
@@ -1631,7 +1675,7 @@ object SelfHostedManager {
 
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/customer/manual-payment-requests")
-                .headers(getBaseHeaders())
+                .headers(getCustomerHeaders())
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
 
@@ -1667,7 +1711,7 @@ object SelfHostedManager {
 
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/customer/manual-payment-requests")
-                .headers(getBaseHeaders())
+                .headers(getCustomerHeaders())
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
 
@@ -1744,8 +1788,12 @@ object SelfHostedManager {
         controllerCount: Int = 1
     ): Pair<String, Long>? = withContext(Dispatchers.IO) {
         lastStationStartWasTransportFailure = false
+        lastStationStartError = ""
         try {
-            if (_currentManagerId.isBlank()) return@withContext null
+            if (_currentManagerId.isBlank()) {
+                lastStationStartError = "MANAGER_ID_MISSING"
+                return@withContext null
+            }
             val participants = JSONArray()
             selectedCustomers.forEach { (id, name) ->
                 val rawId = id.toString().toLongOrNull()
@@ -1771,16 +1819,21 @@ object SelfHostedManager {
             client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
+                    lastStationStartError = "HTTP_${response.code}:" + body.take(500)
                     Log.e(TAG, "startStationSession HTTP " + response.code + ": " + body)
                     return@withContext null
                 }
-                val sessionId = JSONObject(body).optString("sessionId").takeIf { it.isNotBlank() } ?: return@withContext null
+                val sessionId = JSONObject(body).optString("sessionId").takeIf { it.isNotBlank() } ?: run {
+                    lastStationStartError = "INVALID_SERVER_RESPONSE"
+                    return@withContext null
+                }
                 sessionId to JSONObject(body).optLong("serverStartedAt", System.currentTimeMillis())
             }
         } catch (e: Exception) {
             // Only an actual transport-layer failure may fall back to an offline session.
             // HTTP 4xx/5xx and malformed server responses must never be mistaken for Offline.
             lastStationStartWasTransportFailure = e is java.io.IOException
+            lastStationStartError = (e.message ?: e.javaClass.simpleName).take(500)
             Log.e(TAG, "startStationSession error: " + e.message, e)
             null
         }

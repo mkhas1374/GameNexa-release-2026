@@ -238,14 +238,16 @@ class GameNetRepository(private val db: AppDatabase) {
             if (remoteStations.isNotEmpty()) {
                 stationStateDao.clearAll()
                 stationStateDao.insertAll(remoteStations)
-                // Update local setting to match server
-                saveSetting("station_count", remoteStations.size.toString())
+                // Server is authoritative. Clear the complete local buffet-order cache first.
+                // A FREE/disabled station must never display or upload an old order.
+                for (st in remoteStations) stationOrderDao.clearForStation(st.id)
+                // Update local setting to match the number of active stations, not disabled rows.
+                saveSetting("station_count", remoteStations.count { it.status != "DISABLED" }.toString())
                 for (st in remoteStations) {
+                    if (st.status == "FREE" || st.status == "DISABLED") continue
                     try {
                         val orders = api.getOrders(st.id)
-                        if (orders.isNotEmpty()) {
-                            stationOrderDao.insertAll(orders)
-                        }
+                        if (orders.isNotEmpty()) stationOrderDao.insertAll(orders)
                     } catch (ignored: Exception) {}
                 }
             } else {
@@ -330,19 +332,9 @@ class GameNetRepository(private val db: AppDatabase) {
 
     suspend fun insertStationState(state: StationState) {
         stationStateDao.insert(state)
-        try {
-            val orders = getOrdersForStationSync(state.id)
-            val ordersArray = org.json.JSONArray()
-            for (ord in orders) {
-                val p = getProductByName(ord.productName)
-                val pJson = org.json.JSONObject()
-                pJson.put("product_name", ord.productName)
-                pJson.put("quantity", ord.quantity)
-                pJson.put("price", p?.price ?: 0L)
-                ordersArray.put(pJson)
-            }
-            com.example.data.network.SelfHostedManager.syncStationToCloud(state, ordersArray.toString())
-        } catch (ignored: Exception) {}
+        // IMPORTANT: station state and buffet orders are separate server resources.
+        // Never mirror local Room orders while saving station metadata; a stale local
+        // order must not be resurrected merely because a station timer/settings changed.
         if (isSyncModeEnabled()) {
             try {
                 getApi()?.saveStation(state)
@@ -354,21 +346,8 @@ class GameNetRepository(private val db: AppDatabase) {
 
     suspend fun insertStationStates(states: List<StationState>) {
         stationStateDao.insertAll(states)
-        try {
-            for (state in states) {
-                val orders = getOrdersForStationSync(state.id)
-                val ordersArray = org.json.JSONArray()
-                for (ord in orders) {
-                    val p = getProductByName(ord.productName)
-                    val pJson = org.json.JSONObject()
-                    pJson.put("product_name", ord.productName)
-                    pJson.put("quantity", ord.quantity)
-                    pJson.put("price", p?.price ?: 0L)
-                    ordersArray.put(pJson)
-                }
-                com.example.data.network.SelfHostedManager.syncStationToCloud(state, ordersArray.toString())
-            }
-        } catch (ignored: Exception) {}
+        // Buffet orders are synchronized only by explicit order operations.
+        // Saving station metadata must never upload stale local order rows.
         if (isSyncModeEnabled()) {
             try {
                 val api = getApi()

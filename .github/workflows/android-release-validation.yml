@@ -5,6 +5,10 @@ on:
   push:
     branches:
       - main
+      - '**'
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -40,6 +44,12 @@ jobs:
 
       - name: Check Android/backend API contract
         run: python3 tests/android_backend_contract_check.py
+
+      - name: Run deep Android/backend/VPS contract audit
+        run: python3 tests/deep_release_audit.py
+
+      - name: Validate backend JavaScript syntax
+        run: node --check backend/server.js && node --check backend/canonical_routes.js && node --check backend/financialService.js
 
       - name: Run JVM tests
         run: ./gradlew testDebugUnitTest --stacktrace
