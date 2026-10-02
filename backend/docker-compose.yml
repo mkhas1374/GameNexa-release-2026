@@ -18,7 +18,9 @@ services:
       start_period: 20s
 
   gamenet_api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: gamenet_api
     env_file:
       - .env
@@ -37,7 +39,7 @@ services:
     restart: unless-stopped
 
   gamenet_nginx:
-    image: nginx:latest
+    image: nginx:1.29-alpine
     container_name: gamenet_nginx
     ports:
       - "80:80"
