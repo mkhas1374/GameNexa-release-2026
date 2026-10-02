@@ -82,6 +82,7 @@ data class CloudAuditLog(
 
 object SelfHostedManager {
     @Volatile var lastStationStartWasTransportFailure: Boolean = false
+    @Volatile var lastStationStartError: String = ""
     private const val TAG = "SelfHostedManager"
     
     // Dedicated Production Backend Server
@@ -1091,8 +1092,8 @@ object SelfHostedManager {
                             statusCode = row.optInt("statusCode", 0),
                             durationMs = row.optLong("durationMs", 0L),
                             isSuccess = row.optInt("statusCode", 500) in 200..399,
-                            errorMessage = if (row.optInt("statusCode", 500) >= 400) "Server HTTP ${row.optInt("statusCode", 500)}" else null,
-                            errorType = "SERVER_REQUEST"
+                            errorMessage = row.optString("code", "").ifBlank { if (row.optInt("statusCode", 500) >= 400) "Server HTTP ${row.optInt("statusCode", 500)}" else null },
+                            errorType = row.optString("code", "SERVER_REQUEST").ifBlank { "SERVER_REQUEST" }
                         ))
                     }
                 }
@@ -1787,8 +1788,12 @@ object SelfHostedManager {
         controllerCount: Int = 1
     ): Pair<String, Long>? = withContext(Dispatchers.IO) {
         lastStationStartWasTransportFailure = false
+        lastStationStartError = ""
         try {
-            if (_currentManagerId.isBlank()) return@withContext null
+            if (_currentManagerId.isBlank()) {
+                lastStationStartError = "MANAGER_ID_MISSING"
+                return@withContext null
+            }
             val participants = JSONArray()
             selectedCustomers.forEach { (id, name) ->
                 val rawId = id.toString().toLongOrNull()
@@ -1814,16 +1819,21 @@ object SelfHostedManager {
             client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
+                    lastStationStartError = "HTTP_${response.code}:" + body.take(500)
                     Log.e(TAG, "startStationSession HTTP " + response.code + ": " + body)
                     return@withContext null
                 }
-                val sessionId = JSONObject(body).optString("sessionId").takeIf { it.isNotBlank() } ?: return@withContext null
+                val sessionId = JSONObject(body).optString("sessionId").takeIf { it.isNotBlank() } ?: run {
+                    lastStationStartError = "INVALID_SERVER_RESPONSE"
+                    return@withContext null
+                }
                 sessionId to JSONObject(body).optLong("serverStartedAt", System.currentTimeMillis())
             }
         } catch (e: Exception) {
             // Only an actual transport-layer failure may fall back to an offline session.
             // HTTP 4xx/5xx and malformed server responses must never be mistaken for Offline.
             lastStationStartWasTransportFailure = e is java.io.IOException
+            lastStationStartError = (e.message ?: e.javaClass.simpleName).take(500)
             Log.e(TAG, "startStationSession error: " + e.message, e)
             null
         }

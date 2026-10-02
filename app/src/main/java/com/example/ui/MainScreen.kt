@@ -254,7 +254,7 @@ fun MainScreen(
                         contentType = { _, _ -> "station_card" }
                     ) { index, station ->
                         val displayStationNumber = visibleStations.sortedBy { it.id }.indexOfFirst { it.id == station.id } + 1
-                        val orders = ordersMap[station.id] ?: emptyList()
+                        val orders = if (station.status == "RUNNING" || station.status == "PAUSED") ordersMap[station.id] ?: emptyList() else emptyList()
                         val hourlyRate = viewModel.getHourlyRateSync(station.consoleType, station.controllerCount)
 
                         StationCard(

@@ -182,12 +182,23 @@ fun ReservationSettingsScreen(managerId: String, onNavigateBack: () -> Unit) {
 
     }
 
+    private fun westernDigits(value: String): String = value
+        .replace("۰", "0").replace("۱", "1").replace("۲", "2").replace("۳", "3").replace("۴", "4")
+        .replace("۵", "5").replace("۶", "6").replace("۷", "7").replace("۸", "8").replace("۹", "9")
+        .replace("٠", "0").replace("١", "1").replace("٢", "2").replace("٣", "3").replace("٤", "4")
+        .replace("٥", "5").replace("٦", "6").replace("٧", "7").replace("٨", "8").replace("٩", "9")
+
+    private fun replaceToken(text: String, token: String, value: String): String = text
+        .replace("({${token}})", value)
+        .replace("{{${token}}}", value)
+        .replace("{${token}}", value)
+
     fun renderMessage(template: String): String {
         if (template.isBlank()) return ""
         var out = template
-        out = out.replace("({duration})", "مدت انتخابی")
-            .replace("({minutes_before_arrival})", arrivalWarningMinutes.toIntOrNull()?.toString() ?: "0")
-        return out
+        out = replaceToken(out, "duration", "مدت انتخابی")
+        out = replaceToken(out, "minutes_before_arrival", westernDigits(arrivalWarningMinutes.ifBlank { "0" }))
+        return westernDigits(out)
     }
 
     fun renderMessageForKey(key: String, template: String): String {
@@ -208,27 +219,24 @@ fun ReservationSettingsScreen(managerId: String, onNavigateBack: () -> Unit) {
                 "cancel2" -> threshold2
                 else -> "0"
             }
-            out = out
-                .replace("({threshold_minutes})", threshold.ifBlank { "0" })
-                .replace("({refund_percent})", wallet[stageKey] ?: "0")
-                .replace("({gn_penalty})", gn[stageKey] ?: "0")
-                .replace("({lp_penalty})", lp[stageKey] ?: "0")
+            out = replaceToken(out, "threshold_minutes", westernDigits(threshold.ifBlank { "0" }))
+            out = replaceToken(out, "refund_percent", westernDigits(wallet[stageKey] ?: "0"))
+            out = replaceToken(out, "gn_penalty", westernDigits(gn[stageKey] ?: "0"))
+            out = replaceToken(out, "lp_penalty", westernDigits(lp[stageKey] ?: "0"))
         }
         if (key == "arrival") {
-            out = out
-                .replace("({gn_penalty})", gn["noShow"] ?: "0")
-                .replace("({lp_penalty})", lp["noShow"] ?: "0")
+            out = replaceToken(out, "gn_penalty", westernDigits(gn["noShow"] ?: "0"))
+            out = replaceToken(out, "lp_penalty", westernDigits(lp["noShow"] ?: "0"))
         }
         if (key == "cancel2") {
-            out = out
-                .replace("({restriction_days})", restrictionDays.ifBlank { "0" })
-                .replace("({surcharge_percent})", surchargePercent.ifBlank { "0" })
+            out = replaceToken(out, "restriction_days", westernDigits(restrictionDays.ifBlank { "0" }))
+            out = replaceToken(out, "surcharge_percent", westernDigits(surchargePercent.ifBlank { "0" }))
         }
         if (key == "payment") {
-            out = out.replace("({payment_deadline})", paymentDeadline.toIntOrNull()?.toString() ?: "0")
+            out = replaceToken(out, "payment_deadline", westernDigits(paymentDeadline.ifBlank { "0" }))
         }
         if (key == "vipPaymentDeadline") {
-            out = out.replace("({payment_deadline})", vipPaymentDeadline.toIntOrNull()?.toString() ?: "0")
+            out = replaceToken(out, "payment_deadline", westernDigits(vipPaymentDeadline.ifBlank { "0" }))
         }
         return out
     }

@@ -446,21 +446,30 @@ app.get('/api/v1/manager/club/ledger/:customerId', requireManagerAuth, requireAc
 app.delete('/api/v1/manager/reservations/by-phone/:phone', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{return res.status(405).json({error:'Physical reservation deletion is disabled; use cancellation/rejection workflow'});});
 app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{
     const mid=manager(req);
-    const keep=Math.max(0,Math.trunc(Number(req.body?.count||req.body?.stationCount||req.body?.max_id||0)));
-    if(keep<=0)return res.status(400).json({success:false,error:'A positive station count is required'});
+    const keep=Math.max(1,Math.trunc(Number(req.body?.count||req.body?.stationCount||0)));
     const c=await pool.connect();
     try{
       await c.query('BEGIN');
       await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[String(mid)]);
-      const q=await c.query('UPDATE stations SET active=FALSE,updated_at=NOW() WHERE manager_id=$1 AND id>$2 RETURNING id',[mid,keep]);
+      // Station IDs are globally allocated, so `id > count` is NOT a valid per-Manager count rule.
+      const ranked=await c.query(`SELECT id,ROW_NUMBER() OVER (ORDER BY id) AS rn FROM stations WHERE manager_id=$1 ORDER BY id FOR UPDATE`,[mid]);
+      const overflow=ranked.rows.filter(r=>Number(r.rn)>keep).map(r=>Number(r.id));
+      if(overflow.length){
+        const active=await c.query(`SELECT DISTINCT g.station_id FROM game_sessions g WHERE g.manager_id=$1 AND g.station_id=ANY($2::int[]) AND g.status IN ('ACTIVE','PAUSED')`,[mid,overflow]);
+        if(active.rows.length){
+          await c.query('ROLLBACK');
+          return res.status(409).json({success:false,code:'STATIONS_HAVE_ACTIVE_SESSIONS',stationIds:active.rows.map(r=>r.station_id)});
+        }
+        await c.query('UPDATE stations SET active=FALSE,updated_at=NOW() WHERE manager_id=$1 AND id=ANY($2::int[])',[mid,overflow]);
+      }
       const current=(await c.query('SELECT settings FROM configuration_revisions WHERE manager_id=$1 ORDER BY version_number DESC LIMIT 1 FOR UPDATE',[mid])).rows[0]?.settings || {};
       const orders={...(current.stationOrders||{})};
-      for(const row of q.rows) delete orders[String(row.id)];
+      for(const id of overflow) delete orders[String(id)];
       const v=await c.query('SELECT COALESCE(MAX(version_number),0)+1 AS v FROM configuration_revisions WHERE manager_id=$1',[mid]);
       await c.query('INSERT INTO configuration_revisions(manager_id,version_number,settings) VALUES($1,$2,$3::jsonb)',[mid,v.rows[0].v,JSON.stringify({...current,stationOrders:orders})]);
       await c.query('COMMIT');
-      res.json({success:true,disabledStationIds:q.rows.map(r=>r.id),count:q.rowCount});
-    }catch(e){try{await c.query('ROLLBACK')}catch(_){} console.error('[stations/purge-extra]',e?.message||e);res.status(500).json({error:'Internal server error'});}finally{c.release();}
+      res.json({success:true,disabledStationIds:overflow,count:overflow.length,stationCount:keep});
+    }catch(e){try{await c.query('ROLLBACK')}catch(_){} console.error('[stations/purge-extra]',e?.message||e);res.status(500).json({error:'Internal server error',code:'STATION_PURGE_FAILED'});}finally{c.release();}
   });
 
   app.post('/api/v1/manager/customer-transactions', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const b=req.body||{},mid=manager(req),customerId=Number(b.customerId||0),localId=Number(b.localId||0)||null;if(customerId<=0)return res.status(422).json({error:'Customer transaction requires a real customer'});const customer=await pool.query('SELECT id FROM customers WHERE id=$1 AND manager_id=$2',[customerId,mid]);if(!customer.rows[0])return res.status(404).json({error:'Customer not found'});const amount=Math.max(0,Math.trunc(Number(b.amount||0)));const paidAmount=Math.max(0,Math.trunc(Number(b.paidAmount||0)));const gameCost=Math.max(0,Math.trunc(Number(b.gameCost||b.game_cost||0)));const foodCost=Math.max(0,Math.trunc(Number(b.foodCost||b.food_cost||0)));const q=await pool.query(`INSERT INTO customer_transactions(manager_id,customer_id,customer_name,station_name,title,amount,paid_amount,status,date_str,time_str,segment_details,buffet_details,event_timestamp,play_minutes,game_cost,food_cost,local_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT (manager_id,local_id) WHERE local_id IS NOT NULL DO UPDATE SET customer_id=EXCLUDED.customer_id,customer_name=EXCLUDED.customer_name,station_name=EXCLUDED.station_name,title=EXCLUDED.title,amount=EXCLUDED.amount,paid_amount=EXCLUDED.paid_amount,status=EXCLUDED.status,date_str=EXCLUDED.date_str,time_str=EXCLUDED.time_str,segment_details=EXCLUDED.segment_details,buffet_details=EXCLUDED.buffet_details,event_timestamp=EXCLUDED.event_timestamp,play_minutes=EXCLUDED.play_minutes,game_cost=EXCLUDED.game_cost,food_cost=EXCLUDED.food_cost,updated_at=NOW() RETURNING *`,[mid,customerId,b.customerName||'',b.stationName||'',b.title||'',amount,paidAmount,b.status||'UNREVIEWED',b.dateStr||'',b.timeStr||'',b.segmentDetails||'',b.buffetDetails||'',Number(b.timestamp||0),Number(b.playMinutes||b.play_minutes||0),gameCost,foodCost,localId]);res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]',e?.message||e);res.status(500).json({error:'Internal server error'});} });

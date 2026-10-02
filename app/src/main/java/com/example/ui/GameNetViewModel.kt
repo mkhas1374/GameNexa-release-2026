@@ -2454,6 +2454,16 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         customerPrepaymentsMap: Map<Long, Long> = emptyMap()
     ) {
         viewModelScope.launch(Dispatchers.IO) {
+            // Rehydrate the authenticated Manager identity before any action-triggered API call.
+            // A recreated ViewModel can lose the in-memory singleton even though the encrypted
+            // server session is still valid; that must never turn Start into a false "offline" error.
+            val persistedManagerId = SelfHostedManager.currentManagerId.trim()
+                .ifBlank { decryptSetting("enc_manager_id").trim().ifBlank { decryptSetting("enc_user_id").trim() } }
+            if (persistedManagerId.isNotBlank()) SelfHostedManager.setManagerId(persistedManagerId)
+            if (com.example.data.network.NetworkClient.managerAuthToken.isNullOrBlank()) {
+                val persistedToken = decryptSetting("enc_auth_token").trim()
+                if (persistedToken.isNotBlank()) com.example.data.network.NetworkClient.managerAuthToken = persistedToken
+            }
             if (isTrialUser && stationId !in 1..2) return@launch
             val station = repository.getStationStateByIdLocal(stationId)
                 ?: stationStates.value.find { it.id == stationId }
@@ -2503,7 +2513,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 )
                 if (sessionStart == null && !SelfHostedManager.lastStationStartWasTransportFailure) {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(getApplication(), "شروع نشست از سرور رد شد؛ جایگاه به حالت آفلاین منتقل نشد تا فاکتور ناقص ایجاد نشود.", Toast.LENGTH_LONG).show()
+                        val detail = SelfHostedManager.lastStationStartError.takeIf { it.isNotBlank() }?.let { " [$it]" } ?: ""
+                        Toast.makeText(getApplication(), "شروع نشست از سرور رد شد؛ جایگاه به حالت آفلاین منتقل نشد.$detail", Toast.LENGTH_LONG).show()
                     }
                     return@launch
                 }
