@@ -3381,7 +3381,7 @@ fun DebtorGroupCard(
     if (showSaveGuestDialog) {
         SaveGuestAsCustomerDialog(
             initialGuestName = customerName,
-            initialDebt = totalDebt,
+            initialDebt = totalDebt.toDouble(),
             onDismiss = { showSaveGuestDialog = false },
             onSave = { name, phone, d, c, desc ->
                 viewModel.convertGuestToCustomer(
