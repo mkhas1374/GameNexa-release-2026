@@ -186,7 +186,7 @@ class GameNetRepository(private val db: AppDatabase) {
                     for (c in defaultConsoles) consoleTypeDao.insert(c)
                 }
                 for (c in consolesToSync) {
-                    try { api.saveConsoleType(c) } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", _) }
+                    try { api.saveConsoleType(c) } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", e) }
                 }
             }
             anySyncSucceeded = true
@@ -226,7 +226,7 @@ class GameNetRepository(private val db: AppDatabase) {
                     for (p in defaultProducts) productDao.insert(p)
                 }
                 for (p in prodsToSync) {
-                    try { api.saveProduct(p) } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", _) }
+                    try { api.saveProduct(p) } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", e) }
                 }
             }
             anySyncSucceeded = true
@@ -254,14 +254,14 @@ class GameNetRepository(private val db: AppDatabase) {
                 val localStations = stationStateDao.getAll().firstOrNull() ?: emptyList()
                 if (localStations.isNotEmpty()) {
                     for (st in localStations) {
-                        try { api.saveStation(st) } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", _) }
+                        try { api.saveStation(st) } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", e) }
                     }
                 } else {
                     val firstConsole = consoleTypeDao.getAll().firstOrNull()?.firstOrNull()?.name ?: "PlayStation 5"
                     recreateStations(10, firstConsole)
                     val created = stationStateDao.getAll().firstOrNull() ?: emptyList()
                     for (st in created) {
-                        try { api.saveStation(st) } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", _) }
+                        try { api.saveStation(st) } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", e) }
                     }
                 }
             }
@@ -965,7 +965,7 @@ class GameNetRepository(private val db: AppDatabase) {
                         }
                     }
                 }
-            } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", _) }
+            } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", e) }
         }
 
         return@withContext com.example.data.network.NetworkClient.getApi().getSuperManagers()
@@ -1068,7 +1068,7 @@ class GameNetRepository(private val db: AppDatabase) {
                 if (parsed != null) return@withContext parsed
             }
             throw Exception("Failed to parse manager response")
-        } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", _) }
+        } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", e) }
 
         if (lastStatusCode in 200..299) {
             throw Exception("Failed to parse manager response")
