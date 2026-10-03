@@ -1758,6 +1758,7 @@ object SelfHostedManager {
                     put("manager_id", _currentManagerId)
                     put("managerId", _currentManagerId)
                 }
+                put("id", station.id)
                 put("stationId", station.id)
                 put("status", station.status)
                 put("consoleType", station.consoleType)

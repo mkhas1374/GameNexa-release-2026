@@ -6483,17 +6483,15 @@ fun GameNetViewModel.generateCustomerPassword(): String {
                 })
             }
             val hourlyRate = getHourlyRate(state.consoleType, state.controllerCount)
-            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
-                try {
-                    com.example.data.network.SelfHostedManager.syncStationToCloud(
-                        station = state,
-                        ordersJsonStr = ordersArray.toString(),
-                        hourlyRate = hourlyRate,
-                        buffetCost = buffetSum
-                    )
-                } catch(e: Exception) {
-                    e.printStackTrace()
-                }
+            try {
+                com.example.data.network.SelfHostedManager.syncStationToCloud(
+                    station = state,
+                    ordersJsonStr = ordersArray.toString(),
+                    hourlyRate = hourlyRate,
+                    buffetCost = buffetSum
+                )
+            } catch(e: Exception) {
+                android.util.Log.e("GameNetViewModel", "Station state sync failed", e)
             }
         } catch(e: Exception) {
             e.printStackTrace()
