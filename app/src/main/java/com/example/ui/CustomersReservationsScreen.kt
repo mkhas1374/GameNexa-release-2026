@@ -19,8 +19,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -800,20 +803,28 @@ IconButton(
                 }
             }
             2 -> {
-                // REVIEWED SECTION (INDIVIDUAL INVOICES)
-                val sortedReviewed = remember(reviewedTrans) {
-                    reviewedTrans.sortedByDescending { it.timestamp }
+                // REVIEWED SECTION: group by customer; newest invoice first inside each customer.
+                val groupedReviewed = remember(reviewedTrans) {
+                    reviewedTrans.groupBy { it.customerId }
+                        .mapValues { (_, transactions) -> transactions.sortedByDescending { it.timestamp } }
                 }
-                val filteredReviewed = remember(sortedReviewed, searchQuery) {
-                    if (searchQuery.isBlank()) sortedReviewed
-                    else sortedReviewed.filter {
-                        it.customerName.contains(searchQuery, ignoreCase = true) ||
-                        it.stationName.contains(searchQuery, ignoreCase = true) ||
-                        it.title.contains(searchQuery, ignoreCase = true)
+                val sortedReviewedGroups = remember(groupedReviewed) {
+                    groupedReviewed.toList().sortedByDescending { (_, transactions) ->
+                        transactions.firstOrNull()?.timestamp ?: 0L
+                    }
+                }
+                val filteredReviewedGroups = remember(sortedReviewedGroups, searchQuery) {
+                    if (searchQuery.isBlank()) sortedReviewedGroups
+                    else sortedReviewedGroups.filter { (_, transactions) ->
+                        transactions.any {
+                            it.customerName.contains(searchQuery, ignoreCase = true) ||
+                            it.stationName.contains(searchQuery, ignoreCase = true) ||
+                            it.title.contains(searchQuery, ignoreCase = true)
+                        }
                     }
                 }
 
-                if (filteredReviewed.isEmpty()) {
+                if (filteredReviewedGroups.isEmpty()) {
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -831,14 +842,17 @@ IconButton(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        itemsIndexed(filteredReviewed, key = { index, trans -> "reviewed_${trans.id}_${trans.timestamp}_$index" }) { _, trans ->
-                            CustomerTransactionCard(
-                                transaction = trans,
+                        itemsIndexed(filteredReviewedGroups, key = { _, group -> "reviewed_customer_${group.first}" }) { _, (_, transactions) ->
+                            val customerName = transactions.firstOrNull()?.customerName ?: ""
+                            val totalPaid = transactions.sumOf { it.paidAmount }
+                            ReviewedGroupCard(
+                                customerName = customerName,
+                                totalPaid = totalPaid,
+                                transactions = transactions,
                                 lang = lang,
-                                onUpdateStatus = { st -> onUpdateTransactionStatus(trans, st) },
-                                onUpdatePayment = { pAmount, st -> onUpdateTransactionPayment(trans, pAmount, st) },
-                                onDelete = { onDeleteTransaction(trans) },
-                                canDelete = canDelete,
+                                onUpdateStatus = { trans, st -> onUpdateTransactionStatus(trans, st) },
+                                onUpdatePayment = { trans, pAmount, st -> onUpdateTransactionPayment(trans, pAmount, st) },
+                                onDelete = { trans -> onDeleteTransaction(trans) },
                                 viewModel = viewModel
                             )
                         }
@@ -880,13 +894,14 @@ IconButton(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        itemsIndexed(filteredDebtors, key = { index, group -> "debtor_${group.first}_$index" }) { _, (customerId, transList) ->
+                        itemsIndexed(filteredDebtors, key = { _, group -> "debtor_${group.first}" }) { _, (_, transList) ->
                             val customerName = transList.first().customerName
-                            val totalDebt = transList.sumOf { it.amount - it.paidAmount }
+                            val sortedCustomerTransactions = transList.sortedByDescending { it.timestamp }
+                            val totalDebt = sortedCustomerTransactions.sumOf { it.amount - it.paidAmount }
                             DebtorGroupCard(
                                 customerName = customerName,
                                 totalDebt = totalDebt,
-                                transactions = transList,
+                                transactions = sortedCustomerTransactions,
                                 lang = lang,
                                 onUpdateStatus = { trans, st -> onUpdateTransactionStatus(trans, st) },
                                 onUpdatePayment = { trans, pAmount, st -> onUpdateTransactionPayment(trans, pAmount, st) },
@@ -916,6 +931,8 @@ fun CustomerTransactionCard(
     var expanded by remember { mutableStateOf(isAlwaysExpanded) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var isSubmitting by remember(transaction) { mutableStateOf(false) }
+    var isPayFieldFocused by remember { mutableStateOf(false) }
+    val payFieldBringIntoViewRequester = remember { BringIntoViewRequester() }
 
     val customers by viewModel.customers.collectAsState()
     val clubLevels by viewModel.clubLevels.collectAsState()
@@ -927,6 +944,13 @@ fun CustomerTransactionCard(
     val sortedLevels = remember(clubLevels) { clubLevels.sortedByDescending { it.requiredPoints } }
     val activeLevel = remember(sortedLevels, custPoints) {
         sortedLevels.find { custPoints >= it.requiredPoints } ?: clubLevels.firstOrNull()
+    }
+
+    LaunchedEffect(isPayFieldFocused) {
+        if (isPayFieldFocused) {
+            kotlinx.coroutines.delay(180)
+            payFieldBringIntoViewRequester.bringIntoView()
+        }
     }
 
     val gameDiscPct: Double = (activeLevel?.gameDiscountPercent ?: 0L).toDouble()
@@ -1382,7 +1406,11 @@ fun CustomerTransactionCard(
                                 value = payInput,
                                 onValueChange = { payInput = it },
                                 label = { Text("پرداخت بخشی از مبلغ (تومان)", fontSize = 10.sp) },
-                                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 2.dp)
+                                    .bringIntoViewRequester(payFieldBringIntoViewRequester)
+                                    .onFocusChanged { isPayFieldFocused = it.isFocused },
                                 shape = RoundedCornerShape(8.dp),
                                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
                                 singleLine = true
