@@ -205,7 +205,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     if (transaction.customerId > 0L && transaction.id > 0L && SelfHostedManager.syncCustomerTransactionToCloud(transaction)) {
                         repository.saveSetting(setting.key, "")
                     }
-                } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", _) }
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
     }
 
@@ -823,7 +823,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         }
                     }
                     if (loginSuccess) break
-                } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", _) }
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
 
             if (loginSuccess && (serverManagerId.isBlank() || serverToken.isBlank())) {
@@ -4421,7 +4421,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     _serverUrl.value = candidateUrl
                     SelfHostedManager.setCustomServerUrl(candidateUrl)
                     break
-                } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", _) }
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
 
             if (trialCheck != null) {
@@ -5660,7 +5660,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     totalGnPen = obj.optLong("totalGnPenalized", 0L)
                     totalLpPen = obj.optLong("totalLpPenalized", 0L)
                 }
-            } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", _) }
+            } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
         }
 
         return AbsenceStatusInfo(
@@ -5722,7 +5722,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     } else {
                         prefs.edit().remove(statePrefKey).apply()
                     }
-                } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", _) }
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
 
             if (absentDays < 21) {
