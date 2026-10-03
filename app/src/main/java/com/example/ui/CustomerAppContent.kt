@@ -131,7 +131,7 @@ fun CustomerDashboardTab(
                 SelfHostedManager.fetchLiveStationsFromCloud()
                 // Refresh the authenticated customer with the server token; never re-login with a locally stored password.
                 SelfHostedManager.refreshCurrentCustomerProfile()
-            } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in CustomerAppContent.kt", _) }
+            } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in CustomerAppContent.kt", e) }
             delay(3000L) // Polling every 3s for Real-Time Experience
         }
     }
