@@ -500,8 +500,9 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       await c.query('BEGIN');
       await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[String(mid)]);
       // Station IDs are globally allocated, so `id > count` is NOT a valid per-Manager count rule.
-      const ranked=await c.query(`SELECT id,ROW_NUMBER() OVER (ORDER BY id) AS rn FROM stations WHERE manager_id=$1 ORDER BY id FOR UPDATE`,[mid]);
-      const overflow=ranked.rows.filter(r=>Number(r.rn)>keep).map(r=>Number(r.id));
+      // Equivalent to ROW_NUMBER() OVER (ORDER BY id), but lock base station rows directly; PostgreSQL forbids FOR UPDATE with window functions.
+      const ranked=await c.query(`SELECT id FROM stations WHERE manager_id=$1 ORDER BY id FOR UPDATE`,[mid]);
+      const overflow=ranked.rows.slice(keep).map(r=>Number(r.id));
       if(overflow.length){
         const active=await c.query(`SELECT DISTINCT g.station_id FROM game_sessions g WHERE g.manager_id=$1 AND g.station_id=ANY($2::int[]) AND g.status IN ('ACTIVE','PAUSED')`,[mid,overflow]);
         if(active.rows.length){
