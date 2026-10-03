@@ -132,6 +132,8 @@ class MainActivity : ComponentActivity() {
                         Box(modifier = Modifier.fillMaxSize()) {
                             Column(modifier = Modifier.fillMaxSize()) {
                                 if (notchSafeBarEnabled) {
+                                    // Optional custom cutout protection. The clock no longer adds a
+                                    // second status-bar inset, so this is the only security bar when enabled.
                                     Spacer(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -1005,9 +1007,9 @@ private fun IranTehranClock(
     }
 
     Surface(
-        modifier = modifier
-            .windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility)
-            .height(38.dp),
+        // The optional notch-safe spacer is owned by the parent. Do not add another
+        // status-bar inset here, otherwise enabling the setting creates two top bars.
+        modifier = modifier.height(38.dp),
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 2.dp
     ) {

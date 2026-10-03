@@ -130,10 +130,13 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
       await c.query('BEGIN');
       const customer=(await c.query("SELECT id,phone_number,description FROM customers WHERE id=$1 AND manager_id=$2 FOR UPDATE",[id,mid])).rows[0];
       if(!customer){await c.query('ROLLBACK');return res.status(404).json({error:'Customer not found'});}
+      if(String(customer.description||'').startsWith('[GAMENEX_ARCHIVED:')){await c.query('COMMIT');return res.json({success:true,archived:true,customerId:id,idempotent:true});}
       const active=(await c.query("SELECT session_id FROM active_session_customer_claims WHERE customer_id=$1 AND manager_id=$2 LIMIT 1",[id,mid])).rows[0];
       if(active){await c.query('ROLLBACK');return res.status(409).json({success:false,code:'CUSTOMER_IN_ACTIVE_SESSION',sessionId:active.session_id});}
       const stamp=Date.now();
-      await c.query("UPDATE customers SET phone_number=$1,description=$2,updated_at=NOW() WHERE id=$3 AND manager_id=$4",['archived:'+id+':'+stamp,'[GAMENEX_ARCHIVED:'+stamp+'] '+String(customer.description||''),id,mid]);
+      const archivedPhone=('ARCH:'+id).slice(0,20);
+      const archivedDescription='[GAMENEX_ARCHIVED:'+stamp+'] original_phone='+String(customer.phone_number||'')+' '+String(customer.description||'');
+      await c.query("UPDATE customers SET phone_number=$1,description=$2,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[archivedPhone,archivedDescription,id,mid]);
       await c.query('COMMIT');
       return res.json({success:true,archived:true,customerId:id});
     } catch(e){try{await c.query('ROLLBACK')}catch(_){} console.error('[customer-archive]',e?.message||e);return res.status(500).json({error:'Customer archive failed'});}

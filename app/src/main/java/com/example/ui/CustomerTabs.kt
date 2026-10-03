@@ -244,7 +244,7 @@ fun CustomerWalletTab(viewModel: GameNetViewModel) {
                         ) {
                             Text("امتیاز باشگاه (LP)", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(
-                                text = "${numberFormat.format(matchedCustomer.points)} LP",
+                                text = "${numberFormat.format(matchedCustomer.lp)} LP",
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Black,
                                 color = MaterialTheme.colorScheme.secondary

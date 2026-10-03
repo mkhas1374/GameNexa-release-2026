@@ -906,6 +906,26 @@ object SelfHostedManager {
         }
     }
 
+    suspend fun saveManagerSetting(key: String, value: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject().apply { put("key", key); put("value", value) }
+                .toString().toRequestBody(JSON_MEDIA)
+            val request = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/settings")
+                .headers(getBaseHeaders())
+                .post(body)
+                .build()
+            client.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) Log.w(TAG, "Manager setting sync failed: HTTP ${response.code} $responseBody")
+                response.isSuccessful
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "saveManagerSetting error: ${e.message}")
+            false
+        }
+    }
+
     suspend fun fetchAppConfig(key: String): String? = withContext(Dispatchers.IO) {
         _cloudAppConfigs.value[key]?.let { return@withContext it }
         try {
@@ -1752,41 +1772,29 @@ object SelfHostedManager {
         gameCost: Long = 0L,
         buffetCost: Long = 0L
     ): Boolean = withContext(Dispatchers.IO) {
+        if (station.id <= 0) {
+            Log.w(TAG, "Ignoring invalid station id ${station.id} during canonical station sync")
+            return@withContext false
+        }
         try {
             val json = JSONObject().apply {
-                if (false) {
-                    put("manager_id", _currentManagerId)
-                    put("managerId", _currentManagerId)
-                }
                 put("id", station.id)
-                put("stationId", station.id)
+                put("name", "ایستگاه ${station.id}")
                 put("status", station.status)
-                put("consoleType", station.consoleType)
-                put("controllerCount", station.controllerCount)
-                put("startTimeMillis", station.startTimeMillis)
-                put("lastStateChangeMillis", station.lastStateChangeTimeMillis)
-                put("elapsedPlayingTimeMillis", station.elapsedPlayingTimeMillis)
-                put("prepaymentAmount", station.prepaymentAmount)
-                put("durationLimitMinutes", station.durationLimitMinutes)
-                put("selectedCustomerIdsStr", station.selectedCustomerIdsStr)
-                put("selectedCustomerNamesStr", station.selectedCustomerNamesStr)
-                put("customerIdsStr", station.selectedCustomerIdsStr)
-                put("customerNamesStr", station.selectedCustomerNamesStr)
-                put("ordersJson", ordersJsonStr)
-                put("hourlyRate", hourlyRate)
-                put("currentGameCost", gameCost)
-                put("currentBuffetCost", buffetCost)
-                put("splitMode", station.splitMode)
-                put("payerCustomerIdsStr", station.payerCustomerIdsStr)
-                put("payerCustomerNamesStr", station.payerCustomerNamesStr)
+                put("consoleType", station.consoleType.ifBlank { "PS5" })
+                put("controllerCount", station.controllerCount.coerceAtLeast(1))
+                put("reservable", true)
             }
             val request = Request.Builder()
-                .url("$SERVER_URL/api/v1/manager/live-stations")
+                .url("$SERVER_URL/api/v1/manager/stations")
                 .headers(getBaseHeaders())
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            val response = client.newCall(request).execute()
-            response.isSuccessful
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) Log.w(TAG, "Canonical station sync failed: HTTP ${response.code} $body")
+                response.isSuccessful
+            }
         } catch (e: Exception) {
             Log.e(TAG, "syncStationToCloud error: ${e.message}", e)
             false

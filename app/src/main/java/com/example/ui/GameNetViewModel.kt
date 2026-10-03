@@ -3253,8 +3253,32 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
                         val newCustPts = (existingCust.points + totalSessionPts).coerceAtLeast(0L)
                         val remainingDebt = (rawTotal - initialPaid).coerceAtLeast(0L)
-                        val updatedCust = existingCust.copy(debt = existingCust.debt + remainingDebt, points = newCustPts)
+                        val gameGnReward = ((gameCost / 100_000L) * _gameRewardRate.value).coerceAtLeast(0L)
+                        val buffetGnReward = ((buffetCost / 100_000L) * _buffetRewardRate.value).coerceAtLeast(0L)
+                        val sessionGnReward = (gameGnReward + buffetGnReward).coerceAtLeast(0L)
+                        val gnStatus = if (isFullyPaid) "AVAILABLE" else "PENDING"
+                        val updatedCust = existingCust.copy(
+                            debt = existingCust.debt + remainingDebt,
+                            points = newCustPts,
+                            availableGn = existingCust.availableGn + if (gnStatus == "AVAILABLE") sessionGnReward else 0L,
+                            pendingGn = existingCust.pendingGn + if (gnStatus == "PENDING") sessionGnReward else 0L
+                        )
                         repository.insertCustomer(updatedCust)
+                        if (sessionGnReward > 0L) {
+                            repository.addGnLedgerEntry(
+                                GnLedgerEntry(
+                                    customerId = cid,
+                                    customerName = cName,
+                                    gnAmount = sessionGnReward,
+                                    transactionType = "GAME_REWARD",
+                                    source = "REWARD",
+                                    status = gnStatus,
+                                    timestamp = now,
+                                    referenceId = "SESSION_${now}_CUST_${cid}",
+                                    description = if (gnStatus == "PENDING") "پاداش بازی؛ تا تسویه کامل فاکتور در انتظار است" else "پاداش بازی؛ فاکتور تسویه شده"
+                                )
+                            )
+                        }
 
                         if (totalSessionPts > 0) {
                             val consoleName = trans.title.ifBlank { station.consoleType }

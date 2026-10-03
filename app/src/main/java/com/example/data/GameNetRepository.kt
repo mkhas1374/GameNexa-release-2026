@@ -553,7 +553,7 @@ class GameNetRepository(private val db: AppDatabase) {
             !com.example.data.network.NetworkClient.authToken.isNullOrBlank() &&
             com.example.data.network.SelfHostedManager.currentManagerId.isNotBlank()) {
             try {
-                getApi()?.saveSetting(mapOf("key" to key, "value" to value))
+                com.example.data.network.SelfHostedManager.saveManagerSetting(key, value)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
