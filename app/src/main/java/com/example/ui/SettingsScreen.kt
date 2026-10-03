@@ -1743,7 +1743,7 @@ fun PaymentMethodsSubScreen(viewModel: GameNetViewModel, lang: String) {
                     list.add(Triple(num, own, bank))
                 }
             }
-        } catch (_: Exception) {}
+        } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in SettingsScreen.kt", _) }
         list
     }
 
@@ -1755,7 +1755,7 @@ fun PaymentMethodsSubScreen(viewModel: GameNetViewModel, lang: String) {
                 val obj = arr.getJSONObject(i)
                 list.add(Pair(obj.optString("name"), obj.optString("url")))
             }
-        } catch (_: Exception) {}
+        } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in SettingsScreen.kt", _) }
         list
     }
 
@@ -1767,7 +1767,7 @@ fun PaymentMethodsSubScreen(viewModel: GameNetViewModel, lang: String) {
                 val obj = arr.getJSONObject(i)
                 list.add(Pair(obj.optString("coin"), obj.optString("address")))
             }
-        } catch (_: Exception) {}
+        } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in SettingsScreen.kt", _) }
         list
     }
 

@@ -205,7 +205,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     if (transaction.customerId > 0L && transaction.id > 0L && SelfHostedManager.syncCustomerTransactionToCloud(transaction)) {
                         repository.saveSetting(setting.key, "")
                     }
-                } catch (_: Exception) { }
+                } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", _) }
             }
     }
 
@@ -823,7 +823,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         }
                     }
                     if (loginSuccess) break
-                } catch (_: Exception) {}
+                } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", _) }
             }
 
             if (loginSuccess && (serverManagerId.isBlank() || serverToken.isBlank())) {
@@ -1000,7 +1000,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 val cloudCust = onlineResult.getOrNull()!!
                 try {
                     repository.insertCustomer(cloudCust)
-                } catch (ignored: Exception) {}
+                } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
 
                 withContext(Dispatchers.Main) {
                     _isCustomerAuthenticated.value = true
@@ -3817,10 +3817,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     // 2. Upload all current stations
                     val newStations = repository.allStationStates.firstOrNull() ?: emptyList()
                     for (st in newStations) {
-                        try { api.saveStation(st) } catch (e: Exception) {}
+                        try { api.saveStation(st) } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
                     }
                 }
-            } catch (e: Exception) {}
+            } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
         }
     }
 
@@ -4082,7 +4082,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             // Real-time Cloud sync to self-hosted server
             try {
                 SelfHostedManager.upsertCustomer(customer.copy(id = finalCustomerId))
-            } catch (ignored: Exception) {}
+            } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
 
             logOperatorActivity(
                 actionTitle = if (id == 0L) "افزودن مشتری جدید" else "ویرایش اطلاعات مشتری",
@@ -4138,7 +4138,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             // Real-time Cloud sync to self-hosted server
             try {
                 SelfHostedManager.upsertCustomer(newCustomer.copy(id = newId))
-            } catch (ignored: Exception) {}
+            } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
 
             logOperatorActivity("تبدیل مهمان به مشتری", "نام: $trimmedName | تلفن: $trimmedPhone")
 
@@ -4234,7 +4234,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     reservation.id,
                     "manager-cancel:" + reservation.id
                 )
-            } catch (ignored: Exception) {}
+            } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
         }
     }
 
@@ -4421,7 +4421,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     _serverUrl.value = candidateUrl
                     SelfHostedManager.setCustomServerUrl(candidateUrl)
                     break
-                } catch (_: Exception) {}
+                } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", _) }
             }
 
             if (trialCheck != null) {
@@ -4729,7 +4729,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         SelfHostedManager.setCustomServerUrl(u)
                         repository.saveSetting("server_url", u)
                         break
-                    } catch (_: Throwable) {}
+                    } catch (_: Throwable) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", _) }
                 }
 
                 if (serverTrialStatus != null) {
@@ -5065,7 +5065,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         fetched = true
                         break
                     }
-                } catch (e: Exception) {}
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
             if (!fetched && _subscriptionPlans.value.isEmpty()) {
                 _subscriptionPlans.value = sanitizeAndOrderPlans(emptyList())
@@ -5110,7 +5110,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         try {
                             api.checkSubscription(deviceId = getDeviceId())
                             connected = true
-                        } catch (e3: Exception) {}
+                        } catch (e3: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e3) }
                     }
                 }
                 if (connected) {
@@ -5122,11 +5122,11 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         if (plans.isNotEmpty()) {
                             _subscriptionPlans.value = sanitizeAndOrderPlans(plans)
                         }
-                    } catch (ignored: Exception) {}
+                    } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
                     verifyLicenseStatus()
                     return
                 }
-            } catch (e: Exception) {}
+            } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
         }
         if (_subscriptionPlans.value.isEmpty()) {
             _subscriptionPlans.value = sanitizeAndOrderPlans(emptyList())
@@ -5660,7 +5660,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     totalGnPen = obj.optLong("totalGnPenalized", 0L)
                     totalLpPen = obj.optLong("totalLpPenalized", 0L)
                 }
-            } catch (_: Exception) {}
+            } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", _) }
         }
 
         return AbsenceStatusInfo(
@@ -5722,7 +5722,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     } else {
                         prefs.edit().remove(statePrefKey).apply()
                     }
-                } catch (_: Exception) {}
+                } catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", _) }
             }
 
             if (absentDays < 21) {
