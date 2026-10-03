@@ -4729,7 +4729,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         SelfHostedManager.setCustomServerUrl(u)
                         repository.saveSetting("server_url", u)
                         break
-                    } catch (_: Throwable) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", _) }
+                    } catch (e: Throwable) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
                 }
 
                 if (serverTrialStatus != null) {
