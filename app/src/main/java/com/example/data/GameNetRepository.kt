@@ -268,21 +268,29 @@ class GameNetRepository(private val db: AppDatabase) {
             anySyncSucceeded = true
         } catch (e: Exception) { e.printStackTrace() }
 
-        // 4. Customers
+        // 4. Customers — server-authoritative reconciliation.
+        // A successful GET is authoritative even when it returns an empty list.
+        // Do not leave archived/deleted customers visible in Room after sync.
         if (!com.example.data.network.NetworkClient.isTrialMode) {
             try {
                 val remoteCustomers = api.getCustomers()
-                if (remoteCustomers.isNotEmpty()) {
-                    val localCustomers = customerDao.getAllList()
-                    for (remote in remoteCustomers) {
-                        val existing = localCustomers.find { it.phoneNumber == remote.phoneNumber || it.id == remote.id }
-                        if (existing != null) {
-                            customerDao.insert(remote.copy(id = existing.id)) // Update existing to prevent duplicates
-                        } else {
-                            customerDao.insert(remote)
-                        }
+                val localCustomers = customerDao.getAllList()
+                for (remote in remoteCustomers) {
+                    val existing = localCustomers.find { it.phoneNumber == remote.phoneNumber || it.id == remote.id }
+                    if (existing != null) {
+                        customerDao.insert(remote.copy(id = existing.id))
+                    } else {
+                        customerDao.insert(remote)
                     }
                 }
+
+                val remotePhones = remoteCustomers.map { it.phoneNumber.trim() }.filter { it.isNotBlank() }.toSet()
+                if (remoteCustomers.isEmpty()) {
+                    customerDao.clearAll()
+                } else if (remotePhones.isNotEmpty()) {
+                    customerDao.deleteCustomersMissingFromServerPhones(remotePhones.toList())
+                }
+                anySyncSucceeded = true
             } catch (e: Exception) { e.printStackTrace() }
         }
 
@@ -314,10 +322,11 @@ class GameNetRepository(private val db: AppDatabase) {
     val allStationStates: Flow<List<StationState>> = stationStateDao.getAll()
     suspend fun getStationStateByIdLocal(id: Int): StationState? = stationStateDao.getById(id)
     suspend fun getStationStateById(id: Int): StationState? {
-        val local = stationStateDao.getById(id)
-        if (local != null) return local
         if (isSyncModeEnabled()) {
             try {
+                // Online reads are server-authoritative. Only fall back to Room when
+                // the server read actually fails, so remote status/pricing changes
+                // cannot remain hidden behind a stale local row.
                 val remote = getApi()?.getStations()?.find { it.id == id }
                 if (remote != null) {
                     stationStateDao.insert(remote)
@@ -327,7 +336,7 @@ class GameNetRepository(private val db: AppDatabase) {
                 e.printStackTrace()
             }
         }
-        return null
+        return stationStateDao.getById(id)
     }
 
     suspend fun insertStationState(state: StationState) {
