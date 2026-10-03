@@ -601,7 +601,7 @@ object SelfHostedManager {
                 val body=resp.body?.string().orEmpty(); if(!resp.isSuccessful||body.isBlank()){_isConnected.value=false;return@withContext false}
                 val list=ArrayList<Customer>(); extractCustomerObjects(if(body.trim().startsWith("[")) JSONArray(body) else JSONObject(body).opt("data")?:JSONArray(),list)
                 _allCloudCustomers.value=list; _isConnected.value=true
-                try{fetchRecentPaymentsFromCloud();fetchAllReservationsFromCloud()}catch (_: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in SelfHostedManager.kt", _) }
+                try{fetchRecentPaymentsFromCloud();fetchAllReservationsFromCloud()}catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in SelfHostedManager.kt", e) }
                 true
             }
         }catch(e:Exception){_isConnected.value=false;Log.w(TAG,"fetchAllFromCloud error: ${e.message}");false}
