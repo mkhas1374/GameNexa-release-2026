@@ -128,6 +128,12 @@ interface CustomerDao {
     @Delete
     suspend fun delete(customer: Customer)
 
+    @Query("DELETE FROM customers WHERE id NOT IN (:serverIds)")
+    suspend fun deleteCustomersMissingFromServer(serverIds: List<Long>)
+
+    @Query("DELETE FROM customers WHERE phoneNumber NOT IN (:serverPhones)")
+    suspend fun deleteCustomersMissingFromServerPhones(serverPhones: List<String>)
+
     @Query("DELETE FROM customers")
     suspend fun clearAll()
 }

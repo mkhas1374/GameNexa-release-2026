@@ -63,7 +63,7 @@ enum class SettingsSection(
     DEPUTY_ASSIGNMENT("تخصیص معاون یا مدیر اجرایی", "Assign Assistant / Deputy", "تنظیم حساب کاربری، رمز عبور و دسترسی‌های معاون", "Set credentials, password, and permissions for deputy", Icons.Default.SupervisorAccount, Color(0xFFF4511E)),
     MANAGER_SALES("فروش مدیر", "Manager Sales", "ثبت نام و مدیریت حساب سایر مدیران", "Register and manage accounts of other managers", Icons.Default.Store, Color(0xFFD81B60)),
     SUBSCRIPTION_PLANS("مدیریت پلن‌های اشتراک", "Subscription Plans", "تنظیم قیمت، لینک فوربیکس و متن‌های صفحه خرید اشتراک", "Manage subscription prices, Forbix links, and purchase-page texts", Icons.Default.CardMembership, Color(0xFF7B1FA2)),
-    DEVICE_CONFIG("پیکر بندی دستگاه ها", "Device Configuration", "تعداد ایستگاه‌ها، اعلان‌ها و قیمت انواع کنسول‌ها", "Station counts, notifications, and console rates", Icons.Default.Devices, Color(0xFF039BE5)),
+    DEVICE_CONFIG("پیکربندی دستگاه‌ها و نمایش", "Device & Display Configuration", "تعداد ایستگاه‌ها، اعلان‌ها، قیمت کنسول‌ها و نوار ایمنی ناچ", "Station counts, notifications, console rates, and notch safe-area bar", Icons.Default.Devices, Color(0xFF039BE5)),
     BUFFET_CAFE("بوفه و کافه", "Buffet & Cafe", "مدیریت محصولات، قیمت‌گذاری و اقلام بوفه", "Product management, pricing, and cafe items", Icons.Default.Storefront, Color(0xFFFB8C00)),
     PAYMENT_METHODS("تخصیص روش های پرداخت", "Payment Methods", "شماره کارت، شبا، درگاه آنلاین، رمزارز و نرخ تبدیل", "Card numbers, IBAN, online gateway, and crypto", Icons.Default.Payment, Color(0xFF43A047))
 }
@@ -1743,7 +1743,7 @@ fun PaymentMethodsSubScreen(viewModel: GameNetViewModel, lang: String) {
                     list.add(Triple(num, own, bank))
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in SettingsScreen.kt", e) }
         list
     }
 
@@ -1755,7 +1755,7 @@ fun PaymentMethodsSubScreen(viewModel: GameNetViewModel, lang: String) {
                 val obj = arr.getJSONObject(i)
                 list.add(Pair(obj.optString("name"), obj.optString("url")))
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in SettingsScreen.kt", e) }
         list
     }
 
@@ -1767,7 +1767,7 @@ fun PaymentMethodsSubScreen(viewModel: GameNetViewModel, lang: String) {
                 val obj = arr.getJSONObject(i)
                 list.add(Pair(obj.optString("coin"), obj.optString("address")))
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in SettingsScreen.kt", e) }
         list
     }
 

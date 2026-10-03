@@ -116,7 +116,7 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
     let q;
     if(existing.rows[0]) q=await pool.query("UPDATE customers SET full_name=$1,debt=COALESCE($2,debt),credit=COALESCE($3,credit),description=COALESCE($4,description),club_tier=COALESCE($5,club_tier),invite_code=COALESCE(NULLIF($6,''),invite_code),invited_by_code=COALESCE(NULLIF($7,''),invited_by_code),updated_at=NOW() WHERE id=$8 AND manager_id=$9 RETURNING *",[name,b.debt,b.credit,b.description,b.tier,b.inviteCode,b.invitedByCode,existing.rows[0].id,mid]);
     else q=await pool.query("INSERT INTO customers(manager_id,phone_number,full_name,debt,credit,description,club_tier,invite_code,invited_by_code,pending_gn,lp_balance,gn_balance,last_activity_at,last_tier_review_at) VALUES($1,$2,$3,COALESCE($4,0),COALESCE($5,0),COALESCE($6,''),COALESCE($7,'BRONZE'),NULLIF($8,''),NULLIF($9,''),0,0,0,NOW(),NOW()) RETURNING *",[mid,phone,name,b.debt,b.credit,b.description,b.tier,b.inviteCode,b.invitedByCode]);
-    if(typeof b.password==='string' && b.password.length>=8) await pool.query('UPDATE customers SET password_hash=$1 WHERE id=$2 AND manager_id=$3',[await bcrypt.hash(b.password,12),q.rows[0].id,mid]);
+    if(typeof b.password==='string' && b.password.length>=8) await pool.query('UPDATE customers SET password_hash=$1,token_version=token_version+1,updated_at=NOW() WHERE id=$2 AND manager_id=$3',[await bcrypt.hash(b.password,12),q.rows[0].id,mid]);
     res.status(existing.rows[0]?200:201).json(normalizeCustomer(q.rows[0]));
   } catch(e){res.status(500).json({error:'Internal server error'});} });
 
@@ -130,10 +130,13 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
       await c.query('BEGIN');
       const customer=(await c.query("SELECT id,phone_number,description FROM customers WHERE id=$1 AND manager_id=$2 FOR UPDATE",[id,mid])).rows[0];
       if(!customer){await c.query('ROLLBACK');return res.status(404).json({error:'Customer not found'});}
+      if(String(customer.description||'').startsWith('[GAMENEX_ARCHIVED:')){await c.query('COMMIT');return res.json({success:true,archived:true,customerId:id,idempotent:true});}
       const active=(await c.query("SELECT session_id FROM active_session_customer_claims WHERE customer_id=$1 AND manager_id=$2 LIMIT 1",[id,mid])).rows[0];
       if(active){await c.query('ROLLBACK');return res.status(409).json({success:false,code:'CUSTOMER_IN_ACTIVE_SESSION',sessionId:active.session_id});}
       const stamp=Date.now();
-      await c.query("UPDATE customers SET phone_number=$1,description=$2,updated_at=NOW() WHERE id=$3 AND manager_id=$4",['archived:'+id+':'+stamp,'[GAMENEX_ARCHIVED:'+stamp+'] '+String(customer.description||''),id,mid]);
+      const archivedPhone=('ARCH:'+id).slice(0,20);
+      const archivedDescription='[GAMENEX_ARCHIVED:'+stamp+'] original_phone='+String(customer.phone_number||'')+' '+String(customer.description||'');
+      await c.query("UPDATE customers SET phone_number=$1,description=$2,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[archivedPhone,archivedDescription,id,mid]);
       await c.query('COMMIT');
       return res.json({success:true,archived:true,customerId:id});
     } catch(e){try{await c.query('ROLLBACK')}catch(_){} console.error('[customer-archive]',e?.message||e);return res.status(500).json({error:'Customer archive failed'});}
@@ -178,7 +181,7 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
 
   // Legacy-looking station actions are represented by the canonical station session engine already used by Android.
   app.get('/api/v1/manager/live-stations', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const q=await pool.query(`SELECT s.*,g.id session_id,g.status session_status,g.started_at,g.ended_at,g.game_cost,g.buffet_cost,g.total_cost FROM stations s LEFT JOIN LATERAL (SELECT * FROM game_sessions g WHERE g.station_id=s.id AND g.manager_id=s.manager_id AND g.status IN ('ACTIVE','PAUSED') ORDER BY g.created_at DESC LIMIT 1) g ON TRUE WHERE s.manager_id=$1 ORDER BY s.id`,[manager(req)]);res.json(q.rows);}catch(e){res.status(500).json({error:'Internal server error'});} });
-  app.post('/api/v1/manager/live-stations', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{res.json({success:true,canonical:true});});
+  app.post('/api/v1/manager/live-stations', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const mid=manager(req),b=req.body||{},id=Number(b.id||b.stationId||0);if(!Number.isInteger(id)||id<=0)return res.status(400).json({error:'Valid station id is required'});const q=await pool.query(`INSERT INTO stations(id,manager_id,name,controller_capacity,console_type,active,reservable) VALUES($1,$2,$3,$4,$5,$6,TRUE) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,controller_capacity=EXCLUDED.controller_capacity,console_type=EXCLUDED.console_type,active=EXCLUDED.active,updated_at=NOW() WHERE stations.manager_id=$2 RETURNING *`,[id,mid,String(b.name||('ایستگاه '+id)),Math.max(1,Number(b.controllerCount||1)),String(b.consoleType||'PS5'),String(b.status||'FREE')!=='DISABLED']);if(!q.rows[0])return res.status(404).json({error:'Station not found for this Manager'});res.json({success:true,canonical:true,station:q.rows[0]});}catch(e){console.error('live-stations sync error:',e);res.status(500).json({error:'Live station synchronization failed'});}});
 
   // Orders and session history are stored in the canonical configuration until a dedicated legacy schema exists.
   app.get('/api/v1/manager/orders/:stationId', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const c=await cfgGet(manager(req));const o=c.stationOrders||{};res.json(o[String(req.params.stationId)]||[]);}catch(e){res.status(500).json({error:'Internal server error'});} });
@@ -500,8 +503,9 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       await c.query('BEGIN');
       await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[String(mid)]);
       // Station IDs are globally allocated, so `id > count` is NOT a valid per-Manager count rule.
-      const ranked=await c.query(`SELECT id,ROW_NUMBER() OVER (ORDER BY id) AS rn FROM stations WHERE manager_id=$1 ORDER BY id FOR UPDATE`,[mid]);
-      const overflow=ranked.rows.filter(r=>Number(r.rn)>keep).map(r=>Number(r.id));
+      // Equivalent to ROW_NUMBER() OVER (ORDER BY id), but lock base station rows directly; PostgreSQL forbids FOR UPDATE with window functions.
+      const ranked=await c.query(`SELECT id FROM stations WHERE manager_id=$1 ORDER BY id FOR UPDATE`,[mid]);
+      const overflow=ranked.rows.slice(keep).map(r=>Number(r.id));
       if(overflow.length){
         const active=await c.query(`SELECT DISTINCT g.station_id FROM game_sessions g WHERE g.manager_id=$1 AND g.station_id=ANY($2::int[]) AND g.status IN ('ACTIVE','PAUSED')`,[mid,overflow]);
         if(active.rows.length){

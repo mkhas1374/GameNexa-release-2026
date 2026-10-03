@@ -880,12 +880,12 @@ IconButton(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(filteredDebtors, key = { it.first }) { (customerId, transList) ->
+                        itemsIndexed(filteredDebtors, key = { index, group -> "debtor_${group.first}_$index" }) { _, (customerId, transList) ->
                             val customerName = transList.first().customerName
                             val totalDebt = transList.sumOf { it.amount - it.paidAmount }
                             DebtorGroupCard(
                                 customerName = customerName,
-                                totalDebt = totalDebt.toDouble(),
+                                totalDebt = totalDebt,
                                 transactions = transList,
                                 lang = lang,
                                 onUpdateStatus = { trans, st -> onUpdateTransactionStatus(trans, st) },
@@ -1991,6 +1991,14 @@ fun PointHistoryDialog(
     onDismiss: () -> Unit
 ) {
     val pointLogs by viewModel.getPointLogs(customer.id).collectAsState(initial = emptyList())
+    val gnLedgerEntries by viewModel.allGnLedgerEntries.collectAsState()
+    val customerTransactions by viewModel.customerTransactions.collectAsState()
+    val customerGnLedger = remember(gnLedgerEntries, customer.id) {
+        gnLedgerEntries.filter { it.customerId == customer.id }.sortedByDescending { it.timestamp }
+    }
+    val unsettledTransactions = remember(customerTransactions, customer.id) {
+        customerTransactions.filter { it.customerId == customer.id && (it.status == "DEBTOR" || it.status == "UNREVIEWED") }.sortedByDescending { it.timestamp }
+    }
     var purchasePointsInput by remember { mutableStateOf("") }
     var purchaseTitleInput by remember { mutableStateOf("خرید امتیاز از گیم‌نت") }
 
@@ -2017,6 +2025,41 @@ fun PointHistoryDialog(
                     .heightIn(max = 400.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                if (customerGnLedger.isNotEmpty() || unsettledTransactions.isNotEmpty()) {
+                    Card(
+                        shape = RoundedCornerShape(8.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.18f))
+                    ) {
+                        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Text("💎 وضعیت GN و تسویه", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            customerGnLedger.forEach { entry ->
+                                val statusLabel = when (entry.status.uppercase()) {
+                                    "PENDING" -> "در انتظار تسویه"
+                                    "AVAILABLE" -> "تسویه شده"
+                                    "REVERSED" -> "برگشت‌خورده"
+                                    else -> entry.status
+                                }
+                                val sign = if (entry.gnAmount >= 0) "+" else ""
+                                Text(
+                                    text = "$sign${String.format(Locale.US, "%,d", entry.gnAmount)} GN • $statusLabel • ${entry.description.ifBlank { entry.transactionType }}",
+                                    fontSize = 10.sp,
+                                    color = if (entry.status == "PENDING") Color(0xFFE65100) else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            unsettledTransactions.forEach { tx ->
+                                val remaining = (tx.amount - tx.paidAmount).coerceAtLeast(0L)
+                                val label = if (tx.status == "DEBTOR") "تسویه نشده" else "بررسی نشده"
+                                Text(
+                                    text = "${tx.title.ifBlank { "فاکتور" }} • مانده ${String.format(Locale.US, "%,d", remaining)} تومان • $label",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
                 // Purchase / Add GN Points section
                 Card(
                     shape = RoundedCornerShape(8.dp),
@@ -2393,7 +2436,7 @@ fun CustomerFormDialog(
     var description by remember(customer) { mutableStateOf(customer?.description ?: "") }
     var invitedByCode by remember(customer) { mutableStateOf(if (customer?.invitedByCode.equals("null", ignoreCase = true)) "" else (customer?.invitedByCode ?: "")) }
     var manualPointsInput by remember(customer) { mutableStateOf("") }
-    var password by remember(customer) { mutableStateOf(customer?.password ?: "") }
+    var password by remember(customer) { mutableStateOf("") }
 
     val pickContactLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickContact()
@@ -2544,10 +2587,10 @@ fun CustomerFormDialog(
                                                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                                         val clip = android.content.ClipData.newPlainText(
                                                             "GameNexa Customer Account",
-                                                            "نام کاربری: ${phoneNumber.trim()}\nرمز عبور: $password\nورود به اپلیکیشن مشتریان GameNexa"
+                                                            "نام کاربری: ${phoneNumber.trim()}\nورود به اپلیکیشن مشتریان GameNexa"
                                                         )
                                                         clipboard.setPrimaryClip(clip)
-                                                        Toast.makeText(context, "اطلاعات حساب مشتری کپی شد!", Toast.LENGTH_SHORT).show()
+                                                        Toast.makeText(context, "نام کاربری کپی شد؛ رمز عبور را جداگانه منتقل کنید.", Toast.LENGTH_SHORT).show()
                                                     }
                                                 ) {
                                                     Icon(Icons.Default.ContentCopy, contentDescription = "کپی", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
@@ -2588,10 +2631,10 @@ fun CustomerFormDialog(
                                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                                 val clip = android.content.ClipData.newPlainText(
                                                     "GameNexa Customer Account",
-                                                    "نام کاربری: ${phoneNumber.trim()}\nرمز عبور: $password\nورود به اپلیکیشن مشتریان GameNexa"
+                                                    "نام کاربری: ${phoneNumber.trim()}\nورود به اپلیکیشن مشتریان GameNexa"
                                                 )
                                                 clipboard.setPrimaryClip(clip)
-                                                Toast.makeText(context, "مشخصات ورود کپی شد!", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(context, "نام کاربری کپی شد؛ رمز عبور در کلیپ‌بورد قرار نگرفت.", Toast.LENGTH_SHORT).show()
                                             },
                                             shape = RoundedCornerShape(8.dp),
                                             modifier = Modifier.weight(1f),
@@ -3148,7 +3191,7 @@ fun ReviewedGroupCard(
 @Composable
 fun DebtorGroupCard(
     customerName: String,
-    totalDebt: Double,
+    totalDebt: Long,
     transactions: List<CustomerTransaction>,
     lang: String,
     onUpdateStatus: (CustomerTransaction, String) -> Unit,

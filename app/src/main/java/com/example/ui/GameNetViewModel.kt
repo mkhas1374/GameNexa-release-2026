@@ -205,7 +205,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     if (transaction.customerId > 0L && transaction.id > 0L && SelfHostedManager.syncCustomerTransactionToCloud(transaction)) {
                         repository.saveSetting(setting.key, "")
                     }
-                } catch (_: Exception) { }
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
     }
 
@@ -823,7 +823,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         }
                     }
                     if (loginSuccess) break
-                } catch (_: Exception) {}
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
 
             if (loginSuccess && (serverManagerId.isBlank() || serverToken.isBlank())) {
@@ -1000,7 +1000,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 val cloudCust = onlineResult.getOrNull()!!
                 try {
                     repository.insertCustomer(cloudCust)
-                } catch (ignored: Exception) {}
+                } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
 
                 withContext(Dispatchers.Main) {
                     _isCustomerAuthenticated.value = true
@@ -1042,9 +1042,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         _isCustomerAuthenticated.value = false
         SelfHostedManager.setCurrentCustomer(null)
         SelfHostedManager.setManagerId("")
-        NetworkClient.managerAuthToken = null
-        NetworkClient.customerAuthToken = null
         viewModelScope.launch(Dispatchers.IO) {
+            try { NetworkClient.getApi(_serverUrl.value).logoutSession() } catch (_: Exception) { /* local logout still completes */ }
+            NetworkClient.managerAuthToken = null
+            NetworkClient.customerAuthToken = null
             encryptSetting("enc_session_type", "")
             encryptSetting("enc_customer_phone", "")
             encryptSetting("enc_customer_auth_token", "")
@@ -3252,8 +3253,32 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
                         val newCustPts = (existingCust.points + totalSessionPts).coerceAtLeast(0L)
                         val remainingDebt = (rawTotal - initialPaid).coerceAtLeast(0L)
-                        val updatedCust = existingCust.copy(debt = existingCust.debt + remainingDebt, points = newCustPts)
+                        val gameGnReward = ((gameCost / 100_000L) * _gameRewardRate.value).coerceAtLeast(0L)
+                        val buffetGnReward = ((buffetCost / 100_000L) * _buffetRewardRate.value).coerceAtLeast(0L)
+                        val sessionGnReward = (gameGnReward + buffetGnReward).coerceAtLeast(0L)
+                        val gnStatus = if (isFullyPaid) "AVAILABLE" else "PENDING"
+                        val updatedCust = existingCust.copy(
+                            debt = existingCust.debt + remainingDebt,
+                            points = newCustPts,
+                            availableGn = existingCust.availableGn + if (gnStatus == "AVAILABLE") sessionGnReward else 0L,
+                            pendingGn = existingCust.pendingGn + if (gnStatus == "PENDING") sessionGnReward else 0L
+                        )
                         repository.insertCustomer(updatedCust)
+                        if (sessionGnReward > 0L) {
+                            repository.addGnLedgerEntry(
+                                GnLedgerEntry(
+                                    customerId = cid,
+                                    customerName = cName,
+                                    gnAmount = sessionGnReward,
+                                    transactionType = "GAME_REWARD",
+                                    source = "REWARD",
+                                    status = gnStatus,
+                                    timestamp = now,
+                                    referenceId = "SESSION_${now}_CUST_${cid}",
+                                    description = if (gnStatus == "PENDING") "پاداش بازی؛ تا تسویه کامل فاکتور در انتظار است" else "پاداش بازی؛ فاکتور تسویه شده"
+                                )
+                            )
+                        }
 
                         if (totalSessionPts > 0) {
                             val consoleName = trans.title.ifBlank { station.consoleType }
@@ -3816,10 +3841,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     // 2. Upload all current stations
                     val newStations = repository.allStationStates.firstOrNull() ?: emptyList()
                     for (st in newStations) {
-                        try { api.saveStation(st) } catch (e: Exception) {}
+                        try { api.saveStation(st) } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
                     }
                 }
-            } catch (e: Exception) {}
+            } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
         }
     }
 
@@ -4040,7 +4065,6 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     inviteCode = existing.inviteCode
                     existingPoints = existing.points
                     invitePointsAwarded = existing.invitePointsAwarded
-                    if (finalPassword.isBlank()) finalPassword = existing.password
                 }
             }
 
@@ -4064,7 +4088,6 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 id = id,
                 fullName = trimmedName,
                 phoneNumber = trimmedPhone,
-                password = finalPassword,
                 debt = debt,
                 credit = credit,
                 description = description,
@@ -4083,7 +4106,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             // Real-time Cloud sync to self-hosted server
             try {
                 SelfHostedManager.upsertCustomer(customer.copy(id = finalCustomerId))
-            } catch (ignored: Exception) {}
+            } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
 
             logOperatorActivity(
                 actionTitle = if (id == 0L) "افزودن مشتری جدید" else "ویرایش اطلاعات مشتری",
@@ -4122,7 +4145,6 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 id = 0L,
                 fullName = trimmedName,
                 phoneNumber = trimmedPhone,
-                password = cleanPass,
                 debt = debt,
                 credit = credit,
                 description = description.trim(),
@@ -4140,7 +4162,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             // Real-time Cloud sync to self-hosted server
             try {
                 SelfHostedManager.upsertCustomer(newCustomer.copy(id = newId))
-            } catch (ignored: Exception) {}
+            } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
 
             logOperatorActivity("تبدیل مهمان به مشتری", "نام: $trimmedName | تلفن: $trimmedPhone")
 
@@ -4236,7 +4258,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     reservation.id,
                     "manager-cancel:" + reservation.id
                 )
-            } catch (ignored: Exception) {}
+            } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
         }
     }
 
@@ -4423,7 +4445,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     _serverUrl.value = candidateUrl
                     SelfHostedManager.setCustomServerUrl(candidateUrl)
                     break
-                } catch (_: Exception) {}
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
 
             if (trialCheck != null) {
@@ -4731,7 +4753,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         SelfHostedManager.setCustomServerUrl(u)
                         repository.saveSetting("server_url", u)
                         break
-                    } catch (_: Throwable) {}
+                    } catch (e: Throwable) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
                 }
 
                 if (serverTrialStatus != null) {
@@ -5067,7 +5089,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         fetched = true
                         break
                     }
-                } catch (e: Exception) {}
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
             if (!fetched && _subscriptionPlans.value.isEmpty()) {
                 _subscriptionPlans.value = sanitizeAndOrderPlans(emptyList())
@@ -5112,7 +5134,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         try {
                             api.checkSubscription(deviceId = getDeviceId())
                             connected = true
-                        } catch (e3: Exception) {}
+                        } catch (e3: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e3) }
                     }
                 }
                 if (connected) {
@@ -5124,11 +5146,11 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         if (plans.isNotEmpty()) {
                             _subscriptionPlans.value = sanitizeAndOrderPlans(plans)
                         }
-                    } catch (ignored: Exception) {}
+                    } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
                     verifyLicenseStatus()
                     return
                 }
-            } catch (e: Exception) {}
+            } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
         }
         if (_subscriptionPlans.value.isEmpty()) {
             _subscriptionPlans.value = sanitizeAndOrderPlans(emptyList())
@@ -5307,98 +5329,24 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         email: String? = null,
         onResult: (Boolean, String) -> Unit
     ) {
-        val cleanUsername = username.trim()
+        val cleanName = username.trim()
         val cleanPassword = password.trim()
         val cleanPhone = phone?.trim()?.ifBlank { null }
-        val cleanEmail = email?.trim()?.ifBlank { null }
-
-        if (cleanUsername.length < 3) {
-            onResult(false, "نام کاربری باید حداقل 3 کاراکتر باشد.")
-            return
-        }
-        if (cleanPhone.isNullOrBlank() || cleanPhone.length < 10) {
-            onResult(false, "لطفاً شماره موبایل معتبر (مثال: 09123456789) وارد کنید.")
-            return
-        }
-        if (cleanEmail.isNullOrBlank() || !cleanEmail.contains("@") || !cleanEmail.contains(".")) {
-            onResult(false, "لطفاً آدرس ایمیل معتبر (مثال: name@domain.com) وارد کنید.")
-            return
-        }
-        if (cleanPassword.length < 4) {
-            onResult(false, "رمز عبور باید حداقل 4 کاراکتر باشد.")
-            return
-        }
+        if (cleanName.length < 3) { onResult(false, "نام و نام خانوادگی باید حداقل 3 کاراکتر باشد."); return }
+        if (cleanPhone.isNullOrBlank() || cleanPhone.length < 10) { onResult(false, "لطفاً شماره موبایل معتبر (مثال: 09123456789) وارد کنید."); return }
+        if (cleanPassword.length < 8) { onResult(false, "رمز عبور باید حداقل 8 کاراکتر باشد."); return }
+        if (password != cleanPassword) { onResult(false, "رمز عبور نمی‌تواند با فاصله ابتدا یا انتها ذخیره شود."); return }
 
         _authState.value = AuthState.Authenticating
-
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                NetworkClient.authToken = null
-                val api = NetworkClient.getApi(_serverUrl.value)
-                val req = UserRegisterRequest(
-                    username = cleanUsername,
-                    password = cleanPassword,
-                    phone = cleanPhone,
-                    email = cleanEmail,
-                    role = "OPERATOR"
-                )
-                val response = api.registerUser(req)
-                val token = response.token
-                val user = response.user
-
-                if (response.success && !token.isNullOrBlank() && user != null && user.realId.isNotBlank()) {
-                    val userId = user.realId
-                    val effectiveUsername = user.username ?: cleanUsername
-                    val effectivePhone = user.phone ?: cleanPhone
-                    val effectiveRole = user.role ?: "OPERATOR"
-                    val effectiveEmail = user.email ?: cleanEmail
-
-                    // Encrypted local session storage
-                    encryptSetting("enc_auth_token", token)
-                    encryptSetting("enc_user_id", userId)
-                    encryptSetting("enc_auth_username", effectiveUsername)
-                    encryptSetting("enc_auth_phone", effectivePhone)
-                    encryptSetting("enc_auth_role", effectiveRole)
-                    encryptSetting("enc_auth_email", effectiveEmail)
-                    encryptSetting("enc_auth_password", "")
-                    if (effectivePhone.isNotBlank()) {
-                        encryptSetting("enc_user_phone", effectivePhone)
-                    }
-
-                    NetworkClient.authToken = token
-
-                    _authState.value = AuthState.Authenticated(
-                        userId = userId,
-                        username = effectiveUsername,
-                        phone = effectivePhone,
-                        role = effectiveRole,
-                        email = effectiveEmail,
-                        token = token
-                    )
-                    _showAuthDialog.value = false
-
-                    // Idempotent device binding with real backend users.id
-                    bindDeviceToUser(userId)
-
-                    withContext(Dispatchers.Main) {
-                        onResult(true, "ثبت‌نام با موفقیت انجام شد. خوش آمدید!")
-                    }
+            val result = SelfHostedManager.registerCustomer(cleanName, cleanPhone, cleanPassword)
+            withContext(Dispatchers.Main) {
+                if (result.isSuccess) {
+                    _authState.value = AuthState.Unauthenticated
+                    onResult(true, "ثبت‌نام مشتری با موفقیت انجام شد.")
                 } else {
-                    val errorMsg = response.error.ifBlank { response.message }.ifBlank { "ثبت‌نام در سرور ناموفق بود." }
-                    _authState.value = AuthState.AuthenticationError(errorMsg)
-                    withContext(Dispatchers.Main) { onResult(false, errorMsg) }
-                }
-            } catch (e: Exception) {
-                if (e is retrofit2.HttpException && e.code() == 409) {
-                    val errorMsg = "این نام کاربری، شماره موبایل یا ایمیل قبلاً در سامانه ثبت شده است. لطفاً از تب «ورود» استفاده کنید."
-                    _authState.value = AuthState.AuthenticationError(errorMsg)
-                    withContext(Dispatchers.Main) {
-                        onResult(false, errorMsg)
-                    }
-                } else {
-                    val errorMsg = "ثبت‌نام نیازمند اتصال موفق به سرور است."
-                    _authState.value = AuthState.AuthenticationError(errorMsg)
-                    withContext(Dispatchers.Main) { onResult(false, errorMsg) }
+                    _authState.value = AuthState.Unauthenticated
+                    onResult(false, result.exceptionOrNull()?.message ?: "ثبت‌نام ناموفق بود.")
                 }
             }
         }
@@ -5584,6 +5532,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     fun logout(onComplete: (() -> Unit)? = null) {
         viewModelScope.launch(Dispatchers.IO) {
+            try { NetworkClient.getApi(_serverUrl.value).logoutSession() } catch (_: Exception) { /* local logout still completes */ }
             encryptSetting("enc_auth_token", "")
             encryptSetting("enc_user_id", "")
             encryptSetting("enc_auth_username", "")
@@ -5735,7 +5684,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     totalGnPen = obj.optLong("totalGnPenalized", 0L)
                     totalLpPen = obj.optLong("totalLpPenalized", 0L)
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
         }
 
         return AbsenceStatusInfo(
@@ -5797,7 +5746,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     } else {
                         prefs.edit().remove(statePrefKey).apply()
                     }
-                } catch (_: Exception) {}
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
 
             if (absentDays < 21) {
@@ -6558,17 +6507,15 @@ fun GameNetViewModel.generateCustomerPassword(): String {
                 })
             }
             val hourlyRate = getHourlyRate(state.consoleType, state.controllerCount)
-            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
-                try {
-                    com.example.data.network.SelfHostedManager.syncStationToCloud(
-                        station = state,
-                        ordersJsonStr = ordersArray.toString(),
-                        hourlyRate = hourlyRate,
-                        buffetCost = buffetSum
-                    )
-                } catch(e: Exception) {
-                    e.printStackTrace()
-                }
+            try {
+                com.example.data.network.SelfHostedManager.syncStationToCloud(
+                    station = state,
+                    ordersJsonStr = ordersArray.toString(),
+                    hourlyRate = hourlyRate,
+                    buffetCost = buffetSum
+                )
+            } catch(e: Exception) {
+                android.util.Log.e("GameNetViewModel", "Station state sync failed", e)
             }
         } catch(e: Exception) {
             e.printStackTrace()

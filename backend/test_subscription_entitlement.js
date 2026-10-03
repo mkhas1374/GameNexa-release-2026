@@ -1,7 +1,7 @@
 const {Pool}=require('pg'); const jwt=require('jsonwebtoken'); require('dotenv').config();
 const pool=new Pool({connectionString:process.env.DATABASE_URL}); const base='http://127.0.0.1:3000';
 const sm='sm_ent_'+Date.now(), mgr='mgr_ent_'+Date.now(), dev1='dev_ent_1_'+Date.now(), dev2='dev_ent_2_'+Date.now(), trial='trial_ent_'+Date.now();
-const tok=(id,role)=>jwt.sign({id,managerId:id,role},process.env.JWT_SECRET,{expiresIn:'1h'});
+const tok=(id,role)=>jwt.sign({id,managerId:id,role,tv:1},process.env.JWT_SECRET,{expiresIn:'1h'});
 async function req(path,opts={}){const r=await fetch(base+path,opts); const t=await r.text(); let d={}; try{d=JSON.parse(t)}catch{} return {s:r.status,d};}
 async function main(){let pass=0,fail=0; const ok=(x,n)=>{if(x){console.log('PASS:',n);pass++}else{console.log('FAIL:',n);fail++}};
 try{

@@ -177,6 +177,9 @@ interface GameNetApi {
     @POST("api/auth/manager/login")
     suspend fun loginUser(@Body body: UserLoginRequest): UserAuthResponse
 
+    @POST("api/auth/logout")
+    suspend fun logoutSession(): retrofit2.Response<okhttp3.ResponseBody>
+
     // Diagnostic, Health & Ping Endpoints
     @GET("api/v1/super-manager/ping")
     suspend fun pingSuperManager(): retrofit2.Response<okhttp3.ResponseBody>
@@ -258,11 +261,10 @@ interface GameNetApi {
 
 @com.squareup.moshi.JsonClass(generateAdapter = true)
 data class UserRegisterRequest(
-    @com.squareup.moshi.Json(name = "username") val username: String,
-    @com.squareup.moshi.Json(name = "password") val password: String,
-    @com.squareup.moshi.Json(name = "phone") val phone: String? = null,
-    @com.squareup.moshi.Json(name = "email") val email: String? = null,
-    @com.squareup.moshi.Json(name = "role") val role: String = "OPERATOR"
+    @com.squareup.moshi.Json(name = "phone_number") val phoneNumber: String,
+    @com.squareup.moshi.Json(name = "manager_id") val managerId: String,
+    @com.squareup.moshi.Json(name = "full_name") val fullName: String,
+    @com.squareup.moshi.Json(name = "password") val password: String
 )
 
 @com.squareup.moshi.JsonClass(generateAdapter = true)

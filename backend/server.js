@@ -73,8 +73,9 @@ const requireSuperManagerAuth = async (req, res, next) => {
     try {
         const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
         if (decoded.role !== 'SUPER_MANAGER' || !decoded.id || !decoded.managerId || String(decoded.id) !== String(decoded.managerId)) return res.status(403).json({ error: 'Forbidden' });
-        const account = await pool.query("SELECT id, role FROM managers WHERE id = $1 AND role = 'SUPER_MANAGER' LIMIT 1", [decoded.id]);
+        const account = await pool.query("SELECT id, role, token_version FROM managers WHERE id = $1 AND role = 'SUPER_MANAGER' LIMIT 1", [decoded.id]);
         if (!account.rows.length) return res.status(401).json({ error: 'Manager account no longer exists' });
+        if (Number(account.rows[0].token_version || 1) !== Number(decoded.tv)) return res.status(401).json({ error: 'Session has been revoked', code: 'TOKEN_REVOKED' });
         const entitlement = await pool.query("SELECT 1 FROM manager_entitlements WHERE manager_id=$1 AND entitlement_type='SUPER_MANAGER_LIFETIME' AND status='ACTIVE' AND starts_at<=NOW() AND expires_at>NOW() LIMIT 1", [decoded.id]);
         if (!entitlement.rows.length) return res.status(403).json({ error: 'Active Super Manager entitlement required', code: 'SUPER_MANAGER_ENTITLEMENT_REQUIRED' });
         req.user = decoded;
@@ -92,15 +93,16 @@ const requireManagerAuth = async (req, res, next) => {
     const token = authHeader.slice(7).trim();
     try {
         const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
-        if (!['MANAGER', 'SUPER_MANAGER'].includes(decoded.role) || !decoded.id || !decoded.managerId || String(decoded.id) !== String(decoded.managerId)) {
+        if (!['MANAGER', 'SUPER_MANAGER'].includes(decoded.role) || !decoded.id || !decoded.managerId || String(decoded.id) !== String(decoded.managerId) || !Number.isInteger(Number(decoded.tv))) {
             return res.status(403).json({ error: 'Forbidden' });
         }
         const managerHeader = String(req.headers['x-manager-id'] || '').trim();
         if (!managerHeader || managerHeader !== String(decoded.managerId)) {
             return res.status(403).json({ error: 'Manager identity header mismatch' });
         }
-        const account = await pool.query("SELECT id, role FROM managers WHERE id = $1 AND role = ANY($2::text[]) LIMIT 1", [decoded.id, ['MANAGER', 'SUPER_MANAGER']]);
+        const account = await pool.query("SELECT id, role, token_version FROM managers WHERE id = $1 AND role = ANY($2::text[]) LIMIT 1", [decoded.id, ['MANAGER', 'SUPER_MANAGER']]);
         if (!account.rows.length) return res.status(401).json({ error: 'Manager account no longer exists' });
+        if (Number(account.rows[0].token_version || 1) !== Number(decoded.tv)) return res.status(401).json({ error: 'Session has been revoked', code: 'TOKEN_REVOKED' });
         req.user = decoded;
         next();
     } catch (e) {
@@ -117,11 +119,12 @@ const requireCustomerAuth = async (req, res, next) => {
     const token = authHeader.slice(7).trim();
     try {
         const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
-        if (decoded.role !== 'CUSTOMER' || !decoded.id || !decoded.managerId) {
+        if (decoded.role !== 'CUSTOMER' || !decoded.id || !decoded.managerId || !Number.isInteger(Number(decoded.tv))) {
             return res.status(403).json({ error: 'Forbidden' });
         }
-        const account = await pool.query("SELECT id, manager_id FROM customers WHERE id = $1 AND manager_id = $2 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' LIMIT 1",[decoded.id, decoded.managerId]);
+        const account = await pool.query("SELECT id, manager_id, token_version FROM customers WHERE id = $1 AND manager_id = $2 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' LIMIT 1",[decoded.id, decoded.managerId]);
         if (!account.rows.length) return res.status(401).json({ error: 'Customer account no longer exists' });
+        if (Number(account.rows[0].token_version || 1) !== Number(decoded.tv)) return res.status(401).json({ error: 'Session has been revoked', code: 'TOKEN_REVOKED' });
         req.user = decoded;
         next();
     } catch (e) {
@@ -239,7 +242,7 @@ app.post('/api/auth/manager/login', rateLimit({ windowMs: 60_000, max: 10 }), as
             }
         }
 
-        const token = jwt.sign({ id: manager.id, managerId: manager.id, role: manager.role || 'MANAGER' }, JWT_SECRET, { expiresIn: '24h' });
+        const token = jwt.sign({ id: manager.id, managerId: manager.id, role: manager.role || 'MANAGER', tv: Number(manager.token_version || 1) }, JWT_SECRET, { expiresIn: '24h' });
         res.json({ token, managerId: manager.id, role: manager.role || 'MANAGER' });
     } catch (e) {
         console.error('Manager login error:', e);
@@ -253,8 +256,8 @@ app.post('/api/auth/customer/register', rateLimit({ windowMs: 60_000, max: 5 }),
     const managerId = String(req.body?.manager_id || req.body?.managerId || '').trim();
     const fullName = String(req.body?.full_name || req.body?.fullName || '').trim();
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
-    if (!phoneNumber || !managerId || !fullName || password.length < 4) {
-        return res.status(400).json({ error: 'phone_number, manager_id, full_name and a password of at least 4 characters are required' });
+    if (!phoneNumber || !managerId || !fullName || password.length < 8) {
+        return res.status(400).json({ error: 'phone_number, manager_id, full_name and a password of at least 8 characters is required' });
     }
     try {
         const manager = await pool.query("SELECT id FROM managers WHERE id = $1 AND role = 'MANAGER' LIMIT 1", [managerId]);
@@ -267,8 +270,8 @@ app.post('/api/auth/customer/register', rateLimit({ windowMs: 60_000, max: 5 }),
             RETURNING id, manager_id, phone_number, full_name, club_tier, wallet_balance, gn_balance, lp_balance, created_at, updated_at`,
             [managerId, phoneNumber, fullName, hash]);
         const customer = created.rows[0];
-        const token = jwt.sign({ id: customer.id, managerId, role: 'CUSTOMER' }, JWT_SECRET, { expiresIn: '24h' });
-        res.status(201).json({ success: true, token, customerId: customer.id, customer });
+        const token = jwt.sign({ id: customer.id, managerId, role: 'CUSTOMER', tv: 1 }, JWT_SECRET, { expiresIn: '24h' });
+        res.status(201).json({ success: true, token, customerId: customer.id, customer, user: { id: customer.id, username: customer.phone_number, phone: customer.phone_number, role: 'CUSTOMER', email: null } });
     } catch (e) {
         console.error('Customer registration error:', e);
         res.status(500).json({ error: 'Internal server error' });
@@ -283,12 +286,11 @@ app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), a
     try {
         const result = await pool.query("SELECT * FROM customers WHERE phone_number = $1 AND manager_id = $2 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%'", [phone_number, manager_id]);
         const customer = result.rows[0];
-        if (!customer) return res.status(401).json({ error: 'Customer not found' });
-        if (!customer.password_hash) return res.status(401).json({ error: 'Customer password is not configured' });
+        if (!customer || !customer.password_hash) return res.status(401).json({ error: 'Invalid credentials' });
         const valid = await bcrypt.compare(password, customer.password_hash);
         if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
-        const token = jwt.sign({ id: customer.id, managerId: customer.manager_id, role: 'CUSTOMER' }, JWT_SECRET, { expiresIn: '24h' });
+        const token = jwt.sign({ id: customer.id, managerId: customer.manager_id, role: 'CUSTOMER', tv: Number(customer.token_version || 1) }, JWT_SECRET, { expiresIn: '24h' });
         res.json({ token, customerId: customer.id });
     } catch (e) {
         res.status(500).json({ error: 'Internal server error' });
@@ -296,6 +298,19 @@ app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), a
 });
 
 
+app.post('/api/auth/logout', async (req,res) => {
+    const authHeader=String(req.headers.authorization||'');
+    if(!/^Bearer\s+\S+$/i.test(authHeader)) return res.status(401).json({error:'No token provided'});
+    try {
+      const decoded=jwt.verify(authHeader.slice(7).trim(),JWT_SECRET,{algorithms:['HS256']});
+      if(decoded.role==='CUSTOMER') {
+        await pool.query('UPDATE customers SET token_version=token_version+1,updated_at=NOW() WHERE id=$1 AND manager_id=$2',[decoded.id,decoded.managerId]);
+      } else if(decoded.role==='MANAGER'||decoded.role==='SUPER_MANAGER') {
+        await pool.query('UPDATE managers SET token_version=token_version+1,updated_at=NOW() WHERE id=$1 AND role=$2',[decoded.id,decoded.role]);
+      } else return res.status(403).json({error:'Forbidden'});
+      res.json({success:true});
+    } catch(e) { res.status(401).json({error:'Invalid token'}); }
+});
 
 // Canonical server clock. Clients use this only as a reference/display clock;
 // financial lifecycle timestamps remain server-authoritative.
@@ -310,7 +325,7 @@ app.get('/api/v1/time', rateLimit({ windowMs: 60_000, max: 60 }), (req, res) => 
 // --- TRIAL 24H CANONICAL PUBLIC FLOW ---
 const normalizeTrialIdentity = (value) => String(value || '').trim().slice(0, 255);
 
-app.post('/api/v1/trial/start', rateLimit({ windowMs: 60_000, max: 5 }), async (req, res) => {
+app.post('/api/v1/trial/start', rateLimit({ windowMs: 60_000, max: 10 }), async (req, res) => {
     const authHeader = String(req.headers.authorization || '');
     if (/^Bearer\s+\S+$/i.test(authHeader)) {
         try {
@@ -318,7 +333,9 @@ app.post('/api/v1/trial/start', rateLimit({ windowMs: 60_000, max: 5 }), async (
             if (['MANAGER', 'SUPER_MANAGER'].includes(decoded?.role)) {
                 return res.status(403).json({ success:false, trialActive:false, isExpired:false, code:'MANAGER_TRIAL_FORBIDDEN', message:'Authenticated Manager cannot activate Trial.' });
             }
-        } catch (_) {}
+        } catch (e) {
+            console.warn('Trial bearer token validation failed:', e?.message || e);
+        }
     }
     const deviceId = normalizeTrialIdentity(req.body?.deviceId || req.body?.device_id);
     const deviceFingerprint = normalizeTrialIdentity(req.body?.deviceFingerprint || req.body?.device_fingerprint);
@@ -665,6 +682,7 @@ app.put('/api/v1/super-manager/managers/:id', requireSuperManagerAuth, async (re
             const bcrypt = require('bcrypt');
             fields.push(`password_hash = $${i++}`);
             values.push(await bcrypt.hash(String(password), 10));
+            fields.push('token_version = token_version + 1');
         }
         if (!fields.length) return res.status(400).json({ error: 'No editable fields supplied' });
         values.push(managerId);
@@ -1500,6 +1518,8 @@ const ensureRuntimeSchema = async () => {
     try {
         await client.query('BEGIN');
         await client.query('ALTER TABLE invoices ALTER COLUMN customer_id DROP NOT NULL');
+        await client.query('ALTER TABLE managers ADD COLUMN IF NOT EXISTS token_version integer NOT NULL DEFAULT 1');
+        await client.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS token_version integer NOT NULL DEFAULT 1');
         await client.query('COMMIT');
     } catch (e) {
         try { await client.query('ROLLBACK'); } catch (_) {}

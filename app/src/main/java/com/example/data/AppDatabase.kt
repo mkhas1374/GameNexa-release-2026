@@ -28,7 +28,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         BehaviorLog::class,
         ReferralProgressRecord::class
     ],
-    version = 13,
+    version = 14,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -89,6 +89,26 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 // Passwords are server-authoritative and must never remain in the local Room database.
                 db.execSQL("UPDATE customers SET password = ''")
+            }
+        }
+
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Passwords are server-authoritative. Rebuild the local customer table without the legacy password column.
+                db.execSQL("""
+                    CREATE TABLE customers_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        fullName TEXT NOT NULL, phoneNumber TEXT NOT NULL, debt INTEGER NOT NULL, credit INTEGER NOT NULL,
+                        description TEXT NOT NULL, points INTEGER NOT NULL, availableGn INTEGER NOT NULL, pendingGn INTEGER NOT NULL,
+                        lp INTEGER NOT NULL, tier TEXT NOT NULL, lastActivityTimestamp INTEGER NOT NULL, totalQualifiedSpend INTEGER NOT NULL,
+                        totalVisitsCount INTEGER NOT NULL, lastTierReviewTimestamp INTEGER NOT NULL, inviteCode TEXT NOT NULL,
+                        invitedByCode TEXT NOT NULL, invitePointsAwarded INTEGER NOT NULL, rewardsConsumed INTEGER NOT NULL
+                    )
+                """)
+                db.execSQL("""INSERT INTO customers_new(id,fullName,phoneNumber,debt,credit,description,points,availableGn,pendingGn,lp,tier,lastActivityTimestamp,totalQualifiedSpend,totalVisitsCount,lastTierReviewTimestamp,inviteCode,invitedByCode,invitePointsAwarded,rewardsConsumed)
+                    SELECT id,fullName,phoneNumber,debt,credit,description,points,availableGn,pendingGn,lp,tier,lastActivityTimestamp,totalQualifiedSpend,totalVisitsCount,lastTierReviewTimestamp,inviteCode,invitedByCode,invitePointsAwarded,rewardsConsumed FROM customers""")
+                db.execSQL("DROP TABLE customers")
+                db.execSQL("ALTER TABLE customers_new RENAME TO customers")
             }
         }
 
@@ -179,7 +199,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_9_10,
                     MIGRATION_10_11,
                     MIGRATION_11_12,
-                    MIGRATION_12_13
+                    MIGRATION_12_13,
+                    MIGRATION_13_14
                 )
                 .build()
                 INSTANCE = instance

@@ -433,7 +433,7 @@ object SelfHostedManager {
                 return@withContext Result.failure(Exception("دریافت اطلاعات مشتری پس از ورود ناموفق بود."))
             }
 
-            val cust = parseCustomerObject(JSONObject(profileBody)).copy(password = cleanPass)
+            val cust = parseCustomerObject(JSONObject(profileBody))
             setManagerId(managerId)
             _currentLoggedInCustomer.value = cust
             _isConnected.value = true
@@ -498,7 +498,7 @@ object SelfHostedManager {
                 val jsonObj = JSONObject(body)
                 if (jsonObj.optBoolean("success", true)) {
                     val cObj = if (jsonObj.has("customer")) jsonObj.getJSONObject("customer") else jsonObj
-                    val newCust = parseCustomerObject(cObj).copy(password = passwordText.trim())
+                    val newCust = parseCustomerObject(cObj)
                     val authToken = jsonObj.optString("token", "")
                     if (authToken.isNotBlank()) NetworkClient.customerAuthToken = authToken
                     setManagerId(managerId)
@@ -545,7 +545,7 @@ object SelfHostedManager {
     suspend fun upsertCustomer(customer: Customer): Boolean = withContext(Dispatchers.IO) {
         try {
             val json=JSONObject().apply {
-                put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber); if (customer.password.isNotBlank()) put("password",customer.password)
+                put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber)
                 put("debt",customer.debt); put("credit",customer.credit); put("tier",customer.tier); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
             }
             val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
@@ -601,7 +601,7 @@ object SelfHostedManager {
                 val body=resp.body?.string().orEmpty(); if(!resp.isSuccessful||body.isBlank()){_isConnected.value=false;return@withContext false}
                 val list=ArrayList<Customer>(); extractCustomerObjects(if(body.trim().startsWith("[")) JSONArray(body) else JSONObject(body).opt("data")?:JSONArray(),list)
                 _allCloudCustomers.value=list; _isConnected.value=true
-                try{fetchRecentPaymentsFromCloud();fetchAllReservationsFromCloud()}catch(_:Exception){}
+                try{fetchRecentPaymentsFromCloud();fetchAllReservationsFromCloud()}catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in SelfHostedManager.kt", e) }
                 true
             }
         }catch(e:Exception){_isConnected.value=false;Log.w(TAG,"fetchAllFromCloud error: ${e.message}");false}
@@ -760,7 +760,6 @@ object SelfHostedManager {
             id = if (resolvedId > 0) resolvedId else System.currentTimeMillis(),
             fullName = name,
             phoneNumber = phone,
-            password = obj.optString("password", ""),
             debt = obj.optLong("debt", 0L),
             credit = obj.optLong("credit", 0L),
             points = obj.optLong("points", 0L),
@@ -904,6 +903,26 @@ object SelfHostedManager {
         } catch (e: Exception) {
             Log.w(TAG, "fetchManagerConfiguration error: ${e.message}")
             null
+        }
+    }
+
+    suspend fun saveManagerSetting(key: String, value: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject().apply { put("key", key); put("value", value) }
+                .toString().toRequestBody(JSON_MEDIA)
+            val request = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/settings")
+                .headers(getBaseHeaders())
+                .post(body)
+                .build()
+            client.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) Log.w(TAG, "Manager setting sync failed: HTTP ${response.code} $responseBody")
+                response.isSuccessful
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "saveManagerSetting error: ${e.message}")
+            false
         }
     }
 
@@ -1753,40 +1772,29 @@ object SelfHostedManager {
         gameCost: Long = 0L,
         buffetCost: Long = 0L
     ): Boolean = withContext(Dispatchers.IO) {
+        if (station.id <= 0) {
+            Log.w(TAG, "Ignoring invalid station id ${station.id} during canonical station sync")
+            return@withContext false
+        }
         try {
             val json = JSONObject().apply {
-                if (false) {
-                    put("manager_id", _currentManagerId)
-                    put("managerId", _currentManagerId)
-                }
-                put("stationId", station.id)
+                put("id", station.id)
+                put("name", "ایستگاه ${station.id}")
                 put("status", station.status)
-                put("consoleType", station.consoleType)
-                put("controllerCount", station.controllerCount)
-                put("startTimeMillis", station.startTimeMillis)
-                put("lastStateChangeMillis", station.lastStateChangeTimeMillis)
-                put("elapsedPlayingTimeMillis", station.elapsedPlayingTimeMillis)
-                put("prepaymentAmount", station.prepaymentAmount)
-                put("durationLimitMinutes", station.durationLimitMinutes)
-                put("selectedCustomerIdsStr", station.selectedCustomerIdsStr)
-                put("selectedCustomerNamesStr", station.selectedCustomerNamesStr)
-                put("customerIdsStr", station.selectedCustomerIdsStr)
-                put("customerNamesStr", station.selectedCustomerNamesStr)
-                put("ordersJson", ordersJsonStr)
-                put("hourlyRate", hourlyRate)
-                put("currentGameCost", gameCost)
-                put("currentBuffetCost", buffetCost)
-                put("splitMode", station.splitMode)
-                put("payerCustomerIdsStr", station.payerCustomerIdsStr)
-                put("payerCustomerNamesStr", station.payerCustomerNamesStr)
+                put("consoleType", station.consoleType.ifBlank { "PS5" })
+                put("controllerCount", station.controllerCount.coerceAtLeast(1))
+                put("reservable", true)
             }
             val request = Request.Builder()
-                .url("$SERVER_URL/api/v1/manager/live-stations")
+                .url("$SERVER_URL/api/v1/manager/stations")
                 .headers(getBaseHeaders())
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            val response = client.newCall(request).execute()
-            response.isSuccessful
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) Log.w(TAG, "Canonical station sync failed: HTTP ${response.code} $body")
+                response.isSuccessful
+            }
         } catch (e: Exception) {
             Log.e(TAG, "syncStationToCloud error: ${e.message}", e)
             false
