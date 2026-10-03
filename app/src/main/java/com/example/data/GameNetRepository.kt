@@ -329,8 +329,21 @@ class GameNetRepository(private val db: AppDatabase) {
                 // cannot remain hidden behind a stale local row.
                 val remote = getApi()?.getStations()?.find { it.id == id }
                 if (remote != null) {
-                    stationStateDao.insert(remote)
-                    return remote
+                    val local = stationStateDao.getById(id)
+                    // /manager/stations is a configuration resource, not the live
+                    // session resource. Its status is derived from `active` and is
+                    // therefore FREE for an enabled station. Never let that config
+                    // response overwrite a locally tracked RUNNING/PAUSED session.
+                    val merged = if (local != null && local.status in setOf("RUNNING", "PAUSED") && remote.status == "FREE") {
+                        local.copy(
+                            controllerCount = remote.controllerCount,
+                            consoleType = remote.consoleType.ifBlank { local.consoleType }
+                        )
+                    } else {
+                        remote
+                    }
+                    stationStateDao.insert(merged)
+                    return merged
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
