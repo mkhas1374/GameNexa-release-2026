@@ -4141,44 +4141,74 @@ loadSettings()
 
     fun saveStationCountSetting(count: Int) {
         viewModelScope.launch(Dispatchers.IO) {
-            repository.saveSetting("station_count", count.toString())
-            _stationCount.value = count
-            // Persist the explicit Manager station-count setting on the server as well.
-            // This must survive relaunch/re-sync and must not be inferred from station rows.
-            if (!NetworkClient.isTrialMode && SelfHostedManager.currentManagerId.isNotBlank()) {
-                SelfHostedManager.saveManagerSetting("station_count", count.toString())
+            val safeCount = count.coerceAtLeast(1)
+            val currentStates = repository.allStationStates.firstOrNull() ?: emptyList()
+            val serverSyncAvailable = !NetworkClient.isTrialMode && SelfHostedManager.currentManagerId.isNotBlank() && _serverSyncMode.value
+
+            // Server-first when connected: never hide an active station locally before the
+            // canonical server has accepted the resize. This prevents an active overflow station
+            // from becoming orphaned when the Manager lowers the configured count.
+            if (serverSyncAvailable) {
+                try {
+                    val reqBody = "{\"stationCount\": $safeCount}".toRequestBody("application/json".toMediaType())
+                    val req = okhttp3.Request.Builder()
+                        .url("${_serverUrl.value}/api/v1/manager/stations/purge-extra")
+                        .headers(com.example.data.network.SelfHostedManager.getBaseHeaders())
+                        .post(reqBody)
+                        .build()
+                    com.example.data.network.SelfHostedManager.client.newCall(req).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            val body = response.body?.string().orEmpty()
+                            val code = runCatching { org.json.JSONObject(body).optString("code") }.getOrDefault("")
+                            if (response.code == 409 && code == "STATIONS_HAVE_ACTIVE_SESSIONS") {
+                                val ids = runCatching {
+                                    org.json.JSONObject(body).optJSONArray("stationIds")?.let { a ->
+                                        (0 until a.length()).map { a.optInt(it) }.filter { it > 0 }.joinToString(", ")
+                                    }
+                                }.getOrNull().orEmpty()
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(
+                                        getApplication(),
+                                        "تغییر تعداد جایگاه انجام نشد؛ جایگاه فعال وجود دارد${if (ids.isNotBlank()) ": $ids" else ""}. ابتدا آن نشست‌ها را تسویه کنید.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            } else {
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(getApplication(), "ذخیره تعداد جایگاه روی سرور انجام نشد؛ تغییر محلی اعمال نشد.", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                            return@launch
+                        }
+                    }
+                } catch (e: Exception) {
+                    // If the server is unreachable, retain the existing offline Manager behavior:
+                    // the local configuration may be edited and will be reconciled on reconnect.
+                    android.util.Log.w("GameNetViewModel", "Station-count server sync unavailable; applying local offline change", e)
+                }
             }
 
-            // Get a default console type to assign to any new stations
+            repository.saveSetting("station_count", safeCount.toString())
+            _stationCount.value = safeCount
+            if (!NetworkClient.isTrialMode && SelfHostedManager.currentManagerId.isNotBlank()) {
+                SelfHostedManager.saveManagerSetting("station_count", safeCount.toString())
+            }
+
             val consoleList = consoleTypes.value
             val defaultConsole = if (consoleList.isNotEmpty()) consoleList.first().name else "PS5"
-            repository.recreateStations(count, defaultConsole)
-            
-            // Sync with Server immediately
-            try {
-                if (_serverSyncMode.value) {
-                    val api = com.example.data.network.NetworkClient.getApi(_serverUrl.value)
-                    
-                    // 1. Purge stations > count
-                    try {
-                        val reqBody = "{\"stationCount\": $count}".toRequestBody("application/json".toMediaType())
-                        val req = okhttp3.Request.Builder()
-                            .url("${_serverUrl.value}/api/v1/manager/stations/purge-extra")
-                            .headers(com.example.data.network.SelfHostedManager.getBaseHeaders())
-                            .post(reqBody)
-                            .build()
-                        com.example.data.network.SelfHostedManager.client.newCall(req).execute()
-                    } catch (e: Exception) {
-                        android.util.Log.e("GameNetViewModel", "Failed to purge extra stations", e)
-                    }
+            repository.recreateStations(safeCount, defaultConsole)
 
-                    // 2. Upload all current stations
+            // When online, the server has already accepted the resize. Upload the resulting
+            // canonical station configuration; do not overwrite any protected active overflow.
+            if (serverSyncAvailable) {
+                try {
+                    val api = com.example.data.network.NetworkClient.getApi(_serverUrl.value)
                     val newStations = repository.allStationStates.firstOrNull() ?: emptyList()
                     for (st in newStations) {
-                        try { api.saveStation(st) } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
+                        try { api.saveStation(st) } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in station config upload", e) }
                     }
-                }
-            } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
+                } catch (e: Exception) { android.util.Log.e("GameNetViewModel", "Station configuration upload failed", e) }
+            }
         }
     }
 
