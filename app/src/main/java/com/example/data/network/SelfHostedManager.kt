@@ -159,6 +159,8 @@ object SelfHostedManager {
 
     val client = OkHttpClient.Builder()
         .dns(GameNexaDns)
+        // Respect Android's active system proxy/VPN routing instead of forcing a direct path.
+        .proxySelector(java.net.ProxySelector.getDefault())
         .connectTimeout(60, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
