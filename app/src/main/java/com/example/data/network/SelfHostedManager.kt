@@ -2011,6 +2011,24 @@ object SelfHostedManager {
         }
     }
 
+    suspend fun getActiveStationSession(stationId: Int): JSONObject? = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url("$SERVER_URL/api/station/active?stationId=$stationId")
+                .headers(getBaseHeaders())
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) return@withContext null
+                JSONObject(body).optJSONObject("session")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "getActiveStationSession failed: ${e.message}")
+            null
+        }
+    }
+
     private suspend fun recoverStationStart(idempotencyKey: String): Pair<String, Long>? = withContext(Dispatchers.IO) {
         repeat(3) { attempt ->
             try {

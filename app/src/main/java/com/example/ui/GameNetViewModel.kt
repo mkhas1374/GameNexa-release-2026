@@ -2711,6 +2711,65 @@ loadSettings()
                     idempotencyKey = startIdempotencyKey
                 )
                 if (sessionStart == null && !SelfHostedManager.lastStationStartWasTransportFailure) {
+                    val rejectedAsActive = SelfHostedManager.lastStationStartError.contains("ACTIVE_SESSION_EXISTS")
+                    if (rejectedAsActive) {
+                        // The server is authoritative. A local FREE/idle station can be stale after
+                        // app reinstall, process death, or login on another device. Recover the real
+                        // active session instead of asking the user to start a second session.
+                        val activeJson = SelfHostedManager.getActiveStationSession(stationId)
+                        if (activeJson != null) {
+                            val serverSessionId = activeJson.optString("id").takeIf { it.isNotBlank() }
+                            val serverStartedAt = activeJson.optString("started_at").toLongOrNull()
+                                ?: runCatching { java.time.Instant.parse(activeJson.optString("started_at")).toEpochMilli() }.getOrDefault(System.currentTimeMillis())
+                            val participants = activeJson.optJSONArray("participants") ?: org.json.JSONArray()
+                            val ids = mutableListOf<Long>()
+                            val names = mutableListOf<String>()
+                            val prepayments = mutableMapOf<Long, Long>()
+                            for (i in 0 until participants.length()) {
+                                val part = participants.optJSONObject(i) ?: continue
+                                val cid = part.optLong("customerId", 0L)
+                                if (cid > 0L) {
+                                    ids += cid
+                                    names += part.optString("participantName", "مشتری $cid")
+                                }
+                            }
+                            val snapshot = activeJson.optJSONObject("pricing_snapshot")
+                            val initialPrepayment = snapshot?.optLong("initialPrepaymentAmount", 0L) ?: 0L
+                            val snapshotCustomerPrepayments = snapshot?.optJSONObject("customerPrepayments")
+                            if (snapshotCustomerPrepayments != null) {
+                                snapshotCustomerPrepayments.keys().forEach { key ->
+                                    val cid = key.toLongOrNull() ?: 0L
+                                    val amount = snapshotCustomerPrepayments.optLong(key, 0L)
+                                    if (cid > 0L && amount > 0L) prepayments[cid] = amount
+                                }
+                            }
+                            if (serverSessionId != null) {
+                                sessionId = serverSessionId
+                                authoritativeStart = serverStartedAt
+                                val elapsed = (System.currentTimeMillis() - authoritativeStart).coerceAtLeast(0L)
+                                val recoveredState = station.copy(
+                                    status = "RUNNING",
+                                    controllerCount = activeJson.optInt("controller_count", station.controllerCount),
+                                    consoleType = activeJson.optString("console_type", station.consoleType),
+                                    startTimeMillis = authoritativeStart,
+                                    lastStateChangeTimeMillis = System.currentTimeMillis(),
+                                    elapsedPlayingTimeMillis = elapsed,
+                                    prepaymentAmount = initialPrepayment,
+                                    durationLimitMinutes = snapshot?.optInt("durationLimitMinutes", 0) ?: 0,
+                                    selectedCustomerIdsStr = ids.joinToString(","),
+                                    selectedCustomerNamesStr = names.joinToString(","),
+                                    customerPrepaymentsJson = prepayments.entries.joinToString(",") { "${it.key}:${it.value}" }
+                                )
+                                repository.saveSetting("active_session_" + stationId, sessionId)
+                                repository.saveSetting("active_session_start_" + stationId, authoritativeStart.toString())
+                                saveAndSyncStationState(recoveredState)
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(getApplication(), "این جایگاه از قبل دارای نشست فعال بود؛ نشست موجود از سرور بازیابی شد.", Toast.LENGTH_LONG).show()
+                                }
+                                return@launch
+                            }
+                        }
+                    }
                     withContext(Dispatchers.Main) {
                         val detail = SelfHostedManager.lastStationStartError.takeIf { it.isNotBlank() }?.let { " [$it]" } ?: ""
                         Toast.makeText(getApplication(), "شروع نشست از سرور رد شد؛ جایگاه به حالت آفلاین منتقل نشد.$detail", Toast.LENGTH_LONG).show()
