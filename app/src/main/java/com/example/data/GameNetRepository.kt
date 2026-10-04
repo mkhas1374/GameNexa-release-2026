@@ -977,8 +977,13 @@ class GameNetRepository(private val db: AppDatabase) {
     suspend fun updateCustomerTransaction(transaction: CustomerTransaction) =
         customerTransactionDao.update(transaction)
 
-    suspend fun deleteCustomerTransaction(transaction: CustomerTransaction) =
+    suspend fun deleteCustomerTransaction(transaction: CustomerTransaction): Boolean = withContext(Dispatchers.IO) {
+        if (!com.example.data.network.NetworkClient.isTrialMode && transaction.id > 0L) {
+            if (!com.example.data.network.SelfHostedManager.deleteManagerCustomerTransaction(transaction.id)) return@withContext false
+        }
         customerTransactionDao.delete(transaction)
+        true
+    }
 
     // License Cache
     suspend fun getLicenseCache(): LicenseCacheEntity? = licenseCacheDao.getLicenseCache()

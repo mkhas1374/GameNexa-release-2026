@@ -3232,7 +3232,8 @@ fun ReviewedGroupCard(
                         text = customerName,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f)
                     )
                 }
                 Row(
@@ -3245,6 +3246,17 @@ fun ReviewedGroupCard(
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.primary
                     )
+                    IconButton(
+                        onClick = { transactions.forEach(onDelete) },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "حذف فاکتورهای این مشتری",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                     Icon(
                         imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
                         contentDescription = null,

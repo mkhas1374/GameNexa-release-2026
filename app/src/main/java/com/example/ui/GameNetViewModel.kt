@@ -3773,7 +3773,8 @@ loadSettings()
 
     fun updateCustomerTransactionPayment(transaction: CustomerTransaction, paidAmount: Long, newStatus: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val custs = repository.allCustomers.firstOrNull() ?: emptyList()
+            try {
+                val custs = repository.allCustomers.firstOrNull() ?: emptyList()
             val cust = custs.find { it.id == transaction.customerId }
             
             var finalTxAmount = transaction.amount
@@ -3792,8 +3793,10 @@ loadSettings()
                 val origFoodCost = transaction.foodCost
                 val origTotal = if (transaction.amount > 0L) transaction.amount else (origGameCost + origFoodCost)
                 
-                val discountedGameCost = origGameCost * (1L - gameDiscPct / 100L)
-                val discountedFoodCost = origFoodCost * (1L - buffetDiscPct / 100L)
+                val safeGamePct = gameDiscPct.coerceIn(0L, 100L)
+                val safeBuffetPct = buffetDiscPct.coerceIn(0L, 100L)
+                val discountedGameCost = origGameCost - (origGameCost * safeGamePct / 100L)
+                val discountedFoodCost = origFoodCost - (origFoodCost * safeBuffetPct / 100L)
                 finalTxAmount = ((discountedGameCost + discountedFoodCost) - fixedDiscTom).coerceAtLeast(0L)
                 
                 discountDiff = origTotal - finalTxAmount
@@ -3847,6 +3850,8 @@ loadSettings()
                 }
                 
                 repository.insertCustomer(updatedCust)
+            } catch (e: Exception) {
+                android.util.Log.e("GameNexa", "Customer transaction settlement failed", e)
             }
         }
     }

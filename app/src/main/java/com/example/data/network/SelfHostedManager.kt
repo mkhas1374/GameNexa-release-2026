@@ -1259,6 +1259,20 @@ object SelfHostedManager {
         }
     }
 
+    suspend fun deleteManagerCustomerTransaction(transactionId: Long): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/customer-transactions/$transactionId")
+                .headers(getBaseHeaders())
+                .delete()
+                .build()
+            client.newCall(req).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.e(TAG, "deleteManagerCustomerTransaction error: ${e.message}", e)
+            false
+        }
+    }
+
     /** Manager-scoped financial history. A successful empty response is authoritative. */
     suspend fun fetchManagerCustomerTransactions(): List<CustomerTransaction>? = withContext(Dispatchers.IO) {
         try {
