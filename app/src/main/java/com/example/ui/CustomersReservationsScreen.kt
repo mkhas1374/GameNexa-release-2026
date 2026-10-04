@@ -847,7 +847,7 @@ IconButton(
                             val totalPaid = transactions.sumOf { it.paidAmount }
                             ReviewedGroupCard(
                                 customerName = customerName,
-                                totalPaid = totalPaid,
+                                totalPaid = totalPaid.toDouble(),
                                 transactions = transactions,
                                 lang = lang,
                                 onUpdateStatus = { trans, st -> onUpdateTransactionStatus(trans, st) },
