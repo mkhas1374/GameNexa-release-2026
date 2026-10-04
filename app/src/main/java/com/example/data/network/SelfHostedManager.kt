@@ -604,6 +604,29 @@ object SelfHostedManager {
     }
 
 
+    suspend fun purgeArchivedCustomer(customerId: Long): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/customers/$customerId/purge")
+                .headers(getBaseHeaders())
+                .delete()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext false
+                _archivedCloudCustomers.value = _archivedCloudCustomers.value.filterNot { it.id == customerId }
+                _allCloudCustomers.value = _allCloudCustomers.value.filterNot { it.id == customerId }
+                if (_currentLoggedInCustomer.value?.id == customerId) {
+                    _currentLoggedInCustomer.value = null
+                    _isCustomerKickedOut.value = true
+                }
+                true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "purgeArchivedCustomer error: ${e.message}", e)
+            false
+        }
+    }
+
     suspend fun fetchArchivedCustomersFromCloud(): Boolean = withContext(Dispatchers.IO) {
         try {
             val req = Request.Builder()

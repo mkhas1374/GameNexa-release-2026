@@ -4363,6 +4363,26 @@ loadSettings()
         }
     }
 
+    fun purgeArchivedCustomer(customer: Customer, onResult: ((Boolean) -> Unit)? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val cloudPurged = runCatching {
+                com.example.data.network.SelfHostedManager.purgeArchivedCustomer(customer.id)
+            }.getOrDefault(false)
+            if (!cloudPurged) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "حذف کامل از سرور انجام نشد؛ اطلاعات محلی دست‌نخورده ماند.", Toast.LENGTH_LONG).show()
+                    onResult?.invoke(false)
+                }
+                return@launch
+            }
+            repository.purgeCustomerLocally(customer)
+            withContext(Dispatchers.Main) {
+                Toast.makeText(getApplication(), "مشتری و تمام داده‌های مرتبط به‌طور کامل حذف شد.", Toast.LENGTH_SHORT).show()
+                onResult?.invoke(true)
+            }
+        }
+    }
+
     // Reservations Operations
     fun addReservation(fullName: String, phoneNumber: String, reservationTimeMillis: Long, durationMinutes: Int, stationId: Long, isVip: Boolean = false, onResult: ((Boolean, String?) -> Unit)? = null) {
         viewModelScope.launch(Dispatchers.IO) {

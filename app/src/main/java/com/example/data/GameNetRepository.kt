@@ -874,6 +874,19 @@ class GameNetRepository(private val db: AppDatabase) {
         }
     }
 
+    suspend fun purgeCustomerLocally(customer: Customer) = withContext(Dispatchers.IO) {
+        if (com.example.data.network.NetworkClient.isTrialMode) return@withContext
+        val originalPhone = Regex("original_phone=([^ ]+)").find(customer.description)?.groupValues?.getOrNull(1).orEmpty()
+        customerDao.delete(customer)
+        customerTransactionDao.deleteByCustomerId(customer.id)
+        pointLogDao.deleteByCustomerId(customer.id)
+        gnLedgerDao.deleteByCustomerId(customer.id)
+        behaviorLogDao.deleteByCustomerId(customer.id)
+        referralProgressRecordDao.deleteByCustomerId(customer.id)
+        if (customer.phoneNumber.isNotBlank()) reservationDao.deleteByPhone(customer.phoneNumber)
+        if (originalPhone.isNotBlank()) reservationDao.deleteByPhone(originalPhone)
+    }
+
     suspend fun deleteCustomersBatch(customers: List<Customer>) = withContext(Dispatchers.IO) {
         if (com.example.data.network.NetworkClient.isTrialMode) return@withContext
         customers.forEach { customer ->

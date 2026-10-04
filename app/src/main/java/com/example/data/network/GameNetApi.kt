@@ -159,6 +159,9 @@ interface GameNetApi {
     @POST("api/v1/manager/customers/delete-batch")
     suspend fun deleteCustomerBatch(@Body body: Map<String, List<Long>>): Response<Map<String, Any>>
 
+    @DELETE("api/v1/manager/customers/{id}/purge")
+    suspend fun purgeArchivedCustomer(@Path("id") id: Long): Response<Map<String, Any>>
+
     @GET("api/v1/manager/reservations")
     suspend fun getReservations(): List<Reservation>
 

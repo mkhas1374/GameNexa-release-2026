@@ -166,6 +166,58 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
     finally{c.release();}
   });
 
+  // Permanently purge an already-archived customer and every server-side record tied to that customer.
+  // This is intentionally separate from the normal DELETE/archive endpoint and cannot target an active customer.
+  app.delete('/api/v1/manager/customers/:id/purge', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{
+    const mid=manager(req), id=Number(req.params.id);
+    if(!Number.isInteger(id)||id<=0) return res.status(400).json({error:'Invalid customer id'});
+    const c=await pool.connect();
+    try{
+      await c.query('BEGIN');
+      const customer=(await c.query("SELECT id,description FROM customers WHERE id=$1 AND manager_id=$2 FOR UPDATE",[id,mid])).rows[0];
+      if(!customer){await c.query('ROLLBACK');return res.status(404).json({success:false,error:'Customer not found'});}
+      if(!String(customer.description||'').startsWith('[GAMENEX_ARCHIVED:')){
+        await c.query('ROLLBACK');
+        return res.status(409).json({success:false,code:'CUSTOMER_NOT_ARCHIVED',error:'Only archived customers can be permanently purged'});
+      }
+      await c.query("DELETE FROM session_orders WHERE manager_id=$1 AND target_customer_id=$2",[mid,id]);
+      await c.query("DELETE FROM session_participants WHERE manager_id=$1 AND customer_id=$2",[mid,id]);
+      await c.query("DELETE FROM invoices WHERE manager_id=$1 AND customer_id=$2",[mid,id]);
+      await c.query("DELETE FROM reservations WHERE manager_id=$1 AND customer_id=$2",[mid,id]);
+
+      const candidates=await c.query(`
+        SELECT DISTINCT c.table_name,c.column_name,
+               EXISTS(
+                 SELECT 1 FROM information_schema.columns mc
+                 WHERE mc.table_schema='public' AND mc.table_name=c.table_name AND mc.column_name='manager_id'
+               ) AS has_manager
+        FROM information_schema.columns c
+        WHERE c.table_schema='public'
+          AND c.table_name <> 'customers'
+          AND c.column_name IN ('customer_id','target_customer_id')
+      `);
+      for(const row of candidates.rows){
+        if(row.table_name==='session_orders'||row.table_name==='session_participants'||row.table_name==='invoices'||row.table_name==='reservations') continue;
+        const table=String(row.table_name).replace(/"/g,'""');
+        const column=String(row.column_name).replace(/"/g,'""');
+        if(row.has_manager){
+          await c.query(`DELETE FROM "${table}" WHERE "${column}"=$1 AND manager_id=$2`,[id,mid]);
+        }else{
+          await c.query(`DELETE FROM "${table}" WHERE "${column}"=$1`,[id]);
+        }
+      }
+
+      const removed=(await c.query("DELETE FROM customers WHERE id=$1 AND manager_id=$2 AND description LIKE '[GAMENEX_ARCHIVED:%' RETURNING id",[id,mid])).rowCount;
+      if(!removed){await c.query('ROLLBACK');return res.status(409).json({success:false,code:'CUSTOMER_PURGE_RACE'});}
+      await c.query('COMMIT');
+      res.json({success:true,purged:true,customerId:id});
+    }catch(e){
+      try{await c.query('ROLLBACK')}catch(_){}
+      console.error('[customer-purge]',e?.message||e);
+      res.status(500).json({success:false,error:'Customer permanent purge failed'});
+    }finally{c.release();}
+  });
+
   // Canonical configuration/settings resource. JSONB is used only for manager-editable, variable settings.
   app.get('/api/v1/manager/settings/:key', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const c=await cfgGet(manager(req));res.json({key:req.params.key,value:c[req.params.key] ?? ''});}catch(e){res.status(500).json({error:'Internal server error'});} });
   app.get('/api/v1/manager/reservation-configuration', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const cfg=await getReservationConfiguration(pool,manager(req));res.json({success:true,configurationRevisionId:cfg.revisionId,version:cfg.version,configuration:{reservationRules:cfg.reservationRules,pricing:{consoles:cfg.consoles,reservations:cfg.reservations},policies:{reservation:cfg.reservationPolicy}}});}catch(e){res.status(500).json({error:'Reservation configuration lookup failed'});} });

@@ -280,6 +280,9 @@ interface BehaviorLogDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(log: BehaviorLog): Long
+
+    @Query("DELETE FROM behavior_logs WHERE customerId = :customerId")
+    suspend fun deleteByCustomerId(customerId: Long)
 }
 
 @Dao
@@ -298,6 +301,9 @@ interface ReferralProgressRecordDao {
 
     @Update
     suspend fun update(record: ReferralProgressRecord)
+
+    @Query("DELETE FROM referral_progress_records WHERE referrerCustomerId = :customerId OR referredCustomerId = :customerId")
+    suspend fun deleteByCustomerId(customerId: Long)
 }
 
 

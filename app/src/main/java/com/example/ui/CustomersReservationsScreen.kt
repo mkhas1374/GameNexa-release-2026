@@ -283,6 +283,13 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
                             viewModel.deleteCustomer(it)
                         }
                     },
+                    onPurgeArchivedCustomer = { customer ->
+                        if (isTrialActive || currentAdminRole == "TRIAL_USER") {
+                            showTrialLimitDialog = true
+                        } else {
+                            viewModel.purgeArchivedCustomer(customer)
+                        }
+                    },
                     onAddClick = {
                         if (isTrialActive || currentAdminRole == "TRIAL_USER") {
                             showTrialLimitDialog = true
@@ -486,6 +493,7 @@ fun CustomersTabContent(
     canDelete: Boolean,
     onEditCustomer: (Customer) -> Unit,
     onDeleteCustomer: (Customer) -> Unit,
+    onPurgeArchivedCustomer: (Customer) -> Unit,
     onAddClick: () -> Unit,
     onUpdateTransactionStatus: (CustomerTransaction, String) -> Unit,
     onUpdateTransactionPayment: (CustomerTransaction, Double, String) -> Unit,
@@ -749,6 +757,7 @@ IconButton(
                             val customerTrans = remember(transactions, customer.id) {
                                 transactions.filter { it.customerId == customer.id }
                             }
+                            var showPurgeConfirm by remember(customer.id) { mutableStateOf(false) }
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(12.dp),
@@ -761,15 +770,56 @@ IconButton(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text(customer.fullName, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                        Text(if (lang == "fa") "آرشیو شده" else "Archived", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(customer.fullName, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                            Text(
+                                                customer.phoneNumber + " • " + customerTrans.size + " " + if (lang == "fa") "فاکتور" else "invoices",
+                                                fontSize = 10.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        TextButton(
+                                            onClick = { showPurgeConfirm = true },
+                                            enabled = canDelete
+                                        ) {
+                                            Text(if (lang == "fa") "حذف کامل" else "Purge", color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+                                        }
                                     }
                                     Text(
-                                        customer.phoneNumber + " • " + customerTrans.size + " " + if (lang == "fa") "فاکتور" else "invoices",
-                                        fontSize = 10.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        if (lang == "fa") "آرشیو شده — حذف کامل غیرقابل‌بازگشت است" else "Archived — permanent deletion is irreversible",
+                                        fontSize = 9.sp,
+                                        color = MaterialTheme.colorScheme.error
                                     )
                                 }
+                            }
+                            if (showPurgeConfirm) {
+                                AlertDialog(
+                                    onDismissRequest = { showPurgeConfirm = false },
+                                    title = { Text(if (lang == "fa") "حذف کامل مشتری" else "Permanently delete customer") },
+                                    text = {
+                                        Text(
+                                            if (lang == "fa")
+                                                "این عملیات مشتری و تمام سوابق مرتبط او را از سرور و دستگاه حذف می‌کند و قابل بازگشت نیست. ادامه می‌دهید؟"
+                                            else
+                                                "This permanently removes the customer and all related records from the server and device. This cannot be undone. Continue?"
+                                        )
+                                    },
+                                    confirmButton = {
+                                        TextButton(
+                                            onClick = {
+                                                showPurgeConfirm = false
+                                                onPurgeArchivedCustomer(customer)
+                                            }
+                                        ) {
+                                            Text(if (lang == "fa") "بله، حذف کامل" else "Permanently delete", color = MaterialTheme.colorScheme.error)
+                                        }
+                                    },
+                                    dismissButton = {
+                                        TextButton(onClick = { showPurgeConfirm = false }) {
+                                            Text(if (lang == "fa") "انصراف" else "Cancel")
+                                        }
+                                    }
+                                )
                             }
                         }
                     }
