@@ -1780,6 +1780,25 @@ fun CustomerCard(
                             }
                         }
 
+                        // LP Loyalty Balance — server-authoritative and visible directly on every manager customer card.
+                        Card(
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = CardDefaults.cardColors(containerColor = if (customer.lp > 0) Color(0xFFE3F2FD) else MaterialTheme.colorScheme.surface),
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = if (customer.lp > 0) Color(0xFF42A5F5).copy(alpha = 0.45f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp).fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("LP", fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0))
+                                Text(String.format(Locale.US, "%,d", customer.lp), fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF1565C0))
+                            }
+                        }
+
                         // Debt Info
                         Card(
                             modifier = Modifier.weight(1f),

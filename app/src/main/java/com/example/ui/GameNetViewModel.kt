@@ -110,7 +110,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     val reviewedTransactions = customerTransactions.map { list ->
         // "Settled" means the financial amount is actually fully paid, not merely that
         // a stale status flag says REVIEWED.
-        list.filter { it.status == "REVIEWED" && it.paidAmount >= it.amount }
+        list.filter { (it.status == "REVIEWED" || it.status == "ARCHIVED") && it.paidAmount >= it.amount }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val debtorTransactions = customerTransactions.map { list ->
@@ -3731,7 +3731,7 @@ loadSettings()
         viewModelScope.launch(Dispatchers.IO) {
             val transactions = customerTransactions.value
             val unreviewed = transactions.filter { it.status == "UNREVIEWED" }.sumOf { it.amount - it.paidAmount }
-            val paid = transactions.filter { it.status == "REVIEWED" }.sumOf { it.paidAmount }
+            val paid = transactions.filter { (it.status == "REVIEWED" || it.status == "ARCHIVED") && it.paidAmount >= it.amount }.sumOf { it.paidAmount }
             val total = unreviewed + paid
             
             // Log it
@@ -3739,7 +3739,7 @@ loadSettings()
             
             // Financial history is server-owned and must survive reinstall.
             // Shift settlement is an audit event, not physical deletion of invoices.
-            for (t in transactions.filter { it.status == "REVIEWED" || it.status == "UNREVIEWED" }) {
+            for (t in transactions.filter { it.status == "REVIEWED" || it.status == "ARCHIVED" || it.status == "UNREVIEWED" }) {
                 queueOrSyncCustomerTransaction(t)
             }
         }
@@ -3751,7 +3751,7 @@ loadSettings()
             var totalCash = 0L
             
             transactions.forEach { trans ->
-                if (trans.status == "REVIEWED" || trans.status == "UNREVIEWED") {
+                if (trans.status == "REVIEWED" || trans.status == "ARCHIVED" || trans.status == "UNREVIEWED") {
                     val finalStatus = if (trans.paidAmount < trans.amount && trans.status == "UNREVIEWED") "DEBTOR" else "ARCHIVED"
                     val updated = trans.copy(status = finalStatus)
                     repository.updateCustomerTransaction(updated)
