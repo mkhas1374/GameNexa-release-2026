@@ -109,6 +109,11 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
     res.json(q.rows.map(normalizeCustomer));
   } catch(e){res.status(500).json({error:'Internal server error'});} });
 
+  app.get('/api/v1/manager/customers/archived', requireManagerAuth, requireActiveEntitlement, async (req,res)=>{ try {
+    const q=await pool.query("SELECT * FROM customers WHERE manager_id=$1 AND COALESCE(description,'') LIKE '[GAMENEX_ARCHIVED:%' ORDER BY id DESC",[manager(req)]);
+    res.json(q.rows.map(normalizeCustomer));
+  } catch(e){res.status(500).json({error:'Internal server error'});} });
+
   app.post('/api/v1/manager/customers', requireManagerAuth, requireActiveEntitlement, async (req,res)=>{ try {
     const mid=manager(req), b=req.body||{}; const phone=String(b.phoneNumber||b.phone_number||b.customer_phone||'').trim();
     const name=String(b.fullName||b.full_name||b.customer_name||'').trim(); if(!phone||!name) return res.status(400).json({error:'fullName and phoneNumber are required'});

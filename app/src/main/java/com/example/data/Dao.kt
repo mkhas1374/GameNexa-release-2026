@@ -182,6 +182,9 @@ interface CustomerTransactionDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(transaction: CustomerTransaction): Long
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(transactions: List<CustomerTransaction>)
+
     @Update
     suspend fun update(transaction: CustomerTransaction)
 

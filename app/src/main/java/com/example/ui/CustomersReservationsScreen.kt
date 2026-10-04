@@ -264,6 +264,7 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
                 // Customers List Pane
                 CustomersTabContent(
                     customers = customers,
+                    archivedCustomers = viewModel.archivedCustomers.collectAsState().value,
                     transactions = customerTransactions,
                     lang = lang,
                     canDelete = (currentAdminRole == "SUPER_MANAGER" || currentAdminRole == "GAMENET_MANAGER" || currentAdminRole == "MANAGER") && !isTrialActive && currentAdminRole != "TRIAL_USER",
@@ -479,6 +480,7 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
 @Composable
 fun CustomersTabContent(
     customers: List<Customer>,
+    archivedCustomers: List<Customer>,
     transactions: List<CustomerTransaction>,
     lang: String,
     canDelete: Boolean,
@@ -732,6 +734,44 @@ IconButton(
                                 selectedCustomerIds.add(customer.id)
                             }
                         )
+                    }
+                    if (archivedCustomers.isNotEmpty()) {
+                        item {
+                            Text(
+                                text = if (lang == "fa") "مخاطبان آرشیو شده (" + archivedCustomers.size + ")" else "Archived contacts (" + archivedCustomers.size + ")",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 10.dp, bottom = 2.dp)
+                            )
+                        }
+                        items(archivedCustomers, key = { "archived_" + it.id }) { customer ->
+                            val customerTrans = remember(transactions, customer.id) {
+                                transactions.filter { it.customerId == customer.id }
+                            }
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(customer.fullName, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                        Text(if (lang == "fa") "آرشیو شده" else "Archived", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
+                                    }
+                                    Text(
+                                        customer.phoneNumber + " • " + customerTrans.size + " " + if (lang == "fa") "فاکتور" else "invoices",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 

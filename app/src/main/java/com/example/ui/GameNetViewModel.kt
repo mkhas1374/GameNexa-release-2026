@@ -1849,6 +1849,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         isTrial
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    val archivedCustomers: StateFlow<List<Customer>> = SelfHostedManager.archivedCloudCustomers
+
     val customers: StateFlow<List<Customer>> = combine(
         repository.customerDao.getAll(),
         isTrialModeFlow
@@ -2260,6 +2262,14 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 verifyLicenseStatus()
                 fetchSubscriptionPlans()
                 fetchAdminBroadcastMessage()
+                // Rehydrate financial history from the authoritative Manager endpoint on
+                // every cold start. Room is destroyed by uninstall/reinstall.
+                if (!NetworkClient.isTrialMode && SelfHostedManager.currentManagerId.isNotBlank()) {
+                    SelfHostedManager.fetchAllFromCloud()
+                    SelfHostedManager.fetchArchivedCustomersFromCloud()
+                    flushPendingCustomerTransactions()
+                    repository.syncCustomerTransactionsFromServer()
+                }
                 observeAllOrders()
             } catch (e: Exception) {
                 android.util.Log.e("GameNetViewModel", "Cold-start initialization failed", e)
@@ -3727,10 +3737,10 @@ loadSettings()
             // Log it
             logOperatorActivity("تسویه شیفت سالن", "تسویه مبلغ: %,d تومان (پرداختی: %,d | بررسی نشده: %,d)".format(java.util.Locale.US, total, paid, unreviewed))
             
-            // Delete REVIEWED and UNREVIEWED
-            val toDelete = transactions.filter { it.status == "REVIEWED" || it.status == "UNREVIEWED" }
-            for (t in toDelete) {
-                repository.deleteCustomerTransaction(t)
+            // Financial history is server-owned and must survive reinstall.
+            // Shift settlement is an audit event, not physical deletion of invoices.
+            for (t in transactions.filter { it.status == "REVIEWED" || it.status == "UNREVIEWED" }) {
+                queueOrSyncCustomerTransaction(t)
             }
         }
     }

@@ -958,6 +958,15 @@ class GameNetRepository(private val db: AppDatabase) {
         }
     }
     suspend fun getAllCustomerTransactionsLocal(): List<CustomerTransaction> = customerTransactionDao.getAllList()
+    suspend fun syncCustomerTransactionsFromServer(): Boolean = withContext(Dispatchers.IO) {
+        val remote = com.example.data.network.SelfHostedManager.fetchManagerCustomerTransactions()
+            ?: return@withContext false
+        // Replace local history only after a successful authenticated response.
+        customerTransactionDao.clearAll()
+        if (remote.isNotEmpty()) customerTransactionDao.insertAll(remote)
+        true
+    }
+
 
     fun getTransactionsByCustomerId(customerId: Long): Flow<List<CustomerTransaction>> =
         customerTransactionDao.getByCustomerId(customerId)

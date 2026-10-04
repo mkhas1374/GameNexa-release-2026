@@ -184,6 +184,8 @@ object SelfHostedManager {
 
     private val _allCloudCustomers = MutableStateFlow<List<Customer>>(emptyList())
     val allCloudCustomers: StateFlow<List<Customer>> = _allCloudCustomers.asStateFlow()
+    private val _archivedCloudCustomers = MutableStateFlow<List<Customer>>(emptyList())
+    val archivedCloudCustomers: StateFlow<List<Customer>> = _archivedCloudCustomers.asStateFlow()
 
     private val _recentPayments = MutableStateFlow<List<CloudPaymentRecord>>(emptyList())
     val recentPayments: StateFlow<List<CloudPaymentRecord>> = _recentPayments.asStateFlow()
@@ -601,6 +603,29 @@ object SelfHostedManager {
         }
     }
 
+
+    suspend fun fetchArchivedCustomersFromCloud(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/customers/archived")
+                .headers(getBaseHeaders())
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext false
+                val body = resp.body?.string().orEmpty()
+                val list = ArrayList<Customer>()
+                if (body.isNotBlank()) {
+                    extractCustomerObjects(if (body.trim().startsWith("[")) JSONArray(body) else JSONObject(body).opt("data") ?: JSONArray(), list)
+                }
+                _archivedCloudCustomers.value = list
+                true
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchArchivedCustomersFromCloud error: " + e.message)
+            false
+        }
+    }
 
     suspend fun fetchAllFromCloud(): Boolean = withContext(Dispatchers.IO) {
         try {
@@ -1231,6 +1256,54 @@ object SelfHostedManager {
         } catch (e: Exception) {
             Log.e(TAG, "syncCustomerTransactionToCloud error: ${e.message}", e)
             false
+        }
+    }
+
+    /** Manager-scoped financial history. A successful empty response is authoritative. */
+    suspend fun fetchManagerCustomerTransactions(): List<CustomerTransaction>? = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/customer-transactions")
+                .headers(getBaseHeaders())
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext null
+                val body = resp.body?.string().orEmpty()
+                if (body.isBlank()) return@withContext emptyList()
+                val data = if (body.trim().startsWith("[")) JSONArray(body)
+                else JSONObject(body).optJSONArray("data") ?: JSONArray()
+                val list = mutableListOf<CustomerTransaction>()
+                for (i in 0 until data.length()) {
+                    val o = data.optJSONObject(i) ?: continue
+                    val id = o.optLong("id", o.optLong("localId", 0L))
+                    val customerId = o.optLong("customerId", o.optLong("customer_id", 0L))
+                    val ts = o.optLong("timestamp", o.optLong("event_timestamp", 0L))
+                    if (id <= 0L || customerId <= 0L) continue
+                    list += CustomerTransaction(
+                        id = id,
+                        customerId = customerId,
+                        customerName = o.optString("customerName", o.optString("customer_name", "")),
+                        stationName = o.optString("stationName", o.optString("station_name", "")),
+                        title = o.optString("title", ""),
+                        amount = o.optLong("amount", 0L),
+                        paidAmount = o.optLong("paidAmount", o.optLong("paid_amount", 0L)),
+                        status = o.optString("status", "UNREVIEWED"),
+                        dateStr = o.optString("dateStr", o.optString("date_str", "")),
+                        timeStr = o.optString("timeStr", o.optString("time_str", "")),
+                        segmentDetails = o.optString("segmentDetails", o.optString("segment_details", "")),
+                        buffetDetails = o.optString("buffetDetails", o.optString("buffet_details", "")),
+                        timestamp = ts,
+                        playMinutes = o.optInt("playMinutes", o.optInt("play_minutes", 0)),
+                        gameCost = o.optLong("gameCost", o.optLong("game_cost", 0L)),
+                        foodCost = o.optLong("foodCost", o.optLong("food_cost", 0L))
+                    )
+                }
+                list.sortedByDescending { it.timestamp }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchManagerCustomerTransactions error: " + e.message, e)
+            null
         }
     }
 
