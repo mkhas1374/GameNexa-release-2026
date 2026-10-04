@@ -3850,6 +3850,7 @@ loadSettings()
                 }
                 
                 repository.insertCustomer(updatedCust)
+                }
             } catch (e: Exception) {
                 android.util.Log.e("GameNexa", "Customer transaction settlement failed", e)
             }
