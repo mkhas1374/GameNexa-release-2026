@@ -897,6 +897,25 @@ function sessionEventActiveSeconds(events, startAt, endAt) {
     return activeSeconds;
 }
 
+app.get("/api/station/start/status", requireManagerAuth, requireActiveEntitlement, async (req,res) => {
+    const managerId = sessionManagerId(req);
+    const idempotencyKey = String(req.headers["idempotency-key"] || req.query?.idempotencyKey || "").trim();
+    if (!managerId || !idempotencyKey) return res.status(400).json({success:false,code:"IDEMPOTENCY_KEY_REQUIRED"});
+    try {
+        const result = await pool.query(
+            "SELECT e.session_id,s.id,s.manager_id,s.station_id,s.status,s.started_at,s.pricing_snapshot FROM session_events e JOIN game_sessions s ON s.id=e.session_id AND s.manager_id=e.manager_id WHERE e.manager_id=$1 AND e.event_id=$2 AND e.event_type='START' LIMIT 1",
+            [managerId,idempotencyKey]
+        );
+        if (!result.rows[0]) return res.status(404).json({success:false,code:"START_NOT_FOUND"});
+        const row=result.rows[0];
+        return res.json({success:true,found:true,sessionId:row.id,stationId:row.station_id,status:row.status,serverStartedAt:new Date(row.started_at).getTime(),serverTime:Date.now(),pricingSnapshot:row.pricing_snapshot});
+    } catch (e) {
+        res.locals.diagnosticCode='SESSION_START_STATUS_LOOKUP_FAILED';
+        res.locals.diagnosticMessage=String(e?.message||'').slice(0,300);
+        return res.status(500).json({success:false,code:"SESSION_START_STATUS_LOOKUP_FAILED"});
+    }
+});
+
 app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rateLimit({windowMs:60000,max:20}), async (req,res) => {
     const managerId = sessionManagerId(req);
     const stationId = Number(req.body?.stationId);

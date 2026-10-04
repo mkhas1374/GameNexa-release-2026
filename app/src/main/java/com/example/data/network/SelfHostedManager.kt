@@ -1939,10 +1939,12 @@ object SelfHostedManager {
         controllerCount: Int = 1,
         prepaymentAmount: Long = 0L,
         durationLimitMinutes: Int = 0,
-        customerPrepayments: Map<Long, Long> = emptyMap()
+        customerPrepayments: Map<Long, Long> = emptyMap(),
+        idempotencyKey: String = ""
     ): Pair<String, Long>? = withContext(Dispatchers.IO) {
         lastStationStartWasTransportFailure = false
         lastStationStartError = ""
+        val stableIdempotencyKey = idempotencyKey.trim().ifBlank { "station-start:${stationId}:${startTimeMillis}:${java.util.UUID.randomUUID()}" }
         try {
             if (_currentManagerId.isBlank()) {
                 lastStationStartError = "MANAGER_ID_MISSING"
@@ -1974,7 +1976,7 @@ object SelfHostedManager {
             val request = Request.Builder()
                 .url("$SERVER_URL/api/station/start")
                 .headers(getBaseHeaders())
-                .header("Idempotency-Key", "station-start:${stationId}:${startTimeMillis}")
+                .header("Idempotency-Key", stableIdempotencyKey)
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
             client.newCall(request).execute().use { response ->
@@ -1991,13 +1993,47 @@ object SelfHostedManager {
                 sessionId to JSONObject(body).optLong("serverStartedAt", System.currentTimeMillis())
             }
         } catch (e: Exception) {
-            // Only an actual transport-layer failure may fall back to an offline session.
-            // HTTP 4xx/5xx and malformed server responses must never be mistaken for Offline.
+            // A lost response is ambiguous: the server may already have committed the session.
+            // Resolve the same idempotency key before allowing any offline fallback.
+            if (e is java.io.IOException) {
+                val recovered = recoverStationStart(stableIdempotencyKey)
+                if (recovered != null) {
+                    lastStationStartWasTransportFailure = false
+                    lastStationStartError = ""
+                    return@withContext recovered
+                }
+            }
+            // Only a confirmed transport failure with no committed server session may fall back offline.
             lastStationStartWasTransportFailure = e is java.io.IOException
             lastStationStartError = (e.message ?: e.javaClass.simpleName).take(500)
             Log.e(TAG, "startStationSession error: " + e.message, e)
             null
         }
+    }
+
+    private suspend fun recoverStationStart(idempotencyKey: String): Pair<String, Long>? = withContext(Dispatchers.IO) {
+        repeat(3) { attempt ->
+            try {
+                val request = Request.Builder()
+                    .url("$SERVER_URL/api/station/start/status")
+                    .headers(getBaseHeaders())
+                    .header("Idempotency-Key", idempotencyKey)
+                    .get()
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (response.isSuccessful) {
+                        val json = JSONObject(body)
+                        val sessionId = json.optString("sessionId").takeIf { it.isNotBlank() }
+                        if (sessionId != null) return@withContext sessionId to json.optLong("serverStartedAt", System.currentTimeMillis())
+                    }
+                }
+            } catch (recoveryError: Exception) {
+                Log.w(TAG, "recoverStationStart attempt ${attempt + 1} failed: ${recoveryError.message}")
+            }
+            if (attempt < 2) kotlinx.coroutines.delay(150L * (attempt + 1))
+        }
+        null
     }
 
     suspend fun syncOfflineSessionStart(

@@ -2689,6 +2689,9 @@ loadSettings()
             }
 
             val requestedStart = System.currentTimeMillis()
+            // One immutable idempotency key belongs to this user action. If the HTTP response is
+            // lost, the network recovery query can prove whether the server already committed it.
+            val startIdempotencyKey = "station-start:" + stationId + ":" + java.util.UUID.randomUUID().toString()
             var sessionId: String
             var authoritativeStart: Long
             if (isTrialUser) {
@@ -2704,7 +2707,8 @@ loadSettings()
                     controllerCount = station.controllerCount,
                     prepaymentAmount = requestedPrepayment,
                     durationLimitMinutes = durationMinutes,
-                    customerPrepayments = finalPrepaymentsMap
+                    customerPrepayments = finalPrepaymentsMap,
+                    idempotencyKey = startIdempotencyKey
                 )
                 if (sessionStart == null && !SelfHostedManager.lastStationStartWasTransportFailure) {
                     withContext(Dispatchers.Main) {
@@ -2720,6 +2724,7 @@ loadSettings()
                         "session_pending_start_" + stationId,
                         org.json.JSONObject().apply {
                             put("sessionId", sessionId)
+                            put("idempotencyKey", startIdempotencyKey)
                             put("stationId", stationId)
                             put("startTimeMillis", requestedStart)
                             put("consoleType", station.consoleType)
