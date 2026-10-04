@@ -2190,6 +2190,8 @@ object SelfHostedManager {
         sessionId: String,
         endedAtMillis: Long
     ): Boolean = withContext(Dispatchers.IO) {
+        lastSettlementHttpCode = 0
+        lastSettlementErrorBody = ""
         try {
             if (_currentManagerId.isBlank()) return@withContext false
             val json = JSONObject().apply { put("sessionId", sessionId); put("endedAt", endedAtMillis) }

@@ -304,13 +304,31 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             repository.saveSetting("active_session_start_" + stationId, "")
             return true
         }
-        repository.saveSetting(
-            "session_pending_settlement_" + stationId,
-            org.json.JSONObject().apply {
-                put("sessionId", sessionId)
-                put("endedAt", endedAtMillis)
-            }.toString()
-        )
+
+        // Offline grace is an operational mode, not a read-only mode. When the API is
+        // unreachable, finalize the local station immediately and persist a durable
+        // settlement outbox. The canonical financial settlement is replayed against the
+        // same server session when connectivity returns. HTTP business errors (4xx/5xx)
+        // are NOT swallowed as offline: only transport/unreachable responses may use this path.
+        val httpCode = SelfHostedManager.lastSettlementHttpCode
+        val transportFailure = httpCode == 0 || httpCode == 408 || httpCode == 503
+        if (transportFailure) {
+            repository.saveSetting(
+                "session_pending_settlement_" + stationId,
+                org.json.JSONObject().apply {
+                    put("sessionId", sessionId)
+                    put("endedAt", endedAtMillis)
+                    put("queuedAt", System.currentTimeMillis())
+                    put("reason", "SERVER_UNREACHABLE")
+                }.toString()
+            )
+            repository.saveSetting("active_session_" + stationId, "")
+            repository.saveSetting("active_session_start_" + stationId, "")
+            return true
+        }
+
+        // A real server-side rejection must remain visible and the station must remain
+        // active so accounting cannot silently diverge.
         return false
     }
 
@@ -2166,11 +2184,21 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 val elapsed = android.os.SystemClock.elapsedRealtime()
                 if (lastProbeElapsed == 0L || elapsed - lastProbeElapsed >= 5000L) {
                     lastProbeElapsed = elapsed
-                    val reachable = runCatching {
+                        val reachable = runCatching {
                         NetworkClient.getApi(_serverUrl.value).healthCheck().isSuccessful
                     }.getOrDefault(false)
+                    val wasConnected = _isServerConnected.value
                     _isServerConnected.value = reachable
-                    if (reachable) _lastSuccessfulServerCheckElapsed.value = elapsed
+                    if (reachable) {
+                        _lastSuccessfulServerCheckElapsed.value = elapsed
+                        if (!wasConnected && _currentAdminRole.value != "TRIAL_USER" && _currentAdminRole.value.isNotBlank()) {
+                            flushPendingSessionStarts()
+                            flushSessionOutbox()
+                            flushPendingBuffetOrders()
+                            flushPendingCustomerTransactions()
+                            flushPendingSettlements()
+                        }
+                    }
                 }
                 delay(5000L)
             }
@@ -3369,16 +3397,17 @@ loadSettings()
                 }
                 val serverSettled = queueOrSettleSession(sessionId, stationId, now)
                 if (!serverSettled) {
-                    // Keep the station/session data intact. Settlement will be retried after the next successful login.
+                    // Keep the session active on genuine server/business errors. Offline
+                    // transport failures are finalized locally by queueOrSettleSession.
                     val pendingState = station.copy(
-                        status = "PAUSED",
+                        status = "RUNNING",
                         elapsedPlayingTimeMillis = totalElapsed,
                         lastStateChangeTimeMillis = now,
                         segmentsJson = existingSegments.toJson()
                     )
                     saveAndSyncStationState(pendingState)
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(getApplication(), "ارتباط با سرور قطع است؛ تسویه و فاکتور فعلاً در انتظار اتصال باقی ماند.", Toast.LENGTH_LONG).show()
+                        Toast.makeText(getApplication(), "تسویه توسط سرور رد شد؛ جایگاه برای جلوگیری از مغایرت مالی فعال باقی ماند.", Toast.LENGTH_LONG).show()
                     }
                     return@launch
                 }
