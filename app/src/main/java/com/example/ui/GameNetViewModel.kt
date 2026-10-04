@@ -102,11 +102,15 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val reviewedTransactions = customerTransactions.map { list ->
-        list.filter { it.status == "REVIEWED" }
+        // "Settled" means the financial amount is actually fully paid, not merely that
+        // a stale status flag says REVIEWED.
+        list.filter { it.status == "REVIEWED" && it.paidAmount >= it.amount }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val debtorTransactions = customerTransactions.map { list ->
-        list.filter { it.status == "DEBTOR" }
+        // Any invoice with an outstanding amount belongs to debtors, even if a legacy
+        // REVIEWED flag was written incorrectly.
+        list.filter { it.amount > it.paidAmount && it.status != "UNREVIEWED" }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val reservations: StateFlow<List<Reservation>> = repository.allReservations
@@ -3773,12 +3777,23 @@ loadSettings()
                 discountDiff = origTotal - finalTxAmount
             }
 
-            val updated = transaction.copy(paidAmount = paidAmount, status = newStatus, amount = finalTxAmount)
+            val normalizedStatus = when {
+                finalTxAmount <= 0L -> "REVIEWED"
+                paidAmount >= finalTxAmount -> "REVIEWED"
+                newStatus == "UNREVIEWED" -> "UNREVIEWED"
+                else -> "DEBTOR"
+            }
+            val normalizedPaidAmount = paidAmount.coerceIn(0L, finalTxAmount)
+            val updated = transaction.copy(
+                paidAmount = normalizedPaidAmount,
+                status = normalizedStatus,
+                amount = finalTxAmount
+            )
             repository.updateCustomerTransaction(updated)
             queueOrSyncCustomerTransaction(updated)
 
             if (cust != null) {
-                val newDebt = if (newStatus == "REVIEWED") {
+                val newDebt = if (normalizedStatus == "REVIEWED") {
                     val remainingUnpaid = transaction.amount - transaction.paidAmount
                     (cust.debt - remainingUnpaid).coerceAtLeast(0L)
                 } else {
@@ -3787,7 +3802,7 @@ loadSettings()
                 
                 var updatedCust = cust.copy(debt = newDebt)
 
-                if (newStatus == "REVIEWED" && transaction.status != "REVIEWED") {
+                if (normalizedStatus == "REVIEWED" && transaction.status != "REVIEWED") {
                     val refId = "SESSION_${transaction.timestamp}_CUST_${transaction.customerId}"
                     val pendingEntry = repository.getGnLedgerEntryByRef(refId)
                     if (pendingEntry != null && pendingEntry.status == "PENDING") {

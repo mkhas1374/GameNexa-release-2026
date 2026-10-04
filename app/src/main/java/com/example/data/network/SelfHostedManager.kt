@@ -550,7 +550,11 @@ object SelfHostedManager {
         try {
             val json=JSONObject().apply {
                 put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber)
-                put("debt",customer.debt); put("credit",customer.credit); put("tier",customer.tier); put("lp",customer.lp); put("availableGn",customer.availableGn); put("pendingGn",customer.pendingGn); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
+                put("debt",customer.debt); put("credit",customer.credit); put("tier",customer.tier)
+                // LP is server-authoritative. A stale local zero must never erase an earned
+                // server LP balance during an unrelated customer/profile sync.
+                if (customer.lp > 0L) put("lp", customer.lp)
+                put("availableGn",customer.availableGn); put("pendingGn",customer.pendingGn); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
             }
             val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
             client.newCall(req).execute().use { resp ->
@@ -921,8 +925,16 @@ object SelfHostedManager {
                 .build()
             client.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string().orEmpty()
-                if (!response.isSuccessful) Log.w(TAG, "Manager setting sync failed: HTTP ${response.code} $responseBody")
-                response.isSuccessful
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Manager setting sync failed: HTTP " + response.code + " " + responseBody)
+                    return@withContext false
+                }
+                // Keep the in-memory cloud configuration cache coherent with the value
+                // just persisted; otherwise the next sync can resurrect the old value.
+                val updated = _cloudAppConfigs.value.toMutableMap()
+                updated[key] = value
+                _cloudAppConfigs.value = updated
+                true
             }
         } catch (e: Exception) {
             Log.w(TAG, "saveManagerSetting error: ${e.message}")

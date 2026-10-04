@@ -234,7 +234,28 @@ class GameNetRepository(private val db: AppDatabase) {
 
         // 3. Stations
         try {
-            val remoteStations = api.getStations()
+            // station_count is an explicit Manager configuration and is authoritative.
+            // Never let the physical station-row count (including stale legacy rows)
+            // silently replace the configured hall capacity after app relaunch.
+            try {
+                val remoteConfiguredCount = com.example.data.network.SelfHostedManager
+                    .fetchAppConfig("station_count")
+                    ?.toIntOrNull()
+                if (remoteConfiguredCount != null && remoteConfiguredCount > 0) {
+                    appSettingDao.insert(AppSetting("station_count", remoteConfiguredCount.toString()))
+                }
+            } catch (ignored: Exception) {
+                android.util.Log.w("GameNexa", "Could not refresh authoritative station_count", ignored)
+            }
+            val configuredStationCount = appSettingDao.getValue("station_count")
+                ?.toIntOrNull()
+                ?.takeIf { it > 0 }
+            val remoteStationsRaw = api.getStations()
+            val remoteStations = if (configuredStationCount != null) {
+                remoteStationsRaw.sortedBy { it.id }.take(configuredStationCount)
+            } else {
+                remoteStationsRaw
+            }
             if (remoteStations.isNotEmpty()) {
                 stationStateDao.clearAll()
                 stationStateDao.insertAll(remoteStations)

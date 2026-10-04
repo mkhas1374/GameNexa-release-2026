@@ -1501,7 +1501,9 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
                 );
                 // Fully prepaid settlement invoices earn LP immediately. The ledger key makes this idempotent.
                 if (invoiceStatus === 'PAID' && payer.customer_id) {
-                    const configuredLpRate = Number(managerConfig.settings?.policy_lp_toman_rate ?? managerConfig.settings?.policies?.loyalty?.lpTomanRate ?? 0);
+                    // Keep the canonical default identical to Android's offline/default LP rule.
+                    // Manager configuration still overrides this value whenever explicitly saved.
+                    const configuredLpRate = Number(managerConfig.settings?.policy_lp_toman_rate ?? managerConfig.settings?.policies?.loyalty?.lpTomanRate ?? 1000);
                     if (Number.isFinite(configuredLpRate) && configuredLpRate > 0) {
                         const lpResult = await client.query("SELECT FLOOR($1::numeric / $2::numeric)::bigint AS lp_amount", [invoiceTotal.toString(), String(Math.trunc(configuredLpRate))]);
                         const lpAmount = Number(lpResult.rows[0]?.lp_amount || 0);
