@@ -913,6 +913,33 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
         return res.status(400).json({success:false,error:"Invalid session start payload"});
     }
     const participants = raw.map(normalizeParticipant);
+    // Android historically keeps a local Room customer id when creating a customer and
+    // the self-hosted customer upsert may allocate a different server id. Before rejecting
+    // a start, reconcile that stale id only when the participant name uniquely identifies
+    // an active customer owned by this Manager. Never guess when the name is ambiguous.
+    for (const participant of participants) {
+        if (participant.isGuest || !participant.customerId) continue;
+        const direct = await pool.query(
+            "SELECT id,full_name FROM customers WHERE id=$1 AND manager_id=$2 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' LIMIT 1",
+            [participant.customerId, managerId]
+        );
+        const expectedName = participant.participantName.trim();
+        if (direct.rows[0]) {
+            const serverName = String(direct.rows[0].full_name || '').trim();
+            if (!expectedName || !serverName || serverName.localeCompare(expectedName, undefined, {sensitivity:'base'}) === 0) continue;
+        }
+        if (expectedName) {
+            const byName = await pool.query(
+                "SELECT id FROM customers WHERE manager_id=$1 AND lower(trim(full_name))=lower(trim($2)) AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' ORDER BY id DESC LIMIT 2",
+                [managerId, expectedName]
+            );
+            if (byName.rows.length === 1) {
+                participant.customerId = Number(byName.rows[0].id);
+                participant.participantKey = "customer:" + participant.customerId;
+                continue;
+            }
+        }
+    }
     if (!Number.isSafeInteger(requestedPrepayment) || requestedPrepayment < 0 || !Number.isSafeInteger(durationLimitMinutes) || durationLimitMinutes < 0) {
         res.locals.diagnosticCode='INVALID_START_BILLING_INPUT';
         return res.status(422).json({success:false,code:'INVALID_START_BILLING_INPUT'});
