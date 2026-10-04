@@ -3181,7 +3181,7 @@ fun ReviewedGroupCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "%,d تومان".format(Locale.US, totalPaid),
+                        text = "%,d تومان".format(Locale.US, totalPaid.toLong()),
                         fontWeight = FontWeight.Black,
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.primary

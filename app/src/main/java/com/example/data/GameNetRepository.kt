@@ -241,8 +241,8 @@ class GameNetRepository(private val db: AppDatabase) {
                 // Server is authoritative. Clear the complete local buffet-order cache first.
                 // A FREE/disabled station must never display or upload an old order.
                 for (st in remoteStations) stationOrderDao.clearForStation(st.id)
-                // Update local setting to match the number of active stations, not disabled rows.
-                saveSetting("station_count", remoteStations.count { it.status != "DISABLED" }.toString())
+                // Station rows are the physical resources; station_count is an explicit Manager setting.
+                // Do not overwrite the Manager setting from a transient/legacy station-row count.
                 for (st in remoteStations) {
                     if (st.status == "FREE" || st.status == "DISABLED") continue
                     try {

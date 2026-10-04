@@ -3293,11 +3293,15 @@ loadSettings()
                         val buffetGnReward = ((buffetCost / 100_000L) * _buffetRewardRate.value).coerceAtLeast(0L)
                         val sessionGnReward = (gameGnReward + buffetGnReward).coerceAtLeast(0L)
                         val gnStatus = if (isFullyPaid) "AVAILABLE" else "PENDING"
+                        val earnedLp = if (isFullyPaid && _lpTomanRate.value > 0L) {
+                            (rawTotal / _lpTomanRate.value).coerceAtLeast(0L)
+                        } else 0L
                         val updatedCust = existingCust.copy(
                             debt = existingCust.debt + remainingDebt,
                             points = newCustPts,
                             availableGn = existingCust.availableGn + if (gnStatus == "AVAILABLE") sessionGnReward else 0L,
-                            pendingGn = existingCust.pendingGn + if (gnStatus == "PENDING") sessionGnReward else 0L
+                            pendingGn = existingCust.pendingGn + if (gnStatus == "PENDING") sessionGnReward else 0L,
+                            lp = existingCust.lp + earnedLp
                         )
                         repository.insertCustomer(updatedCust)
                         if (sessionGnReward > 0L) {
@@ -3753,6 +3757,12 @@ loadSettings()
                             repository.updateGnLedgerEntry(availableEntry)
                         }
                     }
+                    val earnedLp = if (_lpTomanRate.value > 0L) {
+                        (transaction.amount / _lpTomanRate.value).coerceAtLeast(0L)
+                    } else 0L
+                    if (earnedLp > 0L) {
+                        updatedCust = updatedCust.copy(lp = updatedCust.lp + earnedLp)
+                    }
                 }
                 
                 repository.insertCustomer(updatedCust)
@@ -3850,6 +3860,11 @@ loadSettings()
         viewModelScope.launch(Dispatchers.IO) {
             repository.saveSetting("station_count", count.toString())
             _stationCount.value = count
+            // Persist the explicit Manager station-count setting on the server as well.
+            // This must survive relaunch/re-sync and must not be inferred from station rows.
+            if (!NetworkClient.isTrialMode && SelfHostedManager.currentManagerId.isNotBlank()) {
+                SelfHostedManager.saveManagerSetting("station_count", count.toString())
+            }
 
             // Get a default console type to assign to any new stations
             val consoleList = consoleTypes.value
