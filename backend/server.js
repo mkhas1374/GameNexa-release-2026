@@ -1565,10 +1565,15 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
                 const invoiceTotal = invoiceGameCost + invoiceBuffetCost;
                 const appliedPrepayment = prepayment > invoiceTotal ? invoiceTotal : prepayment;
                 const invoiceStatus = appliedPrepayment >= invoiceTotal ? 'PAID' : 'UNPAID';
-                const invoiceNumber = "GN-" + new Date().toISOString().replace(/[-:TZ.]/g,"").slice(0,14) + "-" + (payer.customer_id || "GUEST") + "-" + sessionId.slice(0,8);
+                // Invoice identity must be unique per payer, not merely per session/customer.
+                // Guest payers have NULL customer_id, so using only GUEST caused two guests in
+                // the same session to collide on invoices_manager_id_invoice_number_key.
+                // Keep it deterministic so a retry of the same settlement remains idempotent.
+                const payerIdentity = payer.customer_id ? `C${payer.customer_id}` : String(payer.participant_key || `G${payerIndex + 1}`).replace(/[^A-Za-z0-9_-]/g, "_");
+                const invoiceNumber = "GN-" + sessionId + "-" + payerIdentity;
                 const invoicePricingSnapshot = {...pricing,clubTier:tier,gameDiscountPercent,buffetDiscountPercent,fixedDiscountToman,prepaymentAmount:prepayment.toString(),appliedPrepayment:appliedPrepayment.toString()};
                 await client.query(
-                    "INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,$3,$4,$5,$6,'IRT',$7,$8,($7::numeric+$8::numeric),$9,$10,$11::jsonb,$12::jsonb,$13::jsonb) ON CONFLICT(session_id,customer_id) DO UPDATE SET status=EXCLUDED.status,game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,paid_amount=EXCLUDED.paid_amount,settlement_idempotency_key=COALESCE(invoices.settlement_idempotency_key,EXCLUDED.settlement_idempotency_key),pricing_snapshot=EXCLUDED.pricing_snapshot,updated_at=NOW()",
+                    "INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,$3,$4,$5,$6,'IRT',$7,$8,($7::numeric+$8::numeric),$9,$10,$11::jsonb,$12::jsonb,$13::jsonb) ON CONFLICT(manager_id,invoice_number) DO UPDATE SET status=EXCLUDED.status,game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,paid_amount=EXCLUDED.paid_amount,settlement_idempotency_key=COALESCE(invoices.settlement_idempotency_key,EXCLUDED.settlement_idempotency_key),pricing_snapshot=EXCLUDED.pricing_snapshot,customer_snapshot=EXCLUDED.customer_snapshot,updated_at=NOW()",
                     [invoiceNumber,managerId,payer.customer_id,sessionId,session.station_id,invoiceStatus,invoiceGameCost.toString(),invoiceBuffetCost.toString(),appliedPrepayment.toString(),"settle_"+sessionId+"_"+(payer.customer_id || "guest")+"_"+payer.participant_key,JSON.stringify(invoicePricingSnapshot),JSON.stringify({id:payer.customer_id || null,name:payer.participant_name,isGuest:Boolean(payer.is_guest)}),JSON.stringify({id:managerId})]
                 );
                 // Fully prepaid settlement invoices earn LP immediately. The ledger key makes this idempotent.
