@@ -85,6 +85,12 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     val stationStates: StateFlow<List<StationState>> = repository.allStationStates
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    // Immediate UI acknowledgement for START. The server remains authoritative; this state
+    // only prevents double taps and gives instant visual feedback while the authoritative
+    // start request is in flight. It is always cleared in the coroutine finally block.
+    private val _startingStationIds = MutableStateFlow<Set<Int>>(emptySet())
+    val startingStationIds: StateFlow<Set<Int>> = _startingStationIds.asStateFlow()
+
     val consoleTypes: StateFlow<List<ConsoleType>> = repository.allConsoleTypes
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -2594,7 +2600,10 @@ loadSettings()
         selectedCustomerNames: List<String>? = null,
         customerPrepaymentsMap: Map<Long, Long>? = null
     ) {
+        if (_startingStationIds.value.contains(stationId)) return
+        _startingStationIds.update { it + stationId }
         viewModelScope.launch(Dispatchers.IO) {
+            try {
             // Rehydrate the authenticated Manager identity before any action-triggered API call.
             // A recreated ViewModel can lose the in-memory singleton even though the encrypted
             // server session is still valid; that must never turn Start into a false "offline" error.
@@ -2759,6 +2768,9 @@ loadSettings()
                 if (warningTime > now) {
                     scheduleAlarm(stationId, warningTime)
                 }
+            }
+            } finally {
+                _startingStationIds.update { it - stationId }
             }
         }
     }

@@ -61,6 +61,7 @@ fun MainScreen(
     modifier: Modifier = Modifier
 ) {
     val stations by viewModel.stationStates.collectAsState()
+    val startingStationIds by viewModel.startingStationIds.collectAsState()
     val consoleList by viewModel.consoleTypes.collectAsState()
     val productList by viewModel.products.collectAsState()
     val ordersMap by viewModel.stationOrdersMap.collectAsState()
@@ -269,6 +270,7 @@ fun MainScreen(
 
                         StationCard(
                             station = station,
+                            isStarting = station.id in startingStationIds,
                             displayStationNumber = displayStationNumber,
                             orders = orders,
                             consoleList = consoleList,
@@ -300,6 +302,7 @@ fun MainScreen(
 @Composable
 fun StationCard(
     station: StationState,
+    isStarting: Boolean = false,
     displayStationNumber: Int,
     orders: List<com.example.data.StationOrder>,
     consoleList: List<ConsoleType>,
@@ -1327,7 +1330,9 @@ fun StationCard(
                 when {
                     isFree -> {
                         Button(
+                            enabled = !isStarting,
                             onClick = {
+                                if (isStarting) return@Button
                                 if (conflictingCustomerId != null) {
                                     val busyStationId = occupiedCustomerStationMap[conflictingCustomerId]
                                     val conflictCust = allCustomers.find { it.id == conflictingCustomerId }
@@ -1359,10 +1364,18 @@ fun StationCard(
                                 contentColor = MaterialTheme.colorScheme.onPrimary
                             )
                         ) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(12.dp))
+                            if (isStarting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(12.dp),
+                                    strokeWidth = 1.5.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                            } else {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(12.dp))
+                            }
                             Spacer(modifier = Modifier.width(2.dp))
                             Text(
-                                text = Localization.get("start", lang).uppercase(Locale.getDefault()),
+                                text = if (isStarting) "در حال شروع…" else Localization.get("start", lang).uppercase(Locale.getDefault()),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,

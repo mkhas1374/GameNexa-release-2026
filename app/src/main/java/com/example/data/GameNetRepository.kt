@@ -794,9 +794,19 @@ class GameNetRepository(private val db: AppDatabase) {
                     debt = cloud.debt,
                     credit = cloud.credit,
                     points = cloud.points,
-                    description = if (cloud.description.isNotBlank()) cloud.description else targetLocal.description,
+                    availableGn = cloud.availableGn,
+                    pendingGn = cloud.pendingGn,
+                    lp = cloud.lp,
+                    tier = if (cloud.tier.isNotBlank()) cloud.tier else targetLocal.tier,
+                    lastActivityTimestamp = cloud.lastActivityTimestamp,
+                    totalQualifiedSpend = cloud.totalQualifiedSpend,
+                    totalVisitsCount = cloud.totalVisitsCount,
+                    lastTierReviewTimestamp = cloud.lastTierReviewTimestamp,
                     inviteCode = if (cloud.inviteCode.isNotBlank()) cloud.inviteCode else targetLocal.inviteCode,
-                    invitedByCode = if (cloud.invitedByCode.isNotBlank()) cloud.invitedByCode else targetLocal.invitedByCode
+                    invitedByCode = if (cloud.invitedByCode.isNotBlank()) cloud.invitedByCode else targetLocal.invitedByCode,
+                    invitePointsAwarded = cloud.invitePointsAwarded,
+                    rewardsConsumed = cloud.rewardsConsumed,
+                    description = if (cloud.description.isNotBlank()) cloud.description else targetLocal.description
                 )
                 customerDao.insert(updated)
             } else {
