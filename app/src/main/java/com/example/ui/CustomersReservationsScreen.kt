@@ -3159,7 +3159,7 @@ fun ReviewedGroupCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                        modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.weight(1f),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -3254,7 +3254,7 @@ fun DebtorGroupCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                        modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.weight(1f),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {

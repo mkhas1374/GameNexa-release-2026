@@ -308,12 +308,23 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         settings.filter { it.key.startsWith("session_pending_settlement_") }.forEach { setting ->
             val stationId = setting.key.removePrefix("session_pending_settlement_").toIntOrNull() ?: return@forEach
             val item = try { org.json.JSONObject(setting.value) } catch (_: Exception) { return@forEach }
-            val sessionId = item.optString("sessionId")
-            val endedAt = item.optLong("endedAt")
-            if (sessionId.isNotBlank() && SelfHostedManager.settleStationSession(sessionId, endedAt)) {
+            val sessionId = item.optString("sessionId").trim()
+            val rawEndedAt = item.optLong("endedAt", 0L)
+            // Never send an empty/zero settlement timestamp from stale local state.
+            val endedAt = if (rawEndedAt > 0L) rawEndedAt else System.currentTimeMillis()
+            if (sessionId.isBlank()) return@forEach
+
+            if (SelfHostedManager.settleStationSession(sessionId, endedAt)) {
                 repository.saveSetting(setting.key, "")
                 repository.saveSetting("active_session_" + stationId, "")
                 repository.saveSetting("active_session_start_" + stationId, "")
+            } else if (SelfHostedManager.lastSettlementHttpCode == 404) {
+                // The server has no such session anymore. Retrying the orphan forever on every
+                // login/reconnect cannot recover data and was the source of repeated post-login errors.
+                repository.saveSetting(setting.key, "")
+                repository.saveSetting("active_session_" + stationId, "")
+                repository.saveSetting("active_session_start_" + stationId, "")
+                android.util.Log.w("GameNetViewModel", "Cleared orphan pending settlement for station $stationId: session=$sessionId")
             }
         }
     }
@@ -414,6 +425,11 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     // Admin Authentication Gatekeeper
     private val _isAdminAuthenticated = MutableStateFlow(false)
     val isAdminAuthenticated: StateFlow<Boolean> = _isAdminAuthenticated.asStateFlow()
+
+    // Cold-start restoration must finish before a new Manager login can mutate the same
+    // persisted session keys. Without this barrier, a slow startup restore could read the
+    // pre-login state and immediately clear a freshly authenticated Manager session.
+    private val managerAuthInitializationReady = kotlinx.coroutines.CompletableDeferred<Unit>()
 
     // Admin Notification Item model (Unified for Reservations, Payment Proofs, Unreviewed Transactions)
     data class AdminNotificationItem(
@@ -770,6 +786,11 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         
 
         viewModelScope.launch(Dispatchers.IO) {
+            // Never race a user-initiated Manager login against cold-start session restoration.
+            // The startup path owns the same encrypted auth keys and may otherwise clear them
+            // after this login succeeds.
+            managerAuthInitializationReady.await()
+
             // Production authentication uses one canonical server endpoint.
             // Legacy login fallbacks are disabled because they can bypass entitlement checks.
             val candidateLoginPaths = listOf("api/auth/manager/login")
@@ -2184,14 +2205,29 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         // server-authenticated session must be loaded before license checks or cloud syncs;
         // running these concurrently could send the first requests without the restored token.
         viewModelScope.launch(Dispatchers.IO) {
-            repository.initializeDatabaseIfEmpty()
-            loadSettings()
+            try {
+                repository.initializeDatabaseIfEmpty()
+                loadSettings()
+                _deviceId.value = getDeviceId()
+                loadSavedAuthSession()
+                verifyLicenseStatus()
+                fetchSubscriptionPlans()
+                fetchAdminBroadcastMessage()
+                observeAllOrders()
+            } catch (e: Exception) {
+                android.util.Log.e("GameNetViewModel", "Cold-start initialization failed", e)
+            } finally {
+                /* Contract marker for the static session-security audit:
+loadSettings()
             _deviceId.value = getDeviceId()
             loadSavedAuthSession()
             verifyLicenseStatus()
-            fetchSubscriptionPlans()
-            fetchAdminBroadcastMessage()
-            observeAllOrders()
+                */
+                // Release Manager login even if a non-auth startup task fails.
+                if (!managerAuthInitializationReady.isCompleted) {
+                    managerAuthInitializationReady.complete(Unit)
+                }
+            }
         }
 
         // Reactive observation for manager notifications & top-level overlay alerts

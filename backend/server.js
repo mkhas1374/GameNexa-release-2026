@@ -1370,8 +1370,16 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
             await client.query("COMMIT");
             return res.json({success:true,duplicate:true,sessionId,serverTime:Date.now(),durationSeconds:Number(session.duration_seconds || 0),gameCost:String(session.game_cost || "0"),buffetCost:String(session.buffet_cost || "0"),totalCost:String(session.total_cost || "0"),invoices:invoices.rows});
         }
-        const endedAt = new Date(Math.min(endedAtMs,Date.now()));
-        if (endedAt.getTime() < new Date(session.started_at).getTime()) { await client.query("ROLLBACK"); return res.status(422).json({success:false,error:"Invalid end time"}); }
+        let endedAt = new Date(Math.min(endedAtMs,Date.now()));
+        const startedAt = new Date(session.started_at);
+        if (endedAt.getTime() < startedAt.getTime()) {
+            // A persisted client-side pending settlement can contain an obsolete device clock
+            // after an app update/restart. Do not leave the session permanently un-settleable.
+            // Server time is authoritative and can never precede the session start.
+            endedAt = new Date(Date.now());
+            res.locals.diagnosticCode = "SETTLEMENT_END_BEFORE_START_REPAIRED";
+            res.locals.diagnosticMessage = "Client end time preceded server session start; repaired to server time.";
+        }
         const events = await client.query("SELECT event_type,occurred_at,sequence_no,payload FROM session_events WHERE session_id=$1 AND manager_id=$2 ORDER BY sequence_no ASC",[sessionId,managerId]);
         const activeSeconds = sessionEventActiveSeconds(events.rows.filter(e => e.event_type !== "START"),session.started_at,endedAt.toISOString());
         const pricing = session.pricing_snapshot || {};

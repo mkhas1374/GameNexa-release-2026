@@ -83,6 +83,8 @@ data class CloudAuditLog(
 object SelfHostedManager {
     @Volatile var lastStationStartWasTransportFailure: Boolean = false
     @Volatile var lastStationStartError: String = ""
+    @Volatile var lastSettlementHttpCode: Int = 0
+    @Volatile var lastSettlementErrorBody: String = ""
     private const val TAG = "SelfHostedManager"
     
     // Dedicated Production Backend Server
@@ -1999,6 +2001,8 @@ object SelfHostedManager {
                 .build()
             client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
+                lastSettlementHttpCode = response.code
+                lastSettlementErrorBody = if (response.isSuccessful) "" else body.take(1000)
                 if (!response.isSuccessful) Log.e(TAG, "settleStationSession HTTP " + response.code + ": " + body)
                 response.isSuccessful
             }
