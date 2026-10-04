@@ -1794,13 +1794,21 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private val _isServerConnected = MutableStateFlow(true)
+    private val _isServerConnected = MutableStateFlow(false)
     val isServerConnected: StateFlow<Boolean> = _isServerConnected.asStateFlow()
 
+    private val _lastSuccessfulServerCheckElapsed = MutableStateFlow(0L)
+    val lastSuccessfulServerCheckElapsed: StateFlow<Long> = _lastSuccessfulServerCheckElapsed.asStateFlow()
+
     // 24-hour Offline Grace Period state
-    val totalGracePeriodSeconds: Long = 24L * 3600L // 86400 seconds
+    val totalGracePeriodSeconds: Long = 24L * 3600L
     private val _offlineGraceSecondsRemaining = MutableStateFlow(86400L)
     val offlineGraceSecondsRemaining: StateFlow<Long> = _offlineGraceSecondsRemaining.asStateFlow()
+
+    // SUPER_MANAGER gets a visible 24-hour reconnect countdown without being converted
+    // into the normal Manager subscription/trial enforcement path.
+    private val _superManagerOfflineBannerSecondsRemaining = MutableStateFlow(86400L)
+    val superManagerOfflineBannerSecondsRemaining: StateFlow<Long> = _superManagerOfflineBannerSecondsRemaining.asStateFlow()
 
     private val _isGracePeriodExpired = MutableStateFlow(false)
     val isGracePeriodExpired: StateFlow<Boolean> = _isGracePeriodExpired.asStateFlow()
@@ -2135,6 +2143,25 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
+        // Continuously verify reachability of the GameNexa API itself. This is intentionally
+        // independent of Android's generic network state so Wi-Fi/mobile/VPN/proxy changes
+        // are reflected as soon as the API becomes reachable or unreachable.
+        viewModelScope.launch(Dispatchers.IO) {
+            var lastProbeElapsed = 0L
+            while (true) {
+                val elapsed = android.os.SystemClock.elapsedRealtime()
+                if (lastProbeElapsed == 0L || elapsed - lastProbeElapsed >= 5000L) {
+                    lastProbeElapsed = elapsed
+                    val reachable = runCatching {
+                        NetworkClient.getApi(_serverUrl.value).healthCheck().isSuccessful
+                    }.getOrDefault(false)
+                    _isServerConnected.value = reachable
+                    if (reachable) _lastSuccessfulServerCheckElapsed.value = elapsed
+                }
+                delay(5000L)
+            }
+        }
+
         // Start real-time ticking for UI display (Zero network calls - purely local time)
         viewModelScope.launch {
             var lastElapsedTick = android.os.SystemClock.elapsedRealtime()
@@ -2160,12 +2187,17 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
                 // 24-hour Offline Grace Period logic using SystemClock.elapsedRealtime()
                 if (!_isServerConnected.value) {
-                    if (!isTrial && currentRole != "SUPER_MANAGER" && (currentRole == "MANAGER" || _isSubscribed.value)) {
-                        val deltaMs = (currentElapsed - lastElapsedTick).coerceAtLeast(0L)
+                    val deltaMs = (currentElapsed - lastElapsedTick).coerceAtLeast(0L)
+                    if (!isTrial && currentRole == "SUPER_MANAGER") {
+                        val used = decryptSetting("enc_super_offline_used_ms").toLongOrNull() ?: 0L
+                        val newUsed = used + deltaMs
+                        encryptSetting("enc_super_offline_used_ms", newUsed.toString())
+                        _superManagerOfflineBannerSecondsRemaining.value =
+                            ((totalGracePeriodSeconds * 1000L - newUsed).coerceAtLeast(0L) / 1000L)
+                    } else if (!isTrial && (currentRole == "MANAGER" || _isSubscribed.value)) {
                         val savedOfflineUsedMs = decryptSetting("enc_offline_used_ms").toLongOrNull() ?: 0L
                         val newOfflineUsedMs = savedOfflineUsedMs + deltaMs
                         encryptSetting("enc_offline_used_ms", newOfflineUsedMs.toString())
-                        
                         val remainingMs = (totalGracePeriodSeconds * 1000L - newOfflineUsedMs).coerceAtLeast(0L)
                         val remainingSec = remainingMs / 1000L
                         _offlineGraceSecondsRemaining.value = remainingSec
@@ -2189,11 +2221,15 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         flushPendingCustomerTransactions()
                         flushPendingSettlements()
                     }
-                    // Connected to server - reset grace period
+                    // Connected to server - reset offline timers after an authoritative probe.
                     if (_offlineGraceSecondsRemaining.value < totalGracePeriodSeconds || _isGracePeriodExpired.value) {
                         _offlineGraceSecondsRemaining.value = totalGracePeriodSeconds
                         _isGracePeriodExpired.value = false
                         encryptSetting("enc_offline_used_ms", "0")
+                    }
+                    if (_superManagerOfflineBannerSecondsRemaining.value < totalGracePeriodSeconds) {
+                        _superManagerOfflineBannerSecondsRemaining.value = totalGracePeriodSeconds
+                        encryptSetting("enc_super_offline_used_ms", "0")
                     }
                 }
                 lastElapsedTick = currentElapsed
