@@ -925,6 +925,9 @@ object NetworkClient {
 
             val okHttpClientBuilder = OkHttpClient.Builder()
                 .dns(GameNexaDns)
+                // Explicitly honor Android's system ProxySelector so HTTP(S) proxies and
+                // VPN-provided routing are not bypassed by the app.
+                .proxySelector(java.net.ProxySelector.getDefault())
                 .connectTimeout(60, TimeUnit.SECONDS)
                 .readTimeout(60, TimeUnit.SECONDS)
                 .writeTimeout(60, TimeUnit.SECONDS)
