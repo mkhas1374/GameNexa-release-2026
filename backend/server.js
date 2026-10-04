@@ -939,6 +939,21 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
                 continue;
             }
         }
+
+        // If the Manager currently has exactly one active customer and Android supplied
+        // a stale local Room id without a usable name, the only safe reconciliation is
+        // that single customer. Never apply this fallback when multiple active customers
+        // exist, because that would turn an identity mismatch into an unsafe guess.
+        if (!expectedName) {
+            const onlyActive = await pool.query(
+                "SELECT id FROM customers WHERE manager_id=$1 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' ORDER BY id LIMIT 2",
+                [managerId]
+            );
+            if (onlyActive.rows.length === 1) {
+                participant.customerId = Number(onlyActive.rows[0].id);
+                participant.participantKey = "customer:" + participant.customerId;
+            }
+        }
     }
     if (!Number.isSafeInteger(requestedPrepayment) || requestedPrepayment < 0 || !Number.isSafeInteger(durationLimitMinutes) || durationLimitMinutes < 0) {
         res.locals.diagnosticCode='INVALID_START_BILLING_INPUT';
