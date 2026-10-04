@@ -4316,8 +4316,20 @@ loadSettings()
 
     // Helper Methods
 
+    private fun canonicalConsoleKey(name: String): String {
+        val key = name.trim().uppercase(Locale.US).replace(Regex("[^A-Z0-9]"), "")
+        return when {
+            key == "PS5" || key == "PLAYSTATION5" || key == "PLAYSTATION5CONSOLE" -> "PS5"
+            key == "PS4" || key == "PLAYSTATION4" || key == "PLAYSTATION4CONSOLE" -> "PS4"
+            key == "SIMD" || key == "SIMULATOR" || key.contains("DRIVINGSIMULATOR") || key.contains("SHABIHSAZ") -> "SIMD"
+            key == "XBOX" || key == "XBOXSERIES" || key == "XBOXSERIESX" -> "XBOX"
+            else -> key
+        }
+    }
+
     suspend fun getHourlyRate(consoleName: String, controllerCount: Int): Long {
-        val console = repository.getConsoleTypeByName(consoleName) ?: return 0L
+        val wanted = canonicalConsoleKey(consoleName)
+        val console = repository.allConsoleTypes.firstOrNull()?.firstOrNull { canonicalConsoleKey(it.name) == wanted } ?: return 0L
         return when (controllerCount) {
             1 -> console.price1
             2 -> console.price2
@@ -4328,7 +4340,8 @@ loadSettings()
     }
 
     fun getHourlyRateSync(consoleName: String, controllerCount: Int): Long {
-        val console = consoleTypes.value.find { it.name == consoleName } ?: return 0L
+        val wanted = canonicalConsoleKey(consoleName)
+        val console = consoleTypes.value.find { canonicalConsoleKey(it.name) == wanted } ?: return 0L
         return when (controllerCount) {
             1 -> console.price1
             2 -> console.price2
