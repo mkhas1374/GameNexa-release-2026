@@ -105,6 +105,9 @@ interface GameNetApi {
 
 
 
+    @POST("api/v1/manager/billing-preview")
+    suspend fun billingPreview(@Body request: BillingPreviewRequest): BillingPreviewResponse
+
     @GET("api/v1/manager/console-types")
     suspend fun getConsoleTypes(): List<ConsoleType>
 
@@ -837,6 +840,22 @@ data class ReservationDbDto(
     @com.squareup.moshi.Json(name = "duration_minutes") val durationMinutes: Int = 0,
     @com.squareup.moshi.Json(name = "station_id") val stationId: Long? = null,
     @com.squareup.moshi.Json(name = "snap_final_price") val finalPrice: String? = null
+)
+
+@com.squareup.moshi.JsonClass(generateAdapter = true)
+data class BillingPreviewRequest(
+    val consoleType: String,
+    val controllerCount: Int,
+    val amountToman: Long = 0L,
+    val minutes: Int = 0
+)
+
+@com.squareup.moshi.JsonClass(generateAdapter = true)
+data class BillingPreviewResponse(
+    val success: Boolean = false,
+    val hourlyRate: Long = 0L,
+    val durationMillis: Long = 0L,
+    val costForMinutesToman: Long = 0L
 )
 
 @com.squareup.moshi.JsonClass(generateAdapter = true)

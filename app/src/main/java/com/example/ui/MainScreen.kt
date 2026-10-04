@@ -885,17 +885,24 @@ fun StationCard(
                         }
 
                         val inputPrice = payInput.toLongOrNull() ?: 0L
-                        val amountDurationMillis = exactPrepaymentDurationMillis(inputPrice, hourlyRate, 0)
-                        val durationFeedback = if (inputPrice > 0L && hourlyRate > 0L) {
-                            if (lang == "fa") "زمان معادل: ${formatTime(amountDurationMillis)}" else "Equivalent time: ${formatTime(amountDurationMillis)}"
-                        } else ""
-
-                        if (durationFeedback.isNotEmpty()) {
+                        val inputMinutes = durationInput.toIntOrNull()?.coerceAtLeast(0) ?: 0
+                        val amountDurationMillis = ExactBilling.durationMillisForAmount(inputPrice, hourlyRate)
+                        val durationCostExact = ExactBilling.costForMinutes(hourlyRate, inputMinutes)
+                        if (inputPrice > 0L && hourlyRate > 0L) {
                             Text(
-                                text = durationFeedback,
+                                text = if (lang == "fa") "زمان معادل: ${formatTime(amountDurationMillis)}" else "Equivalent time: ${formatTime(amountDurationMillis)}",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(bottom = 1.dp)
+                            )
+                        }
+                        if (inputMinutes > 0 && hourlyRate > 0L) {
+                            Text(
+                                text = if (lang == "fa") "هزینه این مدت: ${ExactBilling.formatToman(durationCostExact)}" else "Cost for this duration: ${ExactBilling.formatToman(durationCostExact)}",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.secondary,
                                 modifier = Modifier.padding(bottom = 2.dp)
                             )
                         }

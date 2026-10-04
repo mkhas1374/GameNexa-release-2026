@@ -169,6 +169,24 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
 
   // Console types and buffet products live inside the manager configuration document.
   app.get('/api/v1/manager/console-types', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{res.json((await cfgGet(manager(req))).consoleTypes||[]);}catch(e){res.status(500).json({error:'Internal server error'});} });
+  app.post('/api/v1/manager/billing-preview', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{
+    try {
+      const x=req.body||{};
+      const consoleType=String(x.consoleType||'').trim();
+      const controllerCount=Number(x.controllerCount||0);
+      const amount=Number(x.amountToman||0);
+      const minutes=Number(x.minutes||0);
+      if(!consoleType || !Number.isInteger(controllerCount) || controllerCount<1 || controllerCount>4 || !Number.isSafeInteger(amount) || amount<0 || !Number.isSafeInteger(minutes) || minutes<0) return res.status(422).json({success:false,code:'INVALID_BILLING_PREVIEW_INPUT'});
+      const cfg=await cfgGet(manager(req));
+      const rates=Array.isArray(cfg.consoleTypes)?cfg.consoleTypes:[];
+      const c=rates.find(v=>String(v?.name||'').trim().toLowerCase()===consoleType.toLowerCase());
+      const hourlyRate=Number(c?.['price'+controllerCount]||0);
+      if(!Number.isSafeInteger(hourlyRate) || hourlyRate<=0) return res.status(422).json({success:false,code:'SERVER_PRICING_NOT_CONFIGURED'});
+      const durationMillis=amount>0 ? Math.floor(amount*3600000/hourlyRate) : 0;
+      const durationCost=minutes>0 ? Math.floor(hourlyRate*minutes/60) : 0;
+      return res.json({success:true,consoleType,controllerCount,hourlyRate,amountToman:amount,minutes,durationMillis,durationSeconds:Math.floor(durationMillis/1000),costForMinutesToman:durationCost});
+    }catch(e){res.status(500).json({success:false,error:'Internal server error'});}
+  });
   app.post('/api/v1/manager/console-types', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const c=await cfgGet(manager(req));const a=Array.isArray(c.consoleTypes)?c.consoleTypes:[];const x=req.body||{};const i=a.findIndex(v=>v.name===x.name);if(i>=0)a[i]=x;else a.push(x);await cfgPut(manager(req),{consoleTypes:a});res.json(x);}catch(e){res.status(500).json({error:'Internal server error'});} });
   app.delete('/api/v1/manager/console-types/:name', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const c=await cfgGet(manager(req));await cfgPut(manager(req),{consoleTypes:(c.consoleTypes||[]).filter(v=>v.name!==req.params.name)});res.status(204).end();}catch(e){res.status(500).json({error:'Internal server error'});} });
   app.get('/api/v1/manager/products', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{res.json((await cfgGet(manager(req))).products||[]);}catch(e){res.status(500).json({error:'Internal server error'});} });

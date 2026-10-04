@@ -16,6 +16,7 @@ import com.example.MainActivity
 import com.example.data.*
 import com.example.data.network.*
 import com.example.receiver.AlarmReceiver
+import com.example.util.ExactBilling
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.coroutines.Dispatchers
@@ -2638,12 +2639,19 @@ loadSettings()
                 id to (effectiveCustomerNames.getOrNull(index)?.takeIf { it.isNotBlank() }
                     ?: if (id < 0) "مهمان " + (-id) else "مشتری " + id)
             }
-            val requestedPrepayment = prepaymentText.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
-            // A manually entered duration is independent from prepayment. When duration is
-            // omitted, an explicit prepayment can still imply a time limit for backward
-            // compatibility.
+            var requestedPrepayment = prepaymentText.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+            // Both inputs are first-class billing inputs. If Manager entered minutes but left
+            // the initial-payment field empty, derive the exact whole-Toman cost from the same
+            // hourly rate used by the server. This makes the offline path behave exactly like
+            // the online path instead of silently starting a zero-prepayment session.
             val manuallyRequestedDuration = durationText.toLongOrNull()?.coerceAtLeast(0L)?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: 0
             var durationMinutes = manuallyRequestedDuration
+            if (requestedPrepayment == 0L && durationMinutes > 0) {
+                val hourlyRate = getHourlyRate(station.consoleType, station.controllerCount)
+                if (hourlyRate > 0L) {
+                    requestedPrepayment = ExactBilling.costForMinutes(hourlyRate, durationMinutes).setScale(0, java.math.RoundingMode.DOWN).longValueExact()
+                }
+            }
             if (durationMinutes == 0 && requestedPrepayment > 0L) {
                 val hourlyRate = getHourlyRate(station.consoleType, station.controllerCount)
                 if (hourlyRate > 0L) {
