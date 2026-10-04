@@ -184,6 +184,16 @@ fun MainScreen(
                     )
                 }
             }
+
+            // SUPER_MANAGER is lifetime-entitled, but still needs an explicit visible
+            // reconnect warning when the GameNexa API itself becomes unreachable.
+            if (currentRole == "SUPER_MANAGER" && !isServerConnected) {
+                SuperManagerOfflineBanner(
+                    lang = lang,
+                    remainingSeconds = viewModel.superManagerOfflineBannerSecondsRemaining.collectAsState().value
+                )
+            }
+
             Spacer(modifier = Modifier.height(4.dp))
 
             // Station Filter Summary Row with 3 Colored Circle Badges
@@ -1914,6 +1924,67 @@ private fun ServerClockWarningOverlay(
 
 
 
+
+@Composable
+private fun SuperManagerOfflineBanner(
+    lang: String,
+    remainingSeconds: Long
+) {
+    val safeSeconds = remainingSeconds.coerceAtLeast(0L)
+    val hours = safeSeconds / 3600L
+    val minutes = (safeSeconds % 3600L) / 60L
+    val seconds = safeSeconds % 60L
+    val timer = String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds)
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF8A1C1C)),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (lang == "fa") "⚠️ اتصال سرور قطع است" else "⚠️ Server connection is offline",
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFB91C1C)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        text = timer,
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Black,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+            Text(
+                text = if (lang == "fa")
+                    "ارتباط اینترنتی برنامه با سرور GameNexa برقرار نیست. تا ۲۴ ساعت فرصت اتصال مجدد دارید. VPN، اینترنت موبایل، Wi‑Fi یا پروکسی را بررسی کنید."
+                else
+                    "GameNexa cannot reach its server. You have up to 24 hours to reconnect. Check Wi‑Fi, mobile data, VPN or proxy.",
+                color = Color.White.copy(alpha = 0.96f),
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
+        }
+    }
+}
 
 @Composable
 fun SubscriptionWarningBanner(
