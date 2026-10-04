@@ -918,6 +918,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                                 flushPendingSettlements()
                                 SelfHostedManager.fetchAllFromCloud()
                                 repository.syncAllWithServer()
+                                reconcileActiveStationsFromServer()
                             }
                             withContext(Dispatchers.Main) {
                                 if (_isSubscribed.value) {
@@ -2269,6 +2270,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     SelfHostedManager.fetchArchivedCustomersFromCloud()
                     flushPendingCustomerTransactions()
                     repository.syncCustomerTransactionsFromServer()
+                    repository.syncAllWithServer()
+                    reconcileActiveStationsFromServer()
                 }
                 observeAllOrders()
             } catch (e: Exception) {
@@ -2602,6 +2605,124 @@ loadSettings()
 
     // Station Actions
 
+    // Server-authoritative live-session hydration. Room is only a cache; after process death,
+    // reinstall, clear-data or a second Manager device, every ACTIVE/PAUSED session must be
+    // reconstructed from the server before the hall is rendered.
+    private suspend fun reconcileActiveStationsFromServer(): Boolean {
+        if (NetworkClient.isTrialMode || SelfHostedManager.currentManagerId.isBlank()) return false
+        val snapshot = SelfHostedManager.fetchLiveSessionsSnapshot() ?: return false
+        val serverTime = snapshot.optLong("serverTime", System.currentTimeMillis())
+        serverClockAnchorElapsedRealtime = android.os.SystemClock.elapsedRealtime()
+        _serverClockMillis.value = serverTime
+        val sessions = snapshot.optJSONArray("sessions") ?: org.json.JSONArray()
+        val byStation = mutableMapOf<Int, org.json.JSONObject>()
+        for (i in 0 until sessions.length()) {
+            val item = sessions.optJSONObject(i) ?: continue
+            val stationId = item.optInt("station_id", item.optInt("stationId", 0))
+            if (stationId > 0) byStation[stationId] = item
+        }
+
+        val configured = repository.allStationStates.firstOrNull().orEmpty()
+        for (station in configured) {
+            val live = byStation[station.id]
+            val pendingLocal = repository.getSetting("session_pending_start_${station.id}")
+            val pendingSettlement = repository.getSetting("session_pending_settlement_${station.id}")
+            if (live == null) {
+                // A locally queued offline session is not allowed to disappear merely because
+                // the server has not seen it yet. Otherwise retain the local operational state
+                // until reconciliation succeeds.
+                if (!pendingLocal.isNullOrBlank() || !pendingSettlement.isNullOrBlank()) continue
+                val free = station.copy(
+                    status = "FREE",
+                    startTimeMillis = 0L,
+                    lastStateChangeTimeMillis = 0L,
+                    elapsedPlayingTimeMillis = 0L,
+                    prepaymentAmount = 0L,
+                    durationLimitMinutes = 0,
+                    selectedCustomerIdsStr = "",
+                    selectedCustomerNamesStr = "",
+                    segmentsJson = "",
+                    customerPrepaymentsJson = "",
+                    payerCustomerIdsStr = "",
+                    payerCustomerNamesStr = ""
+                )
+                repository.insertStationStateLocal(free)
+                repository.clearOrdersForStationLocal(station.id)
+                repository.saveSetting("active_session_${station.id}", "")
+                repository.saveSetting("active_session_start_${station.id}", "")
+                continue
+            }
+
+            val status = live.optString("status", "ACTIVE").uppercase()
+            val pricing = live.optJSONObject("pricing_snapshot")
+            val participants = live.optJSONArray("participants") ?: org.json.JSONArray()
+            val ids = mutableListOf<Long>()
+            val names = mutableListOf<String>()
+            val prepayments = mutableMapOf<Long, Long>()
+            for (j in 0 until participants.length()) {
+                val part = participants.optJSONObject(j) ?: continue
+                val cid = part.optLong("customerId", 0L)
+                val name = part.optString("participantName", if (cid > 0) "مشتری $cid" else "مهمان")
+                if (cid > 0) {
+                    ids += cid
+                    names += name
+                    val pp = part.optLong("prepaymentAmount", 0L)
+                    if (pp > 0) prepayments[cid] = pp
+                }
+            }
+            val snapshotPrepayments = pricing?.optJSONObject("customerPrepayments")
+            snapshotPrepayments?.keys()?.forEach { key ->
+                val cid = key.toLongOrNull() ?: 0L
+                val amount = snapshotPrepayments.optLong(key, 0L)
+                if (cid > 0 && amount > 0) prepayments[cid] = amount
+            }
+            val startedAt = runCatching {
+                java.time.Instant.parse(live.optString("started_at")).toEpochMilli()
+            }.getOrDefault(live.optLong("started_at", serverTime))
+            val activeSeconds = live.optLong("activeSeconds", 0L).coerceAtLeast(0L)
+            val hydrated = station.copy(
+                status = if (status == "PAUSED") "PAUSED" else "RUNNING",
+                controllerCount = live.optInt("controller_count", station.controllerCount).coerceIn(1, 4),
+                consoleType = live.optString("console_type", station.consoleType).ifBlank { station.consoleType },
+                startTimeMillis = startedAt,
+                lastStateChangeTimeMillis = serverTime,
+                elapsedPlayingTimeMillis = activeSeconds * 1000L,
+                prepaymentAmount = pricing?.optLong("initialPrepaymentAmount", 0L) ?: 0L,
+                durationLimitMinutes = pricing?.optInt("durationLimitMinutes", 0) ?: 0,
+                selectedCustomerIdsStr = ids.joinToString(","),
+                selectedCustomerNamesStr = names.joinToString(","),
+                // The session timeline is server-owned. Never carry segments from a previous session.
+                segmentsJson = "",
+                customerPrepaymentsJson = prepayments.entries.joinToString(",") { "${it.key}:${it.value}" }
+            )
+            repository.insertStationStateLocal(hydrated)
+            repository.saveSetting("active_session_${station.id}", live.optString("id"))
+            repository.saveSetting("active_session_start_${station.id}", startedAt.toString())
+
+            repository.clearOrdersForStationLocal(station.id)
+            val orders = live.optJSONArray("orders") ?: org.json.JSONArray()
+            for (j in 0 until orders.length()) {
+                val order = orders.optJSONObject(j) ?: continue
+                val productName = order.optString("productName").trim()
+                val quantity = order.optInt("quantity", 0)
+                if (productName.isBlank() || quantity <= 0) continue
+                val targetId = if (order.isNull("targetCustomerId")) null else order.optLong("targetCustomerId", 0L).takeIf { it > 0L }
+                val targetName = order.optString("targetCustomerName").takeIf { it.isNotBlank() }
+                repository.insertStationOrderLocal(
+                    com.example.data.StationOrder(
+                        id = "${station.id}_${productName}",
+                        stationId = station.id,
+                        productName = productName,
+                        quantity = quantity,
+                        targetCustomerId = targetId,
+                        targetCustomerName = targetName
+                    )
+                )
+            }
+        }
+        return true
+    }
+
     fun startStation(
         stationId: Int,
         prepaymentText: String,
@@ -2754,6 +2875,7 @@ loadSettings()
                                     startTimeMillis = authoritativeStart,
                                     lastStateChangeTimeMillis = System.currentTimeMillis(),
                                     elapsedPlayingTimeMillis = elapsed,
+                                    segmentsJson = "",
                                     prepaymentAmount = initialPrepayment,
                                     durationLimitMinutes = snapshot?.optInt("durationLimitMinutes", 0) ?: 0,
                                     selectedCustomerIdsStr = ids.joinToString(","),
@@ -2825,11 +2947,17 @@ loadSettings()
 
             val updated = station.copy(
                 status = "RUNNING",
-                startTimeMillis = if (station.startTimeMillis == 0L) now else station.startTimeMillis,
+                startTimeMillis = now,
                 lastStateChangeTimeMillis = now,
+                elapsedPlayingTimeMillis = 0L,
                 prepaymentAmount = prepayment,
                 durationLimitMinutes = durationMinutes,
-                customerPrepaymentsJson = prepaymentsJson
+                selectedCustomerIdsStr = effectiveCustomerIds.joinToString(","),
+                selectedCustomerNamesStr = effectiveCustomerNames.joinToString(","),
+                customerPrepaymentsJson = prepaymentsJson,
+                segmentsJson = "",
+                payerCustomerIdsStr = "",
+                payerCustomerNamesStr = ""
             )
 
             saveAndSyncStationState(updated)

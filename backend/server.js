@@ -1399,6 +1399,59 @@ app.get("/api/station/active", requireManagerAuth, requireActiveEntitlement, asy
     } catch(e) { return res.status(500).json({success:false,error:"Active session lookup failed"}); }
 });
 
+app.get("/api/v1/manager/live-sessions", requireManagerAuth, requireActiveEntitlement, async (req,res) => {
+    const managerId = sessionManagerId(req);
+    if (!managerId) return res.status(401).json({success:false,error:"Manager identity missing"});
+    try {
+        const result = await pool.query(`
+            SELECT gs.id,gs.station_id,gs.status,gs.console_type,gs.controller_count,gs.started_at,gs.paused_at,
+                   gs.pricing_snapshot,
+                   COALESCE((SELECT json_agg(json_build_object(
+                       'customerId',sp.customer_id,'participantKey',sp.participant_key,
+                       'participantName',sp.participant_name,'isGuest',sp.is_guest,
+                       'isPayer',sp.is_payer,'prepaymentAmount',sp.prepayment_amount
+                   ) ORDER BY sp.id) FROM session_participants sp
+                     WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id),'[]'::json) AS participants,
+                   COALESCE((SELECT json_agg(json_build_object(
+                       'productName',so.product_name,'quantity',so.quantity,
+                       'unitPrice',so.unit_price,'targetCustomerId',so.target_customer_id,
+                       'lineTotal',so.line_total,'createdAt',so.created_at
+                   ) ORDER BY so.created_at,so.id) FROM session_orders so
+                     WHERE so.session_id=gs.id AND so.manager_id=gs.manager_id),'[]'::json) AS orders,
+                   COALESCE((SELECT json_agg(json_build_object(
+                       'eventType',se.event_type,'occurredAt',se.occurred_at,
+                       'sequenceNo',se.sequence_no,'payload',se.payload
+                   ) ORDER BY se.sequence_no) FROM session_events se
+                     WHERE se.session_id=gs.id AND se.manager_id=gs.manager_id),'[]'::json) AS events
+            FROM game_sessions gs
+            WHERE gs.manager_id=$1 AND gs.status IN ('ACTIVE','PAUSED')
+            ORDER BY gs.station_id,gs.started_at DESC
+        `,[managerId]);
+        const serverTime=Date.now();
+        const sessions=result.rows.map(row=>{
+            const events=Array.isArray(row.events)?row.events:[];
+            let activeSeconds=0;
+            let cursor=new Date(row.started_at).getTime();
+            let running=true;
+            for(const event of events){
+                const t=new Date(event.occurredAt).getTime();
+                if(!Number.isFinite(t) || t<cursor) continue;
+                if(running) activeSeconds += Math.max(0,Math.floor((t-cursor)/1000));
+                if(event.eventType==='PAUSE') running=false;
+                else if(event.eventType==='RESUME') running=true;
+                cursor=t;
+            }
+            if(running) activeSeconds += Math.max(0,Math.floor((serverTime-cursor)/1000));
+            return {...row,activeSeconds,serverTime};
+        });
+        return res.json({success:true,serverTime,sessions});
+    } catch(e) {
+        res.locals.diagnosticCode='LIVE_SESSION_SNAPSHOT_FAILED';
+        res.locals.diagnosticMessage=String(e?.message||'').slice(0,300);
+        return res.status(500).json({success:false,code:'LIVE_SESSION_SNAPSHOT_FAILED'});
+    }
+});
+
 app.get("/api/customer/live-session", requireCustomerAuth, async (req,res) => {
     const customerId = Number(req.user?.id);
     const managerId = req.user?.managerId;

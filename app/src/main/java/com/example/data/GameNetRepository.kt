@@ -373,6 +373,12 @@ class GameNetRepository(private val db: AppDatabase) {
         return stationStateDao.getById(id)
     }
 
+    // Local cache writes used by server-authoritative hydration. These methods deliberately
+    // do not call the network; hydration must never echo server data back as a mutation.
+    suspend fun insertStationStateLocal(state: StationState) {
+        stationStateDao.insert(state)
+    }
+
     suspend fun insertStationState(state: StationState) {
         stationStateDao.insert(state)
         // IMPORTANT: station state and buffet orders are separate server resources.
@@ -484,6 +490,14 @@ class GameNetRepository(private val db: AppDatabase) {
             }
             com.example.data.network.SelfHostedManager.syncStationToCloud(state, ordersArray.toString())
         } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", ignored) }
+    }
+
+    suspend fun insertStationOrderLocal(order: StationOrder) {
+        stationOrderDao.insert(order)
+    }
+
+    suspend fun clearOrdersForStationLocal(stationId: Int) {
+        stationOrderDao.clearForStation(stationId)
     }
 
     suspend fun insertStationOrder(order: StationOrder) {

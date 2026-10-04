@@ -2029,6 +2029,27 @@ object SelfHostedManager {
         }
     }
 
+    suspend fun fetchLiveSessionsSnapshot(): JSONObject? = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/live-sessions")
+                .headers(getBaseHeaders())
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful || body.isBlank()) {
+                    Log.w(TAG, "fetchLiveSessionsSnapshot HTTP ${response.code}: $body")
+                    return@withContext null
+                }
+                JSONObject(body)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchLiveSessionsSnapshot failed: ${e.message}")
+            null
+        }
+    }
+
     private suspend fun recoverStationStart(idempotencyKey: String): Pair<String, Long>? = withContext(Dispatchers.IO) {
         repeat(3) { attempt ->
             try {
