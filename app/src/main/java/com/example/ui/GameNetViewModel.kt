@@ -2661,13 +2661,17 @@ loadSettings()
             val prepayments = mutableMapOf<Long, Long>()
             for (j in 0 until participants.length()) {
                 val part = participants.optJSONObject(j) ?: continue
-                val cid = part.optLong("customerId", 0L)
-                val name = part.optString("participantName", if (cid > 0) "مشتری $cid" else "مهمان")
-                if (cid > 0) {
-                    ids += cid
-                    names += name
+                val registeredId = part.optLong("customerId", 0L)
+                val guestId = part.optString("participantKey").removePrefix("guest:").toLongOrNull()?.let {
+                    if (it == 0L) -(j + 1L) else if (it > 0L) -it else it
+                } ?: -(j + 1L)
+                val cid = if (registeredId > 0L) registeredId else guestId
+                val name = part.optString("participantName", if (registeredId > 0) "مشتری $registeredId" else "مهمان ${-guestId}")
+                ids += cid
+                names += name
+                if (registeredId > 0L) {
                     val pp = part.optLong("prepaymentAmount", 0L)
-                    if (pp > 0) prepayments[cid] = pp
+                    if (pp > 0) prepayments[registeredId] = pp
                 }
             }
             val snapshotPrepayments = pricing?.optJSONObject("customerPrepayments")
