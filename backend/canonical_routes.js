@@ -65,7 +65,7 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
   const normalizeCustomer = (r) => ({
     id:r.id, manager_id:r.manager_id, fullName:r.full_name || '', phoneNumber:r.phone_number || '',
     debt:Number(r.debt || 0), credit:Number(r.credit || 0), points:Number(r.gn_balance || 0),
-    availableGn:Number(r.gn_balance || 0), pendingGn:Number(r.pending_gn || 0), lp:Number(r.lp_balance || 0),
+    availableGn:Number(r.gn_balance || 0), pendingGn:Number(r.pending_gn || 0), lp:Number(r.lp_balance || 0), lp_balance:Number(r.lp_balance || 0),
     tier:r.club_tier || 'BRONZE', inviteCode:r.invite_code || '', invitedByCode:r.invited_by_code || '',
     description:r.description || '', totalQualifiedSpend:Number(r.total_qualified_spend || 0), totalVisitsCount:Number(r.total_visits_count || 0)
   });
@@ -114,8 +114,8 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
     const name=String(b.fullName||b.full_name||b.customer_name||'').trim(); if(!phone||!name) return res.status(400).json({error:'fullName and phoneNumber are required'});
     const existing=await pool.query('SELECT id FROM customers WHERE manager_id=$1 AND phone_number=$2 LIMIT 1',[mid,phone]);
     let q;
-    if(existing.rows[0]) q=await pool.query("UPDATE customers SET full_name=$1,debt=COALESCE($2,debt),credit=COALESCE($3,credit),description=COALESCE($4,description),club_tier=COALESCE($5,club_tier),invite_code=COALESCE(NULLIF($6,''),invite_code),invited_by_code=COALESCE(NULLIF($7,''),invited_by_code),updated_at=NOW() WHERE id=$8 AND manager_id=$9 RETURNING *",[name,b.debt,b.credit,b.description,b.tier,b.inviteCode,b.invitedByCode,existing.rows[0].id,mid]);
-    else q=await pool.query("INSERT INTO customers(manager_id,phone_number,full_name,debt,credit,description,club_tier,invite_code,invited_by_code,pending_gn,lp_balance,gn_balance,last_activity_at,last_tier_review_at) VALUES($1,$2,$3,COALESCE($4,0),COALESCE($5,0),COALESCE($6,''),COALESCE($7,'BRONZE'),NULLIF($8,''),NULLIF($9,''),0,0,0,NOW(),NOW()) RETURNING *",[mid,phone,name,b.debt,b.credit,b.description,b.tier,b.inviteCode,b.invitedByCode]);
+    if(existing.rows[0]) q=await pool.query("UPDATE customers SET full_name=$1,debt=COALESCE($2,debt),credit=COALESCE($3,credit),description=COALESCE($4,description),club_tier=COALESCE($5,club_tier),invite_code=COALESCE(NULLIF($6,''),invite_code),invited_by_code=COALESCE(NULLIF($7,''),invited_by_code),lp_balance=GREATEST(0,COALESCE($8,lp_balance)),gn_balance=GREATEST(0,COALESCE($9,gn_balance)),pending_gn=GREATEST(0,COALESCE($10,pending_gn)),updated_at=NOW() WHERE id=$11 AND manager_id=$12 RETURNING *",[name,b.debt,b.credit,b.description,b.tier,b.inviteCode,b.invitedByCode,b.lp,b.availableGn,b.pendingGn,existing.rows[0].id,mid]);
+    else q=await pool.query("INSERT INTO customers(manager_id,phone_number,full_name,debt,credit,description,club_tier,invite_code,invited_by_code,pending_gn,lp_balance,gn_balance,last_activity_at,last_tier_review_at) VALUES($1,$2,$3,COALESCE($4,0),COALESCE($5,0),COALESCE($6,''),COALESCE($7,'BRONZE'),NULLIF($8,''),NULLIF($9,''),GREATEST(0,COALESCE($10,0)),GREATEST(0,COALESCE($11,0)),GREATEST(0,COALESCE($12,0)),NOW(),NOW()) RETURNING *",[mid,phone,name,b.debt,b.credit,b.description,b.tier,b.inviteCode,b.invitedByCode,b.pendingGn,b.lp,b.availableGn]);
     if(typeof b.password==='string' && b.password.length>=8) await pool.query('UPDATE customers SET password_hash=$1,token_version=token_version+1,updated_at=NOW() WHERE id=$2 AND manager_id=$3',[await bcrypt.hash(b.password,12),q.rows[0].id,mid]);
     res.status(existing.rows[0]?200:201).json(normalizeCustomer(q.rows[0]));
   } catch(e){res.status(500).json({error:'Internal server error'});} });

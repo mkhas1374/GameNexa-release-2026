@@ -548,7 +548,7 @@ object SelfHostedManager {
         try {
             val json=JSONObject().apply {
                 put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber)
-                put("debt",customer.debt); put("credit",customer.credit); put("tier",customer.tier); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
+                put("debt",customer.debt); put("credit",customer.credit); put("tier",customer.tier); put("lp",customer.lp); put("availableGn",customer.availableGn); put("pendingGn",customer.pendingGn); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
             }
             val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
             client.newCall(req).execute().use { resp ->
@@ -767,7 +767,7 @@ object SelfHostedManager {
             points = obj.optLong("points", 0L),
             availableGn = obj.optLong("availableGn", obj.optLong("available_gn", 0L)),
             pendingGn = obj.optLong("pendingGn", obj.optLong("pending_gn", 0L)),
-            lp = obj.optLong("lp", 0L),
+            lp = obj.optLong("lp", obj.optLong("lp_balance", 0L)),
             tier = obj.optString("tier", "BRONZE"),
             inviteCode = obj.optString("inviteCode", obj.optString("invite_code", "")),
             invitedByCode = obj.optString("invitedByCode", obj.optString("invited_by_code", "")),
