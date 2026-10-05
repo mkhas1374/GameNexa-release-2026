@@ -921,6 +921,7 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
         val a = rulesObject.optJSONArray("vipDurationsMinutes") ?: org.json.JSONArray()
         buildList { for (i in 0 until a.length()) if (a.optInt(i) >= vipMinDuration) add(a.optInt(i)) }
     }
+    val durationOptions = if (selectedIsVip) vipDurations else normalDurations
     val cancellation = remember(rulesObject) { rulesObject.optJSONObject("cancellation") ?: org.json.JSONObject() }
     val messages = remember(rulesObject) { rulesObject.optJSONObject("messages") ?: org.json.JSONObject() }
     val selectedDurationLabel = remember(selectedDuration) {
@@ -1103,7 +1104,6 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
 
                 // Duration options are supplied by the Manager's server-side reservation configuration.
                 Text(if (selectedIsVip) "مدت VIP:" else "مدت زمان درخواستی:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                val durationOptions = if (selectedIsVip) vipDurations else normalDurations
                 if (rulesLoading) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 } else if (durationOptions.isEmpty()) {
