@@ -10,6 +10,9 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
+    networks:
+      - default
+      - proxy_shared
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U gamenet_admin -d gamenexa_db"]
       interval: 10s
@@ -57,3 +60,8 @@ volumes:
   pgdata:
     name: vps-backend_pgdata
     external: true
+
+networks:
+  proxy_shared:
+    external: true
+    name: gamenexa-prod_default
