@@ -681,7 +681,7 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
     try{
       const mid=manager(req), id=Number(req.params.id);
       if(!Number.isInteger(id)||id<=0) return res.status(400).json({error:'Invalid customer id'});
-      const customer=(await pool.query('SELECT * FROM customers WHERE id=$1 AND manager_id=$2',[customer.id,mid])).rows[0];
+      const customer=(await pool.query('SELECT * FROM customers WHERE id=$1 AND manager_id=$2',[id,mid])).rows[0];
       if(!customer) return res.status(404).json({error:'Customer not found'});
       const [tx,gn,lp,behavior,payments]=await Promise.all([
         pool.query(`SELECT ct.*,COALESCE((SELECT SUM(g.amount) FROM gn_ledger g WHERE g.manager_id=ct.manager_id AND g.customer_id=ct.customer_id AND g.type='CREDIT' AND (g.reference_id LIKE ('SESSION_REVIEW_'||ct.session_id::text||'_CUST_'||ct.customer_id::text||'%') OR g.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=ct.manager_id AND i.session_id=ct.session_id AND i.customer_id=ct.customer_id))),0)::bigint AS earned_gn,COALESCE((SELECT SUM(l.amount) FROM lp_ledger l WHERE l.manager_id=ct.manager_id AND l.customer_id=ct.customer_id AND l.type='CREDIT' AND (l.reference_id=ct.session_id::text OR l.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=ct.manager_id AND i.session_id=ct.session_id AND i.customer_id=ct.customer_id))),0)::bigint AS earned_lp FROM customer_transactions ct WHERE ct.manager_id=$1 AND ct.customer_id=$2 AND ct.status<>'DELETED' ORDER BY ct.created_at DESC LIMIT 500`,[mid,customer.id]),
@@ -806,7 +806,7 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       });
       const poolAmount=enriched.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.prepayment_amount||0),0);
       const gameCost=Number(session.game_cost||0), buffetCost=Number(session.buffet_cost||0);
-      const refunded=(await pool.query("SELECT COALESCE(SUM(amount),0) amount FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 AND method='WALLET'",[mid,sid])).rows[0].amount;
+      const refunded=(await pool.query("SELECT COALESCE(SUM(refund_amount),0) amount FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 AND method='WALLET'",[mid,sid])).rows[0].amount;
       const finalized=(await pool.query("SELECT customer_id,refund_amount,method,status FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 ORDER BY customer_id",[mid,sid])).rows;
       return res.json({success:true,session:{...session,game_cost:String(gameCost),buffet_cost:String(buffetCost),total_cost:String(session.total_cost||0)},participants:enriched,totalPrepayment:String(poolAmount),gameCost:String(gameCost),buffetCost:String(buffetCost),unusedPool:String(enriched.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.unused_prepayment||0),0)),refundedPrepayment:String(refunded),remainingRefundable:String(Math.max(0,enriched.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.unused_prepayment||0),0)-Number(refunded||0))),finalized});
     }catch(e){console.error('[settlement-review]',e?.message||e);return res.status(500).json({error:'Settlement review lookup failed'});}
