@@ -767,7 +767,6 @@ class GameNetRepository(private val db: AppDatabase) {
         gnLedgerDao.migrateCustomerId(oldId, newId)
         pointLogDao.migrateCustomerId(oldId, newId)
         behaviorLogDao.migrateCustomerId(oldId, newId)
-        referralProgressRecordDao.migrateCustomerId(oldId, newId)
         val stations = stationStateDao.getAll().firstOrNull().orEmpty()
         for (station in stations) {
             fun replaceIds(raw: String): String {
