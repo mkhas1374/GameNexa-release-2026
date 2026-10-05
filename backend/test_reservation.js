@@ -22,10 +22,12 @@ async function runTests() {
         client.release();
     }
     
-    // Always derive test timestamps from the runner's absolute clock.
-    // Converting a Tehran-local formatted string back through Date() can shift the instant
-    // by the runner timezone and accidentally produce a past reservation.
-    const baseDate = new Date(Date.now() + 4 * 60 * 60 * 1000);
+    // Build a deterministic future 15:00 Tehran instant without parsing a localized
+    // date string through the runner timezone. The default VIP window is 14:00-24:00.
+    const tehranParts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit'
+    }).formatToParts(new Date()).filter(p => p.type !== 'literal').map(p => [p.type, Number(p.value)]));
+    const baseDate = new Date(Date.UTC(tehranParts.year, tehranParts.month - 1, tehranParts.day + 1, 15, 0, 0) - (3.5 * 60 * 60 * 1000));
     const startIso = baseDate.toISOString();
     
     // 1. State Machine
