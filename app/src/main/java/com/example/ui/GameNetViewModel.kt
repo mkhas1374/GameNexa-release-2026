@@ -4796,6 +4796,22 @@ loadSettings()
         }
     }
 
+    fun deleteCustomersBatch(customersToDelete: List<Customer>) {
+        if (customersToDelete.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            customersToDelete.forEach { customer ->
+                repository.deleteCustomer(customer)
+                repository.saveSetting("local_archived_customer_" + customer.id, customerToJson(customer).toString())
+                repository.saveSetting("customer_archive_outbox_" + customer.id, customerToJson(customer).toString())
+                SelfHostedManager.publishArchivedCustomerLocally(customer)
+            }
+            flushPendingCustomerArchives()
+            withContext(Dispatchers.Main) {
+                Toast.makeText(getApplication(), "مشتریان فوراً به آرشیو منتقل شدند؛ همگام‌سازی سرور در پس‌زمینه انجام می‌شود.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     fun restoreArchivedCustomer(customer: Customer) {
         viewModelScope.launch(Dispatchers.IO) {
             repository.insertCustomer(customer)
