@@ -1293,10 +1293,10 @@ object SelfHostedManager {
                 for(i in 0 until arr.length()){
                     val o=arr.optJSONObject(i) ?: continue
                     val cid=o.optLong("customer_id",o.optLong("customerId",0L))
-                    if(cid>0L && o.optBoolean("is_payer",o.optBoolean("isPayer",true))) {
+                    if(o.optBoolean("is_payer",o.optBoolean("isPayer",true)) && (cid>0L || o.optBoolean("is_guest",o.optBoolean("isGuest",false)))) {
                         payers += SettlementPayer(
                             cid,
-                            o.optString("participant_name",o.optString("participantName","")),
+                            o.optString("participant_name",o.optString("participantName","مشتری گذری (بدون اشتراک)")),
                             o.optLong("prepayment_amount",o.optLong("prepaymentAmount",0L)),
                             o.optString("game_cost",o.optString("gameCost","0")).toLongOrNull() ?: o.optLong("gameCost",0L),
                             o.optString("buffet_cost",o.optString("buffetCost","0")).toLongOrNull() ?: o.optLong("buffetCost",0L),

@@ -1090,7 +1090,7 @@ fun CustomerTransactionCard(
                 var invalid = false
                 review.payers.forEach { payer ->
                     val refund = prepaymentAllocations[payer.customerId].orEmpty().filter { it.isDigit() }.toLongOrNull() ?: 0L
-                    val method = refundMethods[payer.customerId].orEmpty().ifBlank { if (refund > 0L) "WALLET" else "NONE" }
+                    val method = refundMethods[payer.customerId].orEmpty().ifBlank { if (refund > 0L) { if (payer.customerId == 0L) "CASH" else "WALLET" } else "NONE" }
                     val status = reviewStatuses[payer.customerId].orEmpty().ifBlank { "REVIEWED" }
                     if (refund > payer.unusedPrepayment) invalid = true
                     if (refund > 0L && method !in setOf("WALLET", "CASH")) invalid = true
@@ -1513,7 +1513,7 @@ fun CustomerTransactionCard(
                                                         modifier = Modifier.fillMaxWidth()
                                                     )
                                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                                                        FilterChip(
+                                                        if (payer.customerId > 0L) FilterChip(
                                                             selected = refundMethods[payer.customerId] == "WALLET",
                                                             onClick = { refundMethods = refundMethods.toMutableMap().apply { put(payer.customerId, "WALLET") } },
                                                             label = { Text("ذخیره در کیف پول") },

@@ -3768,7 +3768,8 @@ loadSettings()
                     timestamp = now,
                     playMinutes = existingSegments.sumOf { it.durationMinutes },
                     gameCost = gameCost,
-                    foodCost = foodCost
+                    foodCost = foodCost,
+                    sessionId = sessionId
                 )
                 // For walk-ins, it's better to require manual review for cash/card tracking, so leave as UNREVIEWED and paidAmount = 0
                 val walkInTrans = trans.copy(status = "UNREVIEWED", paidAmount = 0L)
