@@ -53,7 +53,11 @@ data class ManagerLpHistory(
 data class SettlementPayer(
     val customerId: Long,
     val name: String,
-    val prepaymentAmount: Long
+    val prepaymentAmount: Long,
+    val gameCost: Long = 0L,
+    val buffetCost: Long = 0L,
+    val invoiceTotal: Long = 0L,
+    val unusedPrepayment: Long = 0L
 )
 
 data class SettlementReview(
@@ -61,7 +65,9 @@ data class SettlementReview(
     val totalPrepayment: Long,
     val refundedPrepayment: Long,
     val remainingRefundable: Long,
-    val payers: List<SettlementPayer>
+    val gameCost: Long = 0L,
+    val buffetCost: Long = 0L,
+    val payers: List<SettlementPayer> = emptyList()
 )
 
 data class ManagerCustomerActivity(
@@ -1288,7 +1294,15 @@ object SelfHostedManager {
                     val o=arr.optJSONObject(i) ?: continue
                     val cid=o.optLong("customer_id",o.optLong("customerId",0L))
                     if(cid>0L && o.optBoolean("is_payer",o.optBoolean("isPayer",true))) {
-                        payers += SettlementPayer(cid,o.optString("participant_name",o.optString("participantName","")),o.optLong("prepayment_amount",o.optLong("prepaymentAmount",0L)))
+                        payers += SettlementPayer(
+                            cid,
+                            o.optString("participant_name",o.optString("participantName","")),
+                            o.optLong("prepayment_amount",o.optLong("prepaymentAmount",0L)),
+                            o.optString("game_cost",o.optString("gameCost","0")).toLongOrNull() ?: o.optLong("gameCost",0L),
+                            o.optString("buffet_cost",o.optString("buffetCost","0")).toLongOrNull() ?: o.optLong("buffetCost",0L),
+                            o.optString("invoice_total",o.optString("invoiceTotal","0")).toLongOrNull() ?: o.optLong("invoiceTotal",0L),
+                            o.optString("unused_prepayment",o.optString("unusedPrepayment","0")).toLongOrNull() ?: o.optLong("unusedPrepayment",0L)
+                        )
                     }
                 }
                 SettlementReview(
@@ -1296,10 +1310,25 @@ object SelfHostedManager {
                     totalPrepayment=root.optString("totalPrepayment","0").toLongOrNull() ?: root.optLong("totalPrepayment",0L),
                     refundedPrepayment=root.optString("refundedPrepayment","0").toLongOrNull() ?: root.optLong("refundedPrepayment",0L),
                     remainingRefundable=root.optString("remainingRefundable","0").toLongOrNull() ?: root.optLong("remainingRefundable",0L),
+                    gameCost=root.optString("gameCost","0").toLongOrNull() ?: root.optLong("gameCost",0L),
+                    buffetCost=root.optString("buffetCost","0").toLongOrNull() ?: root.optLong("buffetCost",0L),
                     payers=payers
                 )
             }
         }catch(e:Exception){Log.w(TAG,"fetchSettlementReview error: \${e.message}");null}
+    }
+
+    suspend fun finalizeSettlementReview(sessionId: String, decisions: List<JSONObject>): JSONObject? = withContext(Dispatchers.IO) {
+        try {
+            val arr=JSONArray(); decisions.forEach { arr.put(it) }
+            val body=JSONObject().apply { put("decisions",arr) }
+            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/sessions/$sessionId/review-finalize").headers(getBaseHeaders()).post(body.toString().toRequestBody(JSON_MEDIA)).build()
+            client.newCall(req).execute().use { resp ->
+                val raw=resp.body?.string().orEmpty()
+                if(!resp.isSuccessful) { Log.w(TAG,"finalizeSettlementReview HTTP ${resp.code}: $raw"); return@withContext null }
+                JSONObject(raw)
+            }
+        } catch(e:Exception){ Log.w(TAG,"finalizeSettlementReview error: ${e.message}"); null }
     }
 
     suspend fun refundSessionPrepayment(sessionId: String, allocations: Map<Long,Long>): Boolean = withContext(Dispatchers.IO) {

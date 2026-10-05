@@ -1020,15 +1020,21 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
                 withContext(Dispatchers.Main) {
                     _currentAdminRole.value = finalRole
-                    // Do not publish authenticated UI state until server entitlement validation completes.
-                    // A transient subscription-check failure must never create a one-frame Manager session.
-                    _isAdminAuthenticated.value = false
+                    // The canonical login endpoint already enforces an active entitlement.
+                    // Publish authenticated state immediately; entitlement hydration continues
+                    // in the background and must not bounce the Manager to the entry page.
+                    _isAdminAuthenticated.value = true
                     _isCustomerAuthenticated.value = false
+                    _isSubscribed.value = true
+                    _accessState.value = AppAccessState.Checking
+                    // Do not publish a Denied access state while validation is still running.
+                    // A transient subscription-check failure must never create a one-frame Manager session.
+                    // Authentication success is already published above.
                     // Authentication success does not itself grant subscription access.
                     // Entitlement is verified against the server immediately below.
                     _isSubscribed.value = false
                     _licenseState.value = LicenseState.ConnectionRequired("در حال بررسی اعتبار اشتراک از سرور...")
-                    _accessState.value = AppAccessState.Denied("در حال بررسی اعتبار اشتراک...")
+                    _accessState.value = AppAccessState.Checking
 
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
@@ -6535,6 +6541,24 @@ loadSettings()
     }
     suspend fun fetchSettlementReview(sessionId: String): com.example.data.network.SettlementReview? {
         return com.example.data.network.SelfHostedManager.fetchSettlementReview(sessionId)
+    }
+
+    suspend fun finalizeSettlementReview(sessionId: String, decisions: List<org.json.JSONObject>): Boolean = withContext(Dispatchers.IO) {
+        val result = SelfHostedManager.finalizeSettlementReview(sessionId, decisions) ?: return@withContext false
+        val results = result.optJSONArray("results") ?: org.json.JSONArray()
+        val all = repository.allCustomerTransactions.firstOrNull() ?: emptyList()
+        for (i in 0 until results.length()) {
+            val r = results.optJSONObject(i) ?: continue
+            val cid = r.optLong("customerId", 0L)
+            val tx = all.firstOrNull { it.sessionId == sessionId && it.customerId == cid && it.status != "DELETED" } ?: continue
+            val status = r.optString("status", "REVIEWED")
+            val earnedGn = r.optLong("earnedGn", 0L)
+            val earnedLp = r.optLong("earnedLp", 0L)
+            val paid = if (status == "REVIEWED") tx.amount else r.optLong("paidAmount", tx.paidAmount)
+            repository.updateCustomerTransaction(tx.copy(status=status, paidAmount=paid, earnedGn=earnedGn, earnedLp=earnedLp))
+        }
+        repository.syncCustomerTransactionsFromServer()
+        true
     }
 
     suspend fun refundUnusedPrepayment(sessionId: String, allocations: Map<Long, Long>): Boolean {

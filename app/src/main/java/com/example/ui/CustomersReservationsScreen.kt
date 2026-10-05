@@ -1043,6 +1043,8 @@ fun CustomerTransactionCard(
     var showPrepaymentDialog by remember { mutableStateOf(false) }
     var settlementReview by remember { mutableStateOf<com.example.data.network.SettlementReview?>(null) }
     var prepaymentAllocations by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
+    var refundMethods by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
+    var reviewStatuses by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
     var refundRequested by remember { mutableStateOf(false) }
     var isSubmitting by remember(transaction) { mutableStateOf(false) }
     var isPayFieldFocused by remember { mutableStateOf(false) }
@@ -1079,18 +1081,35 @@ fun CustomerTransactionCard(
             refundRequested = false
             val review = settlementReview
             if (review != null) {
-                val allocations = prepaymentAllocations.mapNotNull { (id, value) ->
-                    val amount = value.filter { it.isDigit() }.toLongOrNull() ?: 0L
-                    if (amount > 0L) id to amount else null
-                }.toMap()
-                if (allocations.isNotEmpty()) {
-                    val ok = viewModel.refundUnusedPrepayment(transaction.sessionId, allocations)
+                val decisions = org.json.JSONArray()
+                var invalid = false
+                review.payers.forEach { payer ->
+                    val refund = prepaymentAllocations[payer.customerId].orEmpty().filter { it.isDigit() }.toLongOrNull() ?: 0L
+                    val method = refundMethods[payer.customerId].orEmpty().ifBlank { if (refund > 0L) "WALLET" else "NONE" }
+                    val status = reviewStatuses[payer.customerId].orEmpty().ifBlank { "REVIEWED" }
+                    if (refund > payer.unusedPrepayment) invalid = true
+                    if (refund > 0L && method !in setOf("WALLET", "CASH")) invalid = true
+                    decisions.put(org.json.JSONObject().apply {
+                        put("customerId", payer.customerId)
+                        put("refundAmount", refund)
+                        put("refundMethod", method)
+                        put("status", status)
+                        put("paidAmount", if (status == "REVIEWED") payer.invoiceTotal else 0L)
+                    })
+                }
+                if (invalid) {
+                    android.widget.Toast.makeText(viewModel.getApplication(), "مقدار بازگشت یا روش پرداخت برای یکی از مشتریان معتبر نیست.", android.widget.Toast.LENGTH_LONG).show()
+                } else {
+                    val ok = viewModel.finalizeSettlementReview(transaction.sessionId, (0 until decisions.length()).map { decisions.getJSONObject(it) })
                     if (ok) {
                         settlementReview = viewModel.fetchSettlementReview(transaction.sessionId)
                         prepaymentAllocations = emptyMap()
-                        android.widget.Toast.makeText(viewModel.getApplication(), "مانده پرداخت اولیه با انتخاب مدیر به کیف پول مشتریان برگشت داده شد.", android.widget.Toast.LENGTH_SHORT).show()
+                        refundMethods = emptyMap()
+                        reviewStatuses = emptyMap()
+                        showPrepaymentDialog = false
+                        android.widget.Toast.makeText(viewModel.getApplication(), "تعیین تکلیف نشست با موفقیت ثبت شد؛ GN و LP قطعی شدند.", android.widget.Toast.LENGTH_SHORT).show()
                     } else {
-                        android.widget.Toast.makeText(viewModel.getApplication(), "بازگشت کیف پول انجام نشد؛ عملیات پس از اتصال مجدد قابل تکرار است.", android.widget.Toast.LENGTH_LONG).show()
+                        android.widget.Toast.makeText(viewModel.getApplication(), "تعیین تکلیف با سرور ثبت نشد؛ اتصال را بررسی و دوباره تلاش کنید.", android.widget.Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -1451,39 +1470,80 @@ fun CustomerTransactionCard(
                     if (showPrepaymentDialog) {
                         AlertDialog(
                             onDismissRequest = { showPrepaymentDialog = false },
-                            title = { Text("تعیین تکلیف پرداخت اولیه نشست") },
+                            title = { Text("تعیین تکلیف فاکتور و پرداخت اولیه نشست") },
                             text = {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
                                     val review = settlementReview
                                     if (review == null) {
                                         Text("در حال دریافت اطلاعات نشست از سرور...")
                                     } else {
-                                        Text("کل پرداخت اولیه: " + String.format(Locale.US, "%,d", review.totalPrepayment) + " تومان")
-                                        Text("قبلاً برگشت داده شده: " + String.format(Locale.US, "%,d", review.refundedPrepayment) + " تومان")
-                                        Text("مانده قابل بازگشت: " + String.format(Locale.US, "%,d", review.remainingRefundable) + " تومان", fontWeight = FontWeight.Bold)
+                                        Text("پرداخت اولیه کل: ${String.format(Locale.US, "%,d", review.totalPrepayment)} تومان", fontWeight = FontWeight.Bold)
+                                        Text("هزینه بازی این نشست: ${String.format(Locale.US, "%,d", review.gameCost)} تومان")
+                                        Text("هزینه بوفه این نشست: ${String.format(Locale.US, "%,d", review.buffetCost)} تومان")
+                                        HorizontalDivider()
                                         review.payers.forEach { payer ->
-                                            OutlinedTextField(
-                                                value = prepaymentAllocations[payer.customerId].orEmpty(),
-                                                onValueChange = { value ->
-                                                    prepaymentAllocations = prepaymentAllocations.toMutableMap().apply { put(payer.customerId, value.filter { it.isDigit() }) }
-                                                },
-                                                label = { Text(payer.name.ifBlank { "مشتری " + payer.customerId }) },
-                                                supportingText = { Text("پرداخت اولیه این مشتری: " + String.format(Locale.US, "%,d", payer.prepaymentAmount) + " تومان") },
-                                                singleLine = true
-                                            )
+                                            Surface(
+                                                shape = RoundedCornerShape(10.dp),
+                                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    Text(payer.name.ifBlank { "مشتری ${payer.customerId}" }, fontWeight = FontWeight.Bold)
+                                                    Text("پرداخت اولیه: ${String.format(Locale.US, "%,d", payer.prepaymentAmount)} تومان")
+                                                    Text("هزینه بازی: ${String.format(Locale.US, "%,d", payer.gameCost)} تومان")
+                                                    Text("هزینه بوفه: ${String.format(Locale.US, "%,d", payer.buffetCost)} تومان")
+                                                    Text("جمع فاکتور: ${String.format(Locale.US, "%,d", payer.invoiceTotal)} تومان", fontWeight = FontWeight.Bold)
+                                                    Text("مانده قابل بازگشت: ${String.format(Locale.US, "%,d", payer.unusedPrepayment)} تومان", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                                                    OutlinedTextField(
+                                                        value = prepaymentAllocations[payer.customerId].orEmpty(),
+                                                        onValueChange = { value -> prepaymentAllocations = prepaymentAllocations.toMutableMap().apply { put(payer.customerId, value.filter { it.isDigit() }) } },
+                                                        label = { Text("مقدار بازگشت") },
+                                                        singleLine = true,
+                                                        supportingText = { Text("حداکثر: ${String.format(Locale.US, "%,d", payer.unusedPrepayment)} تومان") },
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    )
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                                                        FilterChip(
+                                                            selected = refundMethods[payer.customerId] == "WALLET",
+                                                            onClick = { refundMethods = refundMethods.toMutableMap().apply { put(payer.customerId, "WALLET") } },
+                                                            label = { Text("ذخیره در کیف پول") },
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                        FilterChip(
+                                                            selected = refundMethods[payer.customerId] == "CASH",
+                                                            onClick = { refundMethods = refundMethods.toMutableMap().apply { put(payer.customerId, "CASH") } },
+                                                            label = { Text("پرداخت نقدی به مشتری") },
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                    }
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                                                        FilterChip(
+                                                            selected = reviewStatuses[payer.customerId] != "DEBTOR",
+                                                            onClick = { reviewStatuses = reviewStatuses.toMutableMap().apply { put(payer.customerId, "REVIEWED") } },
+                                                            label = { Text("تسویه کامل") },
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                        FilterChip(
+                                                            selected = reviewStatuses[payer.customerId] == "DEBTOR",
+                                                            onClick = { reviewStatuses = reviewStatuses.toMutableMap().apply { put(payer.customerId, "DEBTOR") } },
+                                                            label = { Text("بدهکار") },
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                    }
+                                                }
+                                            }
                                         }
+                                        Text("پس از انجام، فاکتور تعیین‌تکلیف می‌شود و GN/LP فقط همین مرحله قطعی خواهد شد.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 }
                             },
                             confirmButton = {
-                                TextButton(
-                                    onClick = { refundRequested = true },
-                                    enabled = settlementReview != null
-                                ) { Text("ثبت بازگشت کیف پول") }
+                                TextButton(onClick = { refundRequested = true }, enabled = settlementReview != null && !isSubmitting) { Text("انجام شد") }
                             },
-                            dismissButton = {
-                                TextButton(onClick = { showPrepaymentDialog = false }) { Text("بستن") }
-                            }
+                            dismissButton = { TextButton(onClick = { showPrepaymentDialog = false }) { Text("لغو") } }
                         )
                     }
 

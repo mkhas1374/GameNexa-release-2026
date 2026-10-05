@@ -407,6 +407,22 @@ CREATE TABLE public.invoices (
 
 
 --
+CREATE TABLE IF NOT EXISTS public.session_review_refunds (
+    id bigint NOT NULL,
+    manager_id character varying(50) NOT NULL,
+    session_id uuid NOT NULL,
+    customer_id integer NOT NULL,
+    refund_amount numeric NOT NULL DEFAULT 0,
+    method character varying(20) NOT NULL,
+    status character varying(30) NOT NULL DEFAULT 'FINALIZED'::character varying,
+    idempotency_key character varying(200) NOT NULL,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT session_review_refunds_pkey PRIMARY KEY (id),
+    CONSTRAINT session_review_refunds_manager_session_customer_key UNIQUE (manager_id, session_id, customer_id),
+    CONSTRAINT session_review_refunds_idempotency_key_key UNIQUE (idempotency_key)
+);
+
 -- Name: lp_ledger; Type: TABLE; Schema: public; Owner: -
 --
 

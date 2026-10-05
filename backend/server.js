@@ -1618,6 +1618,7 @@ const ensureRuntimeSchema = async () => {
         await client.query('BEGIN');
         await client.query('ALTER TABLE invoices ALTER COLUMN customer_id DROP NOT NULL');
         await client.query('ALTER TABLE managers ADD COLUMN IF NOT EXISTS token_version integer NOT NULL DEFAULT 1');
+        await client.query("CREATE TABLE IF NOT EXISTS session_review_refunds (id BIGSERIAL PRIMARY KEY, manager_id VARCHAR(50) NOT NULL, session_id UUID NOT NULL, customer_id INTEGER NOT NULL, refund_amount NUMERIC NOT NULL DEFAULT 0, method VARCHAR(20) NOT NULL, status VARCHAR(30) NOT NULL DEFAULT 'FINALIZED', idempotency_key VARCHAR(200) NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(manager_id,session_id,customer_id), UNIQUE(idempotency_key))");
         await client.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS token_version integer NOT NULL DEFAULT 1');
         await client.query('COMMIT');
     } catch (e) {
