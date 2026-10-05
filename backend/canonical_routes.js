@@ -782,6 +782,13 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         const cid=Number(d.customerId||0), method=String(d.refundMethod||'NONE').toUpperCase(), refund=Math.max(0,Math.trunc(Number(d.refundAmount||0))), status=String(d.status||'REVIEWED').toUpperCase();
         if(cid<=0) continue;
         const participant=byId.get(cid); if(!participant){await c.query('ROLLBACK');return res.status(422).json({error:'Customer is not a payer in this session',customerId:cid});}
+        const priorReview=(await c.query("SELECT refund_amount,method,status FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 AND customer_id=$3 LIMIT 1",[mid,sid,cid])).rows[0];
+        if(priorReview){
+          const rg=Number((await c.query("SELECT COALESCE(SUM(amount),0) amount FROM gn_ledger WHERE manager_id=$1 AND customer_id=$2 AND reference_type='SESSION_REVIEW' AND reference_id=$3 AND type='CREDIT'",[mid,cid,sid])).rows[0].amount||0);
+          const rl=Number((await c.query("SELECT COALESCE(SUM(amount),0) amount FROM lp_ledger WHERE manager_id=$1 AND customer_id=$2 AND reference_type='SESSION_REVIEW' AND reference_id=$3 AND type='CREDIT'",[mid,cid,sid])).rows[0].amount||0);
+          results.push({customerId:cid,refundAmount:String(priorReview.refund_amount||0),refundMethod:String(priorReview.method||'NONE'),earnedGn:rg,earnedLp:rl,status:String(priorReview.status==='FINALIZED'?(await c.query("SELECT status FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND customer_id=$3 AND status<>'DELETED' ORDER BY id DESC LIMIT 1",[mid,sid,cid])).rows[0]?.status||'REVIEWED':'REVIEWED'),idempotent:true});
+          continue;
+        }
         const prepayment=Math.max(0,Number(participant.prepayment_amount||0)||Number(snapPre[String(cid)]||0));
         const inv=(await c.query("SELECT id,game_cost,buffet_cost,total_amount,paid_amount,status FROM invoices WHERE session_id=$1 AND manager_id=$2 AND customer_id=$3 ORDER BY id DESC LIMIT 1 FOR UPDATE",[sid,mid,cid])).rows[0];
         if(!inv){await c.query('ROLLBACK');return res.status(422).json({error:'Invoice not found for customer',customerId:cid});}
@@ -811,6 +818,10 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         const paidAmount=finalStatus==='REVIEWED'?total:Math.max(0,Math.min(total,Number(d.paidAmount||0)));
         await c.query("UPDATE invoices SET status=$1,paid_amount=$2,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[finalStatus,paidAmount,inv.id,mid]);
         await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,earned_gn=$3,earned_lp=$4,updated_at=NOW() WHERE manager_id=$5 AND session_id=$6 AND customer_id=$7 AND status<>'DELETED'",[finalStatus,paidAmount,earnedGn,earnedLp,mid,sid,cid]);
+        if(finalStatus==='DEBTOR'){
+          const outstanding=Math.max(0,total-paidAmount);
+          if(outstanding>0) await c.query("UPDATE customers SET debt=GREATEST(0,COALESCE(debt,0)+$1),updated_at=NOW() WHERE id=$2 AND manager_id=$3",[outstanding,cid,mid]);
+        }
         results.push({customerId:cid,refundAmount:String(refund),refundMethod:method,earnedGn,earnedLp,status:finalStatus});
       }
       await c.query('COMMIT');
