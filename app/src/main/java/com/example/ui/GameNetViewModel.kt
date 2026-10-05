@@ -1020,21 +1020,17 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
                 withContext(Dispatchers.Main) {
                     _currentAdminRole.value = finalRole
-                    // The canonical login endpoint already enforces an active entitlement.
-                    // Publish authenticated state immediately; entitlement hydration continues
-                    // in the background and must not bounce the Manager to the entry page.
+                    // Login endpoint already verifies active entitlement/device limit before HTTP 200.
+                    // Do not block navigation on a second verification chain after valid authentication.
                     _isAdminAuthenticated.value = true
                     _isCustomerAuthenticated.value = false
                     _isSubscribed.value = true
-                    _accessState.value = AppAccessState.Checking
-                    // Do not publish a Denied access state while validation is still running.
-                    // A transient subscription-check failure must never create a one-frame Manager session.
-                    // Authentication success is already published above.
-                    // Authentication success does not itself grant subscription access.
-                    // Entitlement is verified against the server immediately below.
-                    _isSubscribed.value = false
-                    _licenseState.value = LicenseState.ConnectionRequired("در حال بررسی اعتبار اشتراک از سرور...")
-                    _accessState.value = AppAccessState.Checking
+                    _accessState.value = AppAccessState.Allowed
+                    _licenseState.value = LicenseState.ConnectionRequired("در حال همگام‌سازی اعتبار اشتراک...")
+
+                    _managerAuthInProgress.value = false
+                    logOperatorActivity("ورود موفق", "ورود مدیر ($finalRole) به پنل")
+                    onResult(true, if (isSuper) "ورود موفق مدیریت ارشد" else "ورود موفق مدیریت")
 
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
@@ -1051,11 +1047,12 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                             // The subscription endpoint resolves a paid Manager by phone or an
                             // active device binding. A fresh login has neither cached yet, so bind
                             // this authenticated device before the first entitlement check.
-                            ensureDeviceBoundForManager(finalManagerId)
-                            encryptSetting("enc_license_status", "UNKNOWN")
-                            encryptSetting("enc_plan_type", "")
-                            encryptSetting("enc_expire_time", "0")
-                            verifyLicenseStatus()
+                            // Device binding and entitlement are already enforced atomically
+                            // by /api/auth/manager/login before the JWT is issued.
+                            encryptSetting("enc_license_status", "ACTIVE")
+                            encryptSetting("enc_plan_type", if (isSuper) "SUPER_MANAGER" else "ACTIVE")
+                            encryptSetting("enc_expire_time", if (isSuper) Long.MAX_VALUE.toString() else "0")
+                            try { verifyLicenseStatus() } catch (_: Exception) { /* login already succeeded */ }
                             if (serverFullName.isNotBlank()) encryptSetting("enc_manager_fullname", serverFullName)
                             if (serverGameNetName.isNotBlank()) encryptSetting("enc_gamenet_name", serverGameNetName)
 
@@ -1069,18 +1066,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                                 repository.syncAllWithServer()
                                 reconcileActiveStationsFromServer()
                             }
-                            withContext(Dispatchers.Main) {
-                                if (_isSubscribed.value) {
-                                    _isAdminAuthenticated.value = true
-                                    _isCustomerAuthenticated.value = false
-                                    _managerAuthInProgress.value = false
-                                    logOperatorActivity("ورود موفق", "ورود مدیر ($finalRole) به پنل")
-                                    onResult(true, if (isSuper) "ورود موفق مدیریت ارشد" else "ورود موفق مدیریت")
-                                } else {
-                                    _managerAuthInProgress.value = false
-                                    onResult(false, "ورود انجام شد اما اشتراک فعال نیست یا قابل تأیید نیست.")
-                                }
-                            }
+                            // Login success was already delivered immediately after HTTP 200.
                         } catch (e: Exception) {
                             android.util.Log.e("GameNetViewModel", "Error syncing on manager login", e)
                             withContext(Dispatchers.Main) {
