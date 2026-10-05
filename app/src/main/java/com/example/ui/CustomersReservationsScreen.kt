@@ -1052,6 +1052,9 @@ fun CustomerTransactionCard(
 
     val customers by viewModel.customers.collectAsState()
     val clubLevels by viewModel.clubLevels.collectAsState()
+    val gameRewardRate by viewModel.gameRewardRate.collectAsState()
+    val buffetRewardRate by viewModel.buffetRewardRate.collectAsState()
+    val lpTomanRate by viewModel.lpTomanRate.collectAsState()
 
     val customer = remember(customers, transaction.customerId) {
         customers.find { it.id == transaction.customerId }
@@ -1123,6 +1126,8 @@ fun CustomerTransactionCard(
     val origGameCost: Double = if (transaction.gameCost > 0L) transaction.gameCost.toDouble() else (transaction.amount - transaction.foodCost).toDouble()
     val origFoodCost: Double = transaction.foodCost.toDouble()
     val origTotal: Double = if (transaction.amount > 0L) transaction.amount.toDouble() else (origGameCost + origFoodCost)
+    val previewGn = ((origGameCost.toLong() / 100_000L) * gameRewardRate + (origFoodCost.toLong() / 100_000L) * buffetRewardRate).coerceAtLeast(0L)
+    val previewLp = if (lpTomanRate > 0L) (origTotal.toLong() / lpTomanRate).coerceAtLeast(0L) else 0L
 
     val gameDiscount: Double = origGameCost * (gameDiscPct / 100.0)
     val discountedGameCost: Double = (origGameCost - gameDiscount).coerceAtLeast(0.0)
@@ -1434,9 +1439,9 @@ fun CustomerTransactionCard(
                         ) {
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text("💎", fontSize = 11.sp)
-                                Text("پاداش GN دریافتی این نشست:", fontSize = 11.sp, color = Color(0xFF1D4ED8), fontWeight = FontWeight.Bold)
+                                Text(if (transaction.status == "UNREVIEWED") "GN قابل دریافت این نشست:" else "پاداش GN دریافتی این نشست:", fontSize = 11.sp, color = Color(0xFF1D4ED8), fontWeight = FontWeight.Bold)
                             }
-                            Text("+$earnedGnPoints GN", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF1D4ED8))
+                            Text("+${if (transaction.status == "UNREVIEWED") previewGn else earnedGnPoints} GN", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF1D4ED8))
                         }
                     }
                     Surface(
@@ -1452,9 +1457,9 @@ fun CustomerTransactionCard(
                         ) {
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text("🏆", fontSize = 11.sp)
-                                Text("امتیاز LP دریافتی این نشست:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text(if (transaction.status == "UNREVIEWED") "LP قابل دریافت این نشست:" else "امتیاز LP دریافتی این نشست:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
-                            Text("+$earnedLpPoints LP", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                            Text("+${if (transaction.status == "UNREVIEWED") previewLp else earnedLpPoints} LP", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
                         }
                     }
 
