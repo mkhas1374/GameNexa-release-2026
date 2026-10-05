@@ -783,14 +783,13 @@ const defaultManagerConfiguration = () => deepMerge(DEFAULT_RESERVATION_CONFIGUR
     policies: {
         reservation: {
             depositPercent: 30
-        },
-        loyalty: {
-            gameSettlement: {
-                gnPer10000: 10,
-                lpPer10000: 5
-            }
         }
-    }
+    },
+    // Session loyalty defaults: points per 10,000 Toman. Manager-editable.
+    policy_game_reward_rate: 10,
+    policy_buffet_reward_rate: 5,
+    policy_lp_toman_rate: 1000,
+    policy_buffet_lp_per_10000: 5
 });
 
 async function getManagerConfiguration(client, managerId) {
@@ -818,6 +817,25 @@ function normalizeConsoleType(value) {
     if (["SIMD", "SIMULATOR", "DRIVINGSIMULATOR", "DRIVING", "SHABIHSAZRAHANDEGI"].includes(key)) return "SimD";
     if (["XBOX", "XBOXSERIESX", "XBOXSERIES"].includes(key)) return "Xbox Series X";
     return raw;
+}
+
+function configuredProduct(configuration, productName) {
+    const settings = configuration?.settings || {};
+    const name = String(productName || '').trim();
+    const sources = [settings?.pricing?.products, settings?.products];
+    for (const source of sources) {
+        if (!source) continue;
+        if (Array.isArray(source)) {
+            const found = source.find(p => String(p?.name ?? p?.productName ?? '').trim() === name);
+            if (found) return found;
+        } else if (typeof source === 'object') {
+            const direct = source[name];
+            if (direct !== undefined) return direct;
+            const found = Object.entries(source).find(([key, value]) => String(value?.name ?? value?.productName ?? key).trim() === name);
+            if (found) return found[1];
+        }
+    }
+    return null;
 }
 
 function configuredHourlyRate(configuration, consoleType, controllerCount) {
@@ -1199,7 +1217,7 @@ app.post("/api/station/order", requireManagerAuth, requireActiveEntitlement, rat
             return res.json({success:true,duplicate:true,sessionId:sid});
         }
         const cfg=await getManagerConfiguration(client,managerId);
-        const product=cfg.settings?.pricing?.products?.[productName] ?? cfg.settings?.products?.[productName];
+        const product=configuredProduct(cfg,productName);
         const unitPrice=Number(product?.price ?? product ?? 0);
         if(!Number.isFinite(unitPrice) || unitPrice < 0) { await client.query("ROLLBACK"); return res.status(422).json({success:false,error:"Product pricing not configured"}); }
         const unitPriceWhole = Math.trunc(unitPrice);
@@ -1287,7 +1305,7 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
                 if (!target.rows.length) { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"ORDER_CUSTOMER_NOT_IN_SESSION"}); }
             }
             const cfg=await getManagerConfiguration(client,managerId);
-            const product=cfg.settings?.pricing?.products?.[productName] ?? cfg.settings?.products?.[productName];
+            const product=configuredProduct(cfg,productName);
             const unitPriceWhole=normalizeMoneyInteger(product?.price ?? product ?? "");
             if (unitPriceWhole === null) { await client.query("ROLLBACK"); return res.status(422).json({success:false,error:"Product pricing not configured"}); }
             await client.query("INSERT INTO session_orders(manager_id,session_id,product_name,quantity,unit_price,target_customer_id,line_total,product_snapshot) VALUES($1,$2,$3,$4,$5::numeric,$6,FLOOR($4::numeric*$5::numeric),$7::jsonb)", [managerId,sessionId,productName,quantity,unitPriceWhole,targetCustomerId,JSON.stringify({name:productName,unitPrice:unitPriceWhole,capturedAt:new Date().toISOString()})]);

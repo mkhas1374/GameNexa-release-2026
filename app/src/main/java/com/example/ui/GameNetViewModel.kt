@@ -1340,10 +1340,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Configurable System Policies
-    private val _gameRewardRate = MutableStateFlow(100L) // 100 GN per 100k Toman
+    private val _gameRewardRate = MutableStateFlow(10L) // 10 GN per 10,000 Toman = 1 GN per 1,000 Toman
     val gameRewardRate: StateFlow<Long> = _gameRewardRate.asStateFlow()
 
-    private val _buffetRewardRate = MutableStateFlow(50L) // 50 GN per 100k Toman
+    private val _buffetRewardRate = MutableStateFlow(5L) // 5 GN per 10,000 Toman = 0.5 GN per 1,000 Toman
     val buffetRewardRate: StateFlow<Long> = _buffetRewardRate.asStateFlow()
 
     private val _referralRewardGn = MutableStateFlow(100L)
@@ -1372,6 +1372,18 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     private val _lpTomanRate = MutableStateFlow(1000L) // 1 LP per 1,000 Toman spend (default)
     val lpTomanRate: StateFlow<Long> = _lpTomanRate.asStateFlow()
+
+    private val _buffetLpPer10000 = MutableStateFlow(5L) // 5 LP per 10,000 Toman = 0.5 LP per 1,000 Toman
+    val buffetLpPer10000: StateFlow<Long> = _buffetLpPer10000.asStateFlow()
+
+    fun saveBuffetLpPer10000(rate: Long) {
+        _buffetLpPer10000.value = rate.coerceAtLeast(0L)
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.saveSetting("policy_buffet_lp_per_10000", _buffetLpPer10000.value.toString())
+            SelfHostedManager.syncAppConfig("policy_buffet_lp_per_10000", _buffetLpPer10000.value.toString())
+            logOperatorActivity("تغییر نرخ LP بوفه", "بروزرسانی نرخ LP بوفه به ${_buffetLpPer10000.value} امتیاز در هر 10000 تومان")
+        }
+    }
 
     fun saveLpTomanRate(rate: Long) {
         _lpTomanRate.value = rate
@@ -1540,7 +1552,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch(Dispatchers.IO) {
             repository.saveSetting("policy_game_reward_rate", gameReward.toString())
+            SelfHostedManager.syncAppConfig("policy_game_reward_rate", gameReward.toString())
             repository.saveSetting("policy_buffet_reward_rate", buffetReward.toString())
+            SelfHostedManager.syncAppConfig("policy_buffet_reward_rate", buffetReward.toString())
             repository.saveSetting("policy_referral_reward_gn", refReward.toString())
             repository.saveSetting("policy_referral_qualification_amount", refQualAmount.toString())
             repository.saveSetting("policy_gn_to_toman_rate", gnTomanRate.toString())
@@ -2100,8 +2114,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     fun resetGnRulesToDefault() {
         saveSystemPolicy(
-            gameReward = 100L,
-            buffetReward = 50L,
+            gameReward = 10L,
+            buffetReward = 5L,
             refReward = 100L,
             refQualAmount = 100000L,
             gnTomanRate = 400L,
@@ -2111,6 +2125,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             dailyLimitTransfer = 1000L,
             feePercent = 5L
         )
+        saveLpTomanRate(1000L)
+        saveBuffetLpPer10000(5L)
         savePaymentSetting("gn_game_payment_ratio", "0.3")
         savePaymentSetting("gn_buffet_payment_ratio", "0.5")
         savePaymentSetting("gn_to_toman_ratio", "1000")
@@ -2531,8 +2547,8 @@ loadSettings()
         _ownerBroadcastMessage.value = savedBroadcast
 
         // Load System Policies
-        _gameRewardRate.value = repository.getSetting("policy_game_reward_rate")?.toLongOrNull() ?: 100L
-        _buffetRewardRate.value = repository.getSetting("policy_buffet_reward_rate")?.toLongOrNull() ?: 50L
+        _gameRewardRate.value = repository.getSetting("policy_game_reward_rate")?.toLongOrNull() ?: 10L
+        _buffetRewardRate.value = repository.getSetting("policy_buffet_reward_rate")?.toLongOrNull() ?: 5L
         _referralRewardGn.value = repository.getSetting("policy_referral_reward_gn")?.toLongOrNull() ?: 100L
         _referralQualificationAmount.value = repository.getSetting("policy_referral_qualification_amount")?.toLongOrNull() ?: 100000L
         _gnToTomanRate.value = repository.getSetting("policy_gn_to_toman_rate")?.toLongOrNull() ?: 400L
@@ -2542,6 +2558,7 @@ loadSettings()
         _transferDailyLimitGn.value = repository.getSetting("policy_transfer_daily_limit_gn")?.toLongOrNull() ?: 1000L
         _transferFeePercent.value = repository.getSetting("policy_transfer_fee_percent")?.toLongOrNull() ?: 5L
         _lpTomanRate.value = repository.getSetting("policy_lp_toman_rate")?.toLongOrNull() ?: 1000L
+        _buffetLpPer10000.value = repository.getSetting("policy_buffet_lp_per_10000")?.toLongOrNull() ?: 5L
         _minInvitePlayHours.value = repository.getSetting("policy_min_invite_play_hours")?.toLongOrNull() ?: 0L
         _minInviteSpendAmount.value = repository.getSetting("policy_min_invite_spend_amount")?.toLongOrNull() ?: 100000L
 
@@ -4182,10 +4199,12 @@ loadSettings()
                 var earnedLp = 0L
 
                 if (normalizedStatus == "REVIEWED" && transaction.status != "REVIEWED") {
-                    val gameGnReward = ((transaction.gameCost / 100_000L) * _gameRewardRate.value).coerceAtLeast(0L)
-                    val buffetGnReward = ((transaction.foodCost / 100_000L) * _buffetRewardRate.value).coerceAtLeast(0L)
+                    val gameGnReward = ((transaction.gameCost / 10_000L) * _gameRewardRate.value).coerceAtLeast(0L)
+                    val buffetGnReward = ((transaction.foodCost / 10_000L) * _buffetRewardRate.value).coerceAtLeast(0L)
                     earnedGn = gameGnReward + buffetGnReward
-                    earnedLp = if (_lpTomanRate.value > 0L) (finalTxAmount / _lpTomanRate.value).coerceAtLeast(0L) else 0L
+                    val gameLpReward = if (_lpTomanRate.value > 0L) (transaction.gameCost / _lpTomanRate.value).coerceAtLeast(0L) else 0L
+                    val buffetLpReward = ((transaction.foodCost / 10_000L) * _buffetLpPer10000.value).coerceAtLeast(0L)
+                    earnedLp = gameLpReward + buffetLpReward
                     if (earnedGn > 0L) {
                         updatedCust = updatedCust.copy(availableGn = updatedCust.availableGn + earnedGn)
                         repository.addGnLedgerEntry(

@@ -53,6 +53,7 @@ fun CustomerDashboardTab(
 
     val clubLevels by viewModel.clubLevels.collectAsState()
     val lpTomanRate by viewModel.lpTomanRate.collectAsState()
+    val buffetLpPer10000 by viewModel.buffetLpPer10000.collectAsState()
     var showProgressDetailsDialog by remember { mutableStateOf(false) }
 
     val currentCustomerAuth by SelfHostedManager.currentLoggedInCustomer.collectAsState()
@@ -989,7 +990,7 @@ fun CustomerLoyaltyProgressDialog(
                                 Text("${numberFormat.format(neededToman)} تومان", fontSize = 12.sp, fontWeight = FontWeight.Black, color = Color(0xFF2E7D32))
                             }
                             Text(
-                                text = "* بر اساس محاسبه 1 LP به ازای هر ${numberFormat.format(lpTomanRate)} تومان پرداخت",
+                                text = "* بازی: 1 LP به ازای هر ${numberFormat.format(lpTomanRate)} تومان | بوفه: ${numberFormat.format(buffetLpPer10000)} LP به ازای هر 10,000 تومان",
                                 fontSize = 9.sp,
                                 color = MaterialTheme.colorScheme.outline
                             )

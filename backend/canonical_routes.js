@@ -822,9 +822,10 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       if(!session){await c.query('ROLLBACK');return res.status(404).json({error:'Session not found'});}
       const config=await getManagerConfiguration(c,mid);
       const settings=config.settings||{};
-      const gameRewardRate=Math.max(0,Math.trunc(Number(settings.policy_game_reward_rate||100)));
-      const buffetRewardRate=Math.max(0,Math.trunc(Number(settings.policy_buffet_reward_rate||50)));
-      const lpTomanRate=Math.max(1,Math.trunc(Number(settings.policy_lp_toman_rate||1000)));
+      const gameGnPer10000=Math.max(0,Number(settings.policy_game_reward_rate??10));
+      const gameLpPer10000=Math.max(0,10000/Math.max(1,Number(settings.policy_lp_toman_rate??1000)));
+      const buffetGnPer10000=Math.max(0,Number(settings.policy_buffet_reward_rate??5));
+      const buffetLpPer10000=Math.max(0,Number(settings.policy_buffet_lp_per_10000??5));
       const participants=(await c.query("SELECT customer_id,participant_key,participant_name,is_guest,is_payer,prepayment_amount FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND is_payer=TRUE FOR UPDATE",[sid,mid])).rows;
       const byId=new Map(participants.filter(p=>p.customer_id).map(p=>[Number(p.customer_id),p]));
       const guestPayer=participants.find(p=>!p.customer_id && p.is_guest && p.is_payer) || null;
@@ -864,12 +865,15 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
           const key='session-review-refund:'+sid+':'+cid;
           await c.query("INSERT INTO session_review_refunds(manager_id,session_id,customer_id,refund_amount,method,status,idempotency_key) VALUES($1,$2,$3,$4,$5,'FINALIZED',$6) ON CONFLICT(manager_id,session_id,customer_id) DO UPDATE SET refund_amount=EXCLUDED.refund_amount,method=EXCLUDED.method,status='FINALIZED'",[mid,sid,cid,refund,method,key]);
         }
-        const rewardBase=method==='WALLET' ? prepayment+buffetCost : gameCost+buffetCost;
-        const gameRewardBase=method==='WALLET' ? prepayment : gameCost;
-        const gnGame=Math.floor(gameRewardBase/100000)*gameRewardRate;
-        const gnBuffet=Math.floor(buffetCost/100000)*buffetRewardRate;
+        // Rewards are based on the authoritative final invoice components.
+        // Rates are configurable as points per 10,000 Toman; floor is intentional
+        // so no partial GN/LP is fabricated in the integer ledgers.
+        const gnGame=Math.floor((gameCost/10000)*gameGnPer10000);
+        const gnBuffet=Math.floor((buffetCost/10000)*buffetGnPer10000);
+        const lpGame=Math.floor((gameCost/10000)*gameLpPer10000);
+        const lpBuffet=Math.floor((buffetCost/10000)*buffetLpPer10000);
         const earnedGn=Math.max(0,gnGame+gnBuffet);
-        const earnedLp=Math.max(0,Math.floor(rewardBase/lpTomanRate));
+        const earnedLp=Math.max(0,lpGame+lpBuffet);
         const reviewKey='session-review:'+sid+':'+cid;
         if(!isGuestDecision && earnedGn>0){const g=await c.query("INSERT INTO gn_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_REVIEW',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",[mid,cid,earnedGn,sid,reviewKey+':GN']);if(g.rowCount>0) await c.query('UPDATE customers SET gn_balance=gn_balance+$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3',[earnedGn,cid,mid]);}
         if(!isGuestDecision && earnedLp>0){const l=await c.query("INSERT INTO lp_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_REVIEW',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",[mid,cid,earnedLp,sid,reviewKey+':LP']);if(l.rowCount>0) await c.query('UPDATE customers SET lp_balance=lp_balance+$1 WHERE id=$2 AND manager_id=$3',[earnedLp,cid,mid]);}

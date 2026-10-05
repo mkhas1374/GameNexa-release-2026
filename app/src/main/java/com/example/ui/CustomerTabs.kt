@@ -1420,6 +1420,7 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
 @Composable
 fun CustomerClubRulesTab(viewModel: GameNetViewModel) {
     val lpTomanRate by viewModel.lpTomanRate.collectAsState()
+    val buffetLpPer10000 by viewModel.buffetLpPer10000.collectAsState()
     val minInviteSpendAmount by viewModel.minInviteSpendAmount.collectAsState()
     val scoringRules by viewModel.scoringRules.collectAsState()
     val behaviorRules by viewModel.allBehaviorRules.collectAsState()
@@ -1492,7 +1493,7 @@ fun CustomerClubRulesTab(viewModel: GameNetViewModel) {
                         Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFFE65100), modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "به ازای هر ${decimalFormat.format(lpTomanRate)} تومان پرداخت در گیم‌نت ⬅️ 1 امتیاز LP تعلق می‌گیرد.",
+                            text = "بازی: هر ${decimalFormat.format(lpTomanRate)} تومان ⬅️ 1 LP | بوفه: هر 10,000 تومان ⬅️ ${decimalFormat.format(buffetLpPer10000)} LP",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFFE65100)
