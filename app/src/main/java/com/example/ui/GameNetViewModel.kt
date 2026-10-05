@@ -1025,7 +1025,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     _isAdminAuthenticated.value = true
                     _isCustomerAuthenticated.value = false
                     _isSubscribed.value = true
-                    _accessState.value = AppAccessState.Allowed
+                    _accessState.value = AppAccessState.Allowed(null, if (isSuper) "SUPER_MANAGER" else "ACTIVE")
                     _licenseState.value = LicenseState.ConnectionRequired("در حال همگام‌سازی اعتبار اشتراک...")
 
                     _managerAuthInProgress.value = false

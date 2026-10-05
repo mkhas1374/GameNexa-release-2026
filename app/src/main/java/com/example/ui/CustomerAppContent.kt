@@ -840,6 +840,7 @@ fun CustomerDashboardTab(
             neededToman = neededToman,
             progressFraction = progressFraction,
             lpTomanRate = effectiveLpRate,
+            buffetLpPer10000 = buffetLpPer10000,
             customerLedger = customerLedger,
             onDismiss = { showProgressDetailsDialog = false }
         )
@@ -856,6 +857,7 @@ fun CustomerLoyaltyProgressDialog(
     neededToman: Long,
     progressFraction: Float,
     lpTomanRate: Long,
+    buffetLpPer10000: Long,
     customerLedger: List<GnLedgerEntry>,
     onDismiss: () -> Unit
 ) {
