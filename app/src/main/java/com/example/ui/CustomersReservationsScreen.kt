@@ -1347,12 +1347,8 @@ fun CustomerTransactionCard(
                 )
             }
 
-            val earnedGnPoints = remember(transaction) {
-                        val playHours = transaction.playMinutes / 60.0
-                        val pPts = playHours * 20.0
-                        val sPts = (transaction.amount / 1000.0) * 1.0
-                        (pPts + sPts).toInt()
-                    }
+            val earnedGnPoints = transaction.earnedGn
+            val earnedLpPoints = transaction.earnedLp
 
                     Surface(
                         shape = RoundedCornerShape(6.dp),
@@ -1370,6 +1366,24 @@ fun CustomerTransactionCard(
                                 Text("پاداش GN دریافتی این نشست:", fontSize = 11.sp, color = Color(0xFF1D4ED8), fontWeight = FontWeight.Bold)
                             }
                             Text("+$earnedGnPoints GN", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF1D4ED8))
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f),
+                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("🏆", fontSize = 11.sp)
+                                Text("امتیاز LP دریافتی این نشست:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Text("+$earnedLpPoints LP", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
                         }
                     }
 
@@ -1410,6 +1424,7 @@ fun CustomerTransactionCard(
                                         appendLine("✅ وضعیت: تسویه کامل")
                                     }
                                     appendLine("💎 پاداش GN کسب شده: +$earnedGnPoints GN")
+                                    appendLine("🏆 امتیاز LP کسب شده: +$earnedLpPoints LP")
                                     appendLine("================================")
                                     appendLine("    با تشکر از انتخاب و حضور شما!")
                                 }

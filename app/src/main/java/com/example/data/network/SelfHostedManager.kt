@@ -1268,6 +1268,7 @@ object SelfHostedManager {
                 put("game_cost", transaction.gameCost)
                 put("foodCost", transaction.foodCost)
                 put("food_cost", transaction.foodCost)
+                put("sessionId", transaction.sessionId)
             }
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/manager/customer-transactions")
@@ -1333,7 +1334,10 @@ object SelfHostedManager {
                         timestamp = ts,
                         playMinutes = o.optInt("playMinutes", o.optInt("play_minutes", 0)),
                         gameCost = o.optLong("gameCost", o.optLong("game_cost", 0L)),
-                        foodCost = o.optLong("foodCost", o.optLong("food_cost", 0L))
+                        foodCost = o.optLong("foodCost", o.optLong("food_cost", 0L)),
+                        sessionId = o.optString("sessionId", o.optString("session_id", "")),
+                        earnedGn = o.optLong("earnedGn", o.optLong("earned_gn", 0L)),
+                        earnedLp = o.optLong("earnedLp", o.optLong("earned_lp", 0L))
                     )
                 }
                 list.sortedByDescending { it.timestamp }

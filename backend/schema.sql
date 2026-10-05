@@ -183,6 +183,7 @@ CREATE TABLE public.customer_transactions (
     game_cost numeric(30,10) DEFAULT 0 NOT NULL,
     food_cost numeric(30,10) DEFAULT 0 NOT NULL,
     local_id bigint,
+    session_id uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );

@@ -297,7 +297,10 @@ data class CustomerTransaction(
     val timestamp: Long = System.currentTimeMillis(),
     val playMinutes: Int = 0,
     val gameCost: Long = 0L,
-    val foodCost: Long = 0L
+    val foodCost: Long = 0L,
+    val sessionId: String = "",
+    val earnedGn: Long = 0L,
+    val earnedLp: Long = 0L
 ) {
     val conciseTitle: String
         get() {

@@ -28,7 +28,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         BehaviorLog::class,
         ReferralProgressRecord::class
     ],
-    version = 14,
+    version = 16,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -89,6 +89,19 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 // Passwords are server-authoritative and must never remain in the local Room database.
                 db.execSQL("UPDATE customers SET password = ''")
+            }
+        }
+
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE customer_transactions ADD COLUMN sessionId TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE customer_transactions ADD COLUMN earnedGn INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE customer_transactions ADD COLUMN earnedLp INTEGER NOT NULL DEFAULT 0")
             }
         }
 
@@ -200,7 +213,9 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_10_11,
                     MIGRATION_11_12,
                     MIGRATION_12_13,
-                    MIGRATION_13_14
+                    MIGRATION_13_14,
+                    MIGRATION_14_15,
+                    MIGRATION_15_16
                 )
                 .build()
                 INSTANCE = instance

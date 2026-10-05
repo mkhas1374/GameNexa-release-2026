@@ -173,6 +173,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         put("playMinutes", t.playMinutes)
         put("gameCost", t.gameCost)
         put("foodCost", t.foodCost)
+        put("sessionId", t.sessionId)
     }
 
     private suspend fun queueOrSyncCustomerTransaction(transaction: CustomerTransaction) {
@@ -184,6 +185,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         val payload = customerTransactionJson(transaction).toString()
         if (SelfHostedManager.syncCustomerTransactionToCloud(transaction)) {
             repository.saveSetting(key, "")
+            // Refresh from the server so historical GN/LP values come from canonical ledgers,
+            // not Android-side estimates.
+            repository.syncCustomerTransactionsFromServer()
         } else {
             repository.saveSetting(key, payload)
         }
@@ -211,7 +215,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         timestamp = obj.optLong("timestamp"),
                         playMinutes = obj.optInt("playMinutes"),
                         gameCost = obj.optLong("gameCost"),
-                        foodCost = obj.optLong("foodCost")
+                        foodCost = obj.optLong("foodCost"),
+                        sessionId = obj.optString("sessionId")
                     )
                     if (transaction.customerId > 0L && transaction.id > 0L && SelfHostedManager.syncCustomerTransactionToCloud(transaction)) {
                         repository.saveSetting(setting.key, "")
@@ -902,7 +907,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 
                 withContext(Dispatchers.Main) {
                     _currentAdminRole.value = finalRole
-                    _isAdminAuthenticated.value = true
+                    // Do not publish authenticated UI state until server entitlement validation completes.
+                    // A transient subscription-check failure must never create a one-frame Manager session.
+                    _isAdminAuthenticated.value = false
                     _isCustomerAuthenticated.value = false
                     // Authentication success does not itself grant subscription access.
                     // Entitlement is verified against the server immediately below.
@@ -940,6 +947,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                             }
                             withContext(Dispatchers.Main) {
                                 if (_isSubscribed.value) {
+                                    _isAdminAuthenticated.value = true
+                                    _isCustomerAuthenticated.value = false
                                     logOperatorActivity("ورود موفق", "ورود مدیر ($finalRole) به پنل")
                                     onResult(true, if (isSuper) "ورود موفق مدیریت ارشد" else "ورود موفق مدیریت")
                                 } else {
@@ -3566,7 +3575,8 @@ loadSettings()
                         timestamp = now,
                         playMinutes = existingSegments.sumOf { it.durationMinutes },
                         gameCost = gameCost,
-                        foodCost = buffetCost
+                        foodCost = buffetCost,
+                        sessionId = sessionId
                     )
                     val newId = repository.insertCustomerTransaction(trans)
                     val transWithId = trans.copy(id = newId)
@@ -4603,6 +4613,7 @@ loadSettings()
                 return@launch
             }
             repository.deleteCustomer(customer)
+            com.example.data.network.SelfHostedManager.fetchArchivedCustomersFromCloud()
             logOperatorActivity(
                 actionTitle = "حذف مشتری",
                 details = "مشتری ${customer.fullName} با شماره ${customer.phoneNumber} از فهرست فعال مشتریان حذف شد و سوابق مالی حفظ شد."
@@ -4624,6 +4635,7 @@ loadSettings()
                 return@launch
             }
             repository.deleteCustomersBatch(customersToDelete)
+            com.example.data.network.SelfHostedManager.fetchArchivedCustomersFromCloud()
             logOperatorActivity(
                 actionTitle = "حذف دسته‌جمعی مخاطبان",
                 details = "تعداد ${customersToDelete.size} مخاطب از فهرست فعال حذف شدند و سوابق مالی حفظ شدند."
@@ -5034,11 +5046,14 @@ loadSettings()
                 if (checkRes.realExpireTime in 1..serverTime) {
                     // Subscription expired on server
                     _isSubscribed.value = false
+                    _isAdminAuthenticated.value = false
                     _licenseState.value = LicenseState.Expired("اشتراک شما به پایان رسیده است.")
                 } else {
                     val code = checkRes.licenseCode ?: decryptSetting("enc_license_code")
                     saveLicenseLocal(code, checkRes.realPlanType, checkRes.realExpireTime, serverTime, true)
                     _isSubscribed.value = true
+                    _isAdminAuthenticated.value = true
+                    _isCustomerAuthenticated.value = false
                     _licenseState.value = LicenseState.Active(
                         planType = checkRes.realPlanType,
                         expiresAt = checkRes.realExpireTime,
@@ -5049,6 +5064,7 @@ loadSettings()
                 }
             } else {
                 _isSubscribed.value = false
+                _isAdminAuthenticated.value = false
                 val msg = checkRes.message.ifBlank { "نیاز به فعال‌سازی اشتراک یا تست رایگان می‌باشد." }
                 _licenseState.value = LicenseState.Unactivated(msg)
             }
@@ -5699,7 +5715,9 @@ loadSettings()
                 // A paid Manager session may be restored only when the persisted server
                 // credentials are present. Subscription/entitlement validation follows.
                 _currentAdminRole.value = savedRole
-                _isAdminAuthenticated.value = true
+                // Persisted credentials are not sufficient to publish authenticated UI state;
+                // verifyLicenseStatus() must confirm the server entitlement first.
+                _isAdminAuthenticated.value = false
                 _isCustomerAuthenticated.value = false
                 SelfHostedManager.setManagerId(savedManagerId)
                 SelfHostedManager.fetchAllFromCloud()
