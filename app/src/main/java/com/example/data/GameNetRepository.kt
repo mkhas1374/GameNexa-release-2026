@@ -147,6 +147,10 @@ class GameNetRepository(private val db: AppDatabase) {
         return "$secureDefault/"
     }
 
+    private fun managerAuthReady(): Boolean =
+        !NetworkClient.managerAuthToken.isNullOrBlank() &&
+            com.example.data.network.SelfHostedManager.currentManagerId.isNotBlank()
+
     suspend fun getApi(): com.example.data.network.GameNetApi? {
         return try {
             val url = getServerUrl()
@@ -418,7 +422,9 @@ class GameNetRepository(private val db: AppDatabase) {
     suspend fun getConsoleTypeByName(name: String) = consoleTypeDao.getByName(name)
     suspend fun insertConsoleType(consoleType: ConsoleType) {
         consoleTypeDao.insert(consoleType)
-        if (isSyncModeEnabled()) {
+        // Keep local edits durable, but never emit an unauthenticated Manager mutation.
+        // The next authenticated sync will reconcile this local value with the server.
+        if (isSyncModeEnabled() && managerAuthReady()) {
             try {
                 getApi()?.saveConsoleType(consoleType)
             } catch (e: Exception) {
@@ -429,7 +435,7 @@ class GameNetRepository(private val db: AppDatabase) {
 
     suspend fun deleteConsoleType(name: String) {
         consoleTypeDao.deleteByName(name)
-        if (isSyncModeEnabled()) {
+        if (isSyncModeEnabled() && managerAuthReady()) {
             try {
                 getApi()?.deleteConsoleType(name)
             } catch (e: Exception) {
@@ -445,7 +451,9 @@ class GameNetRepository(private val db: AppDatabase) {
     suspend fun getProductByName(name: String) = productDao.getByName(name)
     suspend fun insertProduct(product: Product) {
         productDao.insert(product)
-        if (isSyncModeEnabled()) {
+        // Keep local edits durable, but never emit an unauthenticated Manager mutation.
+        // The next authenticated sync will reconcile this local value with the server.
+        if (isSyncModeEnabled() && managerAuthReady()) {
             try {
                 getApi()?.saveProduct(product)
             } catch (e: Exception) {
@@ -456,7 +464,7 @@ class GameNetRepository(private val db: AppDatabase) {
 
     suspend fun deleteProduct(name: String) {
         productDao.deleteByName(name)
-        if (isSyncModeEnabled()) {
+        if (isSyncModeEnabled() && managerAuthReady()) {
             try {
                 getApi()?.deleteProduct(name)
             } catch (e: Exception) {
