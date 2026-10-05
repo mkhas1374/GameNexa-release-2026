@@ -408,7 +408,7 @@ CREATE TABLE public.invoices (
 
 --
 CREATE TABLE IF NOT EXISTS public.session_review_refunds (
-    id bigint NOT NULL,
+    id BIGSERIAL NOT NULL,
     manager_id character varying(50) NOT NULL,
     session_id uuid NOT NULL,
     customer_id integer NOT NULL,
