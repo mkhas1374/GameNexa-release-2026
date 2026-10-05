@@ -40,6 +40,9 @@ services:
       retries: 3
       start_period: 15s
     restart: unless-stopped
+    networks:
+      - default
+      - proxy_shared
 
   gamenet_nginx:
     image: nginx:1.29-alpine
@@ -55,6 +58,9 @@ services:
       gamenet_api:
         condition: service_healthy
     restart: unless-stopped
+    networks:
+      - default
+      - proxy_shared
 
 volumes:
   pgdata:
