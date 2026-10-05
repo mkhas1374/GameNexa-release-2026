@@ -299,12 +299,14 @@ async function bookReservation(params, externalClient = null) {
         const pricingType = isVip ? 'FULL_HALL' : type;
         const priceDetails = await calculatePrice(client, managerId, customerId, pricingType, pricingStationType, controllersCount || 1, actualDuration, isVip, timeSlot);
         const initialStatus = isVip ? 'VIP_PENDING_PAYMENT' : 'PAYMENT_PENDING';
+        const paymentDeadlineMinutes = isVip ? Number(rules.vipPaymentDeadlineMinutes ?? 0) : Number(rules.paymentDeadlineMinutes ?? 0);
         const reservationPolicySnapshot = {
             isVip: Boolean(isVip),
             customerTier,
             durationMinutes: actualDuration,
             paymentDeadlineMinutes: Number(rules.paymentDeadlineMinutes ?? 0),
             vipPaymentDeadlineMinutes: Number(rules.vipPaymentDeadlineMinutes ?? 0),
+            paymentDeadlineAt: paymentDeadlineMinutes > 0 ? new Date(Date.now() + paymentDeadlineMinutes * 60000).toISOString() : null,
             vipMinDurationMinutes: Number(rules.vipMinDurationMinutes ?? 0),
             fullHallMinDurationMinutes: Number(rules.fullHallMinDurationMinutes ?? 0),
             exclusiveFullDayDurationMinutes: Number(rules.exclusiveFullDayDurationMinutes ?? 0),

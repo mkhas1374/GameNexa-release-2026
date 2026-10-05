@@ -51,6 +51,7 @@ import com.example.data.Customer
 import com.example.data.CustomerTransaction
 import com.example.data.Reservation
 import com.example.data.network.SelfHostedManager
+import com.example.util.JalaliCalendarHelper
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -381,8 +382,8 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
             stations = managerStations,
             lang = lang,
             onDismiss = { showReservationDialog = false },
-            onSave = { name, phone, timestamp, duration, stationId, isVip ->
-                viewModel.addReservation(name, phone, timestamp, duration, stationId, isVip)
+            onSave = { name, phone, timestamp, duration, stationId, isVip, paidAmount ->
+                viewModel.addReservation(name, phone, timestamp, duration, stationId, isVip, paidAmount)
                 showReservationDialog = false
                 Toast.makeText(context, Localization.get("reservation_saved", lang), Toast.LENGTH_SHORT).show()
             }
@@ -3125,7 +3126,7 @@ fun ReservationFormDialog(
     stations: List<Pair<Long,String>>,
     lang: String,
     onDismiss: () -> Unit,
-    onSave: (name: String, phone: String, timestamp: Long, duration: Int, stationId: Long, isVip: Boolean) -> Unit
+    onSave: (name: String, phone: String, timestamp: Long, duration: Int, stationId: Long, isVip: Boolean, paidAmount: Long) -> Unit
 ) {
     val context = LocalContext.current
 
@@ -3177,14 +3178,17 @@ fun ReservationFormDialog(
         }
     }
 
-    // Synchronize default inputs with current phone date and time
-    val calendar = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran"))
-    var yearInput by remember { mutableStateOf(calendar.get(Calendar.YEAR).toString()) }
-    var monthInput by remember { mutableStateOf((calendar.get(Calendar.MONTH) + 1).toString()) }
-    var dayInput by remember { mutableStateOf(calendar.get(Calendar.DAY_OF_MONTH).toString()) }
-    var hourInput by remember { mutableStateOf(String.format(Locale.US, "%02d", calendar.get(Calendar.HOUR_OF_DAY))) }
-    var minuteInput by remember { mutableStateOf(String.format(Locale.US, "%02d", calendar.get(Calendar.MINUTE))) }
+    // All reservation dates are entered/displayed in the Iranian Solar Hijri calendar.
+    val jalaliToday = remember { JalaliCalendarHelper.currentJalali() }
+    var selectedJalaliYear by remember { mutableIntStateOf(jalaliToday[0]) }
+    var selectedJalaliMonth by remember { mutableIntStateOf(jalaliToday[1]) }
+    var selectedJalaliDay by remember { mutableIntStateOf(jalaliToday[2]) }
+    var showJalaliDatePicker by remember { mutableStateOf(false) }
+    var paymentInput by remember { mutableStateOf("") }
+    var hourInput by remember { mutableStateOf(String.format(Locale.US, "%02d", Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran")).get(Calendar.HOUR_OF_DAY))) }
+    var minuteInput by remember { mutableStateOf(String.format(Locale.US, "%02d", Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran")).get(Calendar.MINUTE))) }
 
+    val jalaliMonths = listOf("فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور","مهر","آبان","آذر","دی","بهمن","اسفند")
     var expandedDropdown by remember { mutableStateOf(false) }
 
     AlertDialog(
@@ -3331,46 +3335,48 @@ fun ReservationFormDialog(
                 }
 
                 item {
-                    // Date Selectors Row
-                    Text(
-                        text = Localization.get("reservation_time", lang),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = yearInput,
-                            onValueChange = { yearInput = it },
-                            label = { Text(if (lang == "fa") "سال" else "YY", fontSize = 8.sp) },
-                            modifier = Modifier.weight(1.5f),
-                            shape = RoundedCornerShape(8.dp),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true
-                        )
-                        OutlinedTextField(
-                            value = monthInput,
-                            onValueChange = { monthInput = it },
-                            label = { Text(if (lang == "fa") "ماه" else "MM", fontSize = 8.sp) },
-                                modifier = Modifier.fillMaxSize(),
-                            shape = RoundedCornerShape(8.dp),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true
-                        )
-                        OutlinedTextField(
-                            value = dayInput,
-                            onValueChange = { dayInput = it },
-                            label = { Text(if (lang == "fa") "روز" else "DD", fontSize = 8.sp) },
-                                modifier = Modifier.fillMaxSize(),
-                            shape = RoundedCornerShape(8.dp),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true
+                    Text("تاریخ حضور", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("امروز" to 0, "فردا" to 1, "پس‌فردا" to 2).forEach { (label, offset) ->
+                            OutlinedButton(
+                                onClick = {
+                                    val base = JalaliCalendarHelper.jalaliToGregorianMillis(jalaliToday[0], jalaliToday[1], jalaliToday[2]) ?: System.currentTimeMillis()
+                                    val c = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran")); c.timeInMillis = base + offset * 86_400_000L
+                                    val j = JalaliCalendarHelper.currentJalali().let { now ->
+                                        val cc = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran")); cc.timeInMillis = c.timeInMillis
+                                        JalaliCalendarHelper.formatJalaliDateTime(c.timeInMillis, false).split("/").map { it.toInt() }.toIntArray()
+                                    }
+                                    selectedJalaliYear = j[0]; selectedJalaliMonth = j[1]; selectedJalaliDay = j[2]
+                                },
+                                modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 4.dp)
+                            ) { Text(label, fontSize = 11.sp) }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedButton(onClick = { showJalaliDatePicker = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text("${selectedJalaliYear}/${String.format(Locale.US, "%02d", selectedJalaliMonth)}/${String.format(Locale.US, "%02d", selectedJalaliDay)} — ${jalaliMonths[selectedJalaliMonth - 1]}")
+                    }
+                    if (showJalaliDatePicker) {
+                        JalaliReservationDatePicker(
+                            year = selectedJalaliYear,
+                            month = selectedJalaliMonth,
+                            day = selectedJalaliDay,
+                            months = jalaliMonths,
+                            onSelect = { y, m, d -> selectedJalaliYear = y; selectedJalaliMonth = m; selectedJalaliDay = d; showJalaliDatePicker = false },
+                            onDismiss = { showJalaliDatePicker = false }
                         )
                     }
+                }
+
+                item {
+                    OutlinedTextField(
+                        value = paymentInput,
+                        onValueChange = { paymentInput = it.filter(Char::isDigit) },
+                        label = { Text("مقدار پرداختی (تومان)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true
+                    )
                 }
 
                 item {
@@ -3438,22 +3444,19 @@ fun ReservationFormDialog(
                     if (selectedCustomerName.isNotBlank() && durationInput.toIntOrNull() != null) {
                         // Construct Timestamp safely
                         try {
-                            val targetCal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran"))
-                            targetCal.set(Calendar.YEAR, yearInput.toInt())
-                            targetCal.set(Calendar.MONTH, monthInput.toInt() - 1)
-                            targetCal.set(Calendar.DAY_OF_MONTH, dayInput.toInt())
-                            targetCal.set(Calendar.HOUR_OF_DAY, hourInput.toInt())
-                            targetCal.set(Calendar.MINUTE, minuteInput.toInt())
-                            targetCal.set(Calendar.SECOND, 0)
-                            targetCal.set(Calendar.MILLISECOND, 0)
+                            val timestamp = JalaliCalendarHelper.jalaliToGregorianMillis(
+                                selectedJalaliYear, selectedJalaliMonth, selectedJalaliDay,
+                                hourInput.toInt(), minuteInput.toInt()
+                            ) ?: throw IllegalArgumentException("Invalid Solar Hijri date")
 
                             onSave(
                                 selectedCustomerName,
                                 phoneNumber,
-                                targetCal.timeInMillis,
+                                timestamp,
                                 durationInput.toInt(),
                                 selectedStationId,
-                                isVipReservation
+                                isVipReservation,
+                                paymentInput.toLongOrNull() ?: 0L
                             )
                         } catch (e: Exception) {
                             Toast.makeText(context, if (lang == "fa") "فرمت تاریخ یا زمان نامعتبر است" else "Invalid date/time format", Toast.LENGTH_SHORT).show()
@@ -3471,6 +3474,57 @@ fun ReservationFormDialog(
                 Text(Localization.get("cancel", lang))
             }
         }
+    )
+}
+
+@Composable
+private fun JalaliReservationDatePicker(
+    year: Int,
+    month: Int,
+    day: Int,
+    months: List<String>,
+    onSelect: (Int, Int, Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var shownYear by remember(year) { mutableIntStateOf(year) }
+    var shownMonth by remember(month) { mutableIntStateOf(month) }
+    val firstMillis = JalaliCalendarHelper.jalaliToGregorianMillis(shownYear, shownMonth, 1) ?: return
+    val firstCal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran")); firstCal.timeInMillis = firstMillis
+    val firstWeekday = firstCal.get(Calendar.DAY_OF_WEEK) % 7 // Saturday=0, Sunday=1, ... Friday=6
+    val days = JalaliCalendarHelper.jalaliMonthDays(shownYear, shownMonth)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { if (shownMonth == 1) { shownMonth = 12; shownYear-- } else shownMonth-- }) { Text("‹") }
+                Text("${months[shownMonth - 1]} $shownYear", fontWeight = FontWeight.Bold)
+                TextButton(onClick = { if (shownMonth == 12) { shownMonth = 1; shownYear++ } else shownMonth++ }) { Text("›") }
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    listOf("ش","ی","د","س","چ","پ","ج").forEach { Text(it, modifier = Modifier.weight(1f), textAlign = TextAlign.Center, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                }
+                for (week in 0..5) {
+                    Row(Modifier.fillMaxWidth()) {
+                        for (col in 0..6) {
+                            val number = week * 7 + col - firstWeekday + 1
+                            Box(Modifier.weight(1f).padding(2.dp), contentAlignment = Alignment.Center) {
+                                if (number in 1..days) {
+                                    val selected = number == day && shownYear == year && shownMonth == month
+                                    TextButton(onClick = { onSelect(shownYear, shownMonth, number) }, modifier = Modifier.size(42.dp), contentPadding = PaddingValues(0.dp)) {
+                                        Text(number.toString(), fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Normal, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("بستن") } }
     )
 }
 

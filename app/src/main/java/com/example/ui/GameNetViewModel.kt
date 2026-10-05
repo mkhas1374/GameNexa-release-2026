@@ -4866,7 +4866,7 @@ loadSettings()
     }
 
     // Reservations Operations
-    fun addReservation(fullName: String, phoneNumber: String, reservationTimeMillis: Long, durationMinutes: Int, stationId: Long, isVip: Boolean = false, onResult: ((Boolean, String?) -> Unit)? = null) {
+    fun addReservation(fullName: String, phoneNumber: String, reservationTimeMillis: Long, durationMinutes: Int, stationId: Long, isVip: Boolean = false, paidAmount: Long = 0L, onResult: ((Boolean, String?) -> Unit)? = null) {
         viewModelScope.launch(Dispatchers.IO) {
             val reservation = Reservation(
                 fullName = fullName,
@@ -4875,7 +4875,7 @@ loadSettings()
                 durationMinutes = durationMinutes
             )
             try {
-                val synced = SelfHostedManager.syncReservationToCloud(reservation, stationId, isVip)
+                val synced = SelfHostedManager.syncReservationToCloud(reservation, stationId, isVip, paidAmount)
                 if (synced) {
                     val generatedId = repository.insertReservation(reservation)
                     val savedReservation = reservation.copy(id = generatedId)

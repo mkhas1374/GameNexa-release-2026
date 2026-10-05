@@ -328,6 +328,18 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
         isVip,
         actor:'MANAGER'
       },c);
+      const paidAmount=Number(b.paidAmount||0);
+      if(!Number.isFinite(paidAmount)||paidAmount<0){await c.query('ROLLBACK');return res.status(422).json({error:'Invalid payment amount'});}
+      for(const rid of ids){
+        const rr=(await c.query('SELECT snap_final_price,status,snap_vip_policy FROM reservations WHERE id=$1 AND manager_id=$2 FOR UPDATE',[rid,mid])).rows[0];
+        if(paidAmount>Number(rr.snap_final_price||0)+0.0000001){await c.query('ROLLBACK');return res.status(422).json({error:'Payment amount exceeds reservation price'});}
+        if(paidAmount>0){
+          await c.query("INSERT INTO payment_transactions(manager_id,customer_id,reservation_id,amount,status,idempotency_key,provider,currency,verified_at) VALUES($1,$2,$3,$4,'SUCCESS',$5,'MANAGER_DIRECT_ENTRY','IRT',NOW()) ON CONFLICT(idempotency_key) DO NOTHING",[mid,customer.id,rid,paidAmount,'manager-direct-payment:'+key+':'+rid]);
+          const full=paidAmount>=Number(rr.snap_final_price||0);
+          const next=isVip ? (full?'VIP_PAYMENT_PAID':'VIP_PENDING_PAYMENT') : (full?'PENDING_APPROVAL':'PAYMENT_PENDING');
+          if(next!==rr.status) await c.query('UPDATE reservations SET status=$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3',[next,rid,mid]);
+        }
+      }
       await c.query('INSERT INTO reservation_request_idempotency(manager_id,customer_id,idempotency_key,reservation_ids) VALUES($1,$2,$3,$4::jsonb)',[mid,customer.id,key,JSON.stringify(ids)]);
       await c.query('COMMIT');
       res.status(201).json({success:true,reservation:ids,idempotent:false});
@@ -351,13 +363,13 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
     const c=await pool.connect();
     try {
       await c.query('BEGIN');
-      const q=await c.query('SELECT * FROM reservations WHERE id=$1 AND manager_id=$2 FOR UPDATE',[customer.id,mid]);
+      const q=await c.query('SELECT * FROM reservations WHERE id=$1 AND manager_id=$2 FOR UPDATE',[id,mid]);
       const r=q.rows[0]; if(!r){await c.query('ROLLBACK');return res.status(404).json({error:'Reservation not found'});}
       const vipPolicy=r.snap_vip_policy ? (typeof r.snap_vip_policy==='string'?JSON.parse(r.snap_vip_policy):r.snap_vip_policy) : {};
       const isVip=Boolean(vipPolicy.isVip);
       const allowedByStatus = {
-        PENDING: {REJECT:'REJECTED'},
-        PAYMENT_PENDING: {REJECT:'REJECTED'},
+        PENDING: {REJECT:'REJECTED', REJECTED:'REJECTED'},
+        PAYMENT_PENDING: {REJECT:'REJECTED', REJECTED:'REJECTED'},
         PENDING_APPROVAL: {CONFIRMED:'CONFIRMED', REJECTED:'REJECTED'},
         VIP_PENDING_PAYMENT: {REJECTED:'REJECTED', EXPIRED:'EXPIRED'},
         VIP_PAYMENT_PAID: {CONFIRMED:'CONFIRMED', REJECTED:'REJECTED', EXPIRED:'EXPIRED'},
@@ -367,7 +379,7 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
       const transition=allowedByStatus[r.status]?.[s];
       if(!transition){await c.query('ROLLBACK');return res.status(409).json({error:'Invalid reservation state transition'});}
       if(s==='REJECTED'){
-        const paid=Number((await c.query("SELECT COALESCE(SUM(amount),0) paid FROM payment_transactions WHERE reservation_id=$1 AND manager_id=$2 AND status='SUCCESS'",[customer.id,mid])).rows[0].paid||0);
+        const paid=Number((await c.query("SELECT COALESCE(SUM(amount),0) paid FROM payment_transactions WHERE reservation_id=$1 AND manager_id=$2 AND status='SUCCESS'",[id,mid])).rows[0].paid||0);
         if(paid>0){
           const refundKey='reservation-reject-refund:'+id;
           const refund=await c.query(`
@@ -382,7 +394,7 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
       if(s==='CONFIRMED'){
         if(isVip && r.status!=='VIP_PAYMENT_PAID'){await c.query('ROLLBACK');return res.status(422).json({error:'VIP must be fully paid before Manager confirmation'});}
         if(!isVip && r.status!=='PENDING_APPROVAL'){await c.query('ROLLBACK');return res.status(422).json({error:'Reservation must be pending Manager approval'});}
-        const paid=await c.query("SELECT COALESCE(SUM(amount),0) paid FROM payment_transactions WHERE reservation_id=$1 AND manager_id=$2 AND status='SUCCESS'",[customer.id,mid]);
+        const paid=await c.query("SELECT COALESCE(SUM(amount),0) paid FROM payment_transactions WHERE reservation_id=$1 AND manager_id=$2 AND status='SUCCESS'",[id,mid]);
         if(isVip && Number(paid.rows[0].paid||0) < Number(r.snap_final_price||0)){await c.query('ROLLBACK');return res.status(422).json({error:'VIP requires full verified payment before confirmation'});}
         if(isVip){
           const overlaps=await c.query(`
@@ -395,14 +407,34 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
             FOR UPDATE
           `,[mid,r.end_time,r.start_time]);
           const competingFullHallVip=await c.query(`
-            SELECT id,status FROM reservations
+            SELECT id,status,customer_id,snap_vip_policy
+            FROM reservations
             WHERE manager_id=$1 AND station_id IS NULL AND id<>$2
               AND snap_vip_policy->>'isVip'='true'
               AND status IN ('CONFIRMED','ACTIVE')
               AND start_time < $3 AND end_time > $4
             FOR UPDATE
           `,[mid,id,r.end_time,r.start_time]);
-          if(competingFullHallVip.rows.length>0){await c.query('ROLLBACK');return res.status(409).json({error:'Another confirmed VIP full-hall reservation overlaps this time'});}
+          for(const vipRow of competingFullHallVip.rows){
+            const existingTier=String(vipRow.snap_vip_policy?.customerTier||'').toUpperCase();
+            const incomingTier=String(vipPolicy.customerTier||'').toUpperCase();
+            const incomingRank=incomingTier==='DIAMOND'?2:incomingTier==='GOLD'?1:0;
+            const existingRank=existingTier==='DIAMOND'?2:existingTier==='GOLD'?1:0;
+            if(incomingRank>existingRank && incomingRank>0 && existingRank>0){
+              const paidRow=await c.query("SELECT COALESCE(SUM(amount),0) paid FROM payment_transactions WHERE reservation_id=$1 AND manager_id=$2 AND status='SUCCESS'",[vipRow.id,mid]);
+              const paidAmount=Number(paidRow.rows[0]?.paid||0);
+              if(paidAmount>0 && vipRow.customer_id){
+                const refundKey='reservation-vip-priority-refund:'+vipRow.id;
+                const refund=await c.query("INSERT INTO wallet_transactions(manager_id,customer_id,type,reference_type,amount,reference_id,idempotency_key) VALUES($1,$2,'CREDIT','VIP_PRIORITY_SUPERSEDE',$3,$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",[mid,vipRow.customer_id,paidAmount,String(vipRow.id),refundKey]);
+                if(refund.rowCount>0) await c.query('UPDATE customers SET wallet_balance=wallet_balance+$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3',[paidAmount,vipRow.customer_id,mid]);
+              }
+              await c.query("UPDATE reservations SET status='SUPERSEDED_BY_VIP_PRIORITY',updated_at=NOW() WHERE id=$1 AND manager_id=$2",[vipRow.id,mid]);
+              await c.query('INSERT INTO reservation_audit_logs(manager_id,reservation_id,actor,old_status,new_status,reason) VALUES($1,$2,$3,$4,$5,$6)',[mid,vipRow.id,'MANAGER',vipRow.status,'SUPERSEDED_BY_VIP_PRIORITY','Diamond VIP superseded Gold VIP by configured VIP priority']);
+            } else {
+              await c.query('ROLLBACK');
+              return res.status(409).json({error:incomingRank<existingRank?'Higher-priority Diamond VIP already confirmed for this time':'Another confirmed VIP full-hall reservation overlaps this time'});
+            }
+          }
           for(const row of overlaps.rows){
             const paidRow=await c.query("SELECT COALESCE(SUM(amount),0) paid FROM payment_transactions WHERE reservation_id=$1 AND manager_id=$2 AND status='SUCCESS'",[row.id,mid]);
             const paid=Number(paidRow.rows[0]?.paid||0);
@@ -419,7 +451,7 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
       if(r.status===s){await c.query('COMMIT');return res.json(r);}
       await c.query('UPDATE reservations SET status=$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3',[s,id,mid]);
       await c.query('INSERT INTO reservation_audit_logs(manager_id,reservation_id,actor,old_status,new_status,reason) VALUES($1,$2,$3,$4,$5,$6)',[mid,id,'MANAGER',r.status,s,'Manager status change']);
-      const out=await c.query('SELECT * FROM reservations WHERE id=$1 AND manager_id=$2',[customer.id,mid]);
+      const out=await c.query('SELECT * FROM reservations WHERE id=$1 AND manager_id=$2',[id,mid]);
       await c.query('COMMIT'); return res.json(out.rows[0]);
     } catch(e){try{await c.query('ROLLBACK')}catch(_){}return res.status(400).json({error:e.message});} finally{c.release();}
   });
@@ -445,7 +477,7 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
     try {
       const q=await pool.query(
         `SELECT s.id,s.name,s.console_type,s.controller_capacity,s.reservable,s.active,
-          EXISTS(SELECT 1 FROM reservations r WHERE r.manager_id=s.manager_id AND r.station_id=s.id) AS has_prior_reservation
+          EXISTS(SELECT 1 FROM reservations r WHERE r.manager_id=s.manager_id AND r.station_id=s.id AND r.status NOT IN ('CANCELLED','EXPIRED','REJECTED','NO_SHOW','SUPERSEDED_BY_VIP','SUPERSEDED_BY_VIP_PRIORITY')) AS has_prior_reservation
          FROM stations s
          WHERE s.manager_id=$1 AND s.active=TRUE AND s.reservable=TRUE
          ORDER BY s.id`,
@@ -453,6 +485,19 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
       );
       res.json({success:true,stations:q.rows});
     } catch(e) { res.status(500).json({error:'Customer stations lookup failed'}); }
+  });
+  app.get('/api/v1/customer/stations/:stationId/reservations', requireCustomerAuth, async(req,res)=>{
+    try {
+      const stationId=Number(req.params.stationId);
+      if(!Number.isSafeInteger(stationId)||stationId<=0)return res.status(422).json({error:'Invalid station id'});
+      const q=await pool.query(`
+        SELECT id,start_time,end_time,duration_minutes,status
+        FROM reservations
+        WHERE manager_id=$1 AND station_id=$2
+          AND status NOT IN ('CANCELLED','EXPIRED','REJECTED','NO_SHOW','SUPERSEDED_BY_VIP','SUPERSEDED_BY_VIP_PRIORITY')
+        ORDER BY start_time ASC`,[req.user.managerId,stationId]);
+      res.json({success:true,reservations:q.rows.map(r=>({id:r.id,start_time:r.start_time,end_time:r.end_time,duration_minutes:r.duration_minutes,status:r.status}))});
+    } catch(e) { res.status(500).json({error:'Customer station reservations lookup failed'}); }
   });
   app.get('/api/v1/customer/reservations/rules', requireCustomerAuth, async(req,res)=>{
     try {
@@ -563,7 +608,8 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
       const policy=r.snap_vip_policy ? (typeof r.snap_vip_policy==='string'?JSON.parse(r.snap_vip_policy):r.snap_vip_policy) : {};
       const paymentDeadline = policy.isVip ? Number(policy.vipPaymentDeadlineMinutes || 0) : Number(policy.paymentDeadlineMinutes || 0);
       const paymentPendingStatus = policy.isVip ? 'VIP_PENDING_PAYMENT' : 'PAYMENT_PENDING';
-      if(paymentDeadline > 0 && new Date() > new Date(new Date(r.created_at).getTime()+paymentDeadline*60000) && r.status === paymentPendingStatus){
+      const paymentDeadlineAt = policy.paymentDeadlineAt ? new Date(policy.paymentDeadlineAt) : new Date(new Date(r.created_at).getTime()+paymentDeadline*60000);
+      if(paymentDeadline > 0 && Number.isFinite(paymentDeadlineAt.getTime()) && new Date() > paymentDeadlineAt && r.status === paymentPendingStatus){
         await c.query("UPDATE reservations SET status='EXPIRED',updated_at=NOW() WHERE id=$1 AND manager_id=$2 AND status=$3",[r.id,manager(req),paymentPendingStatus]);
         await c.query('UPDATE manual_payment_requests SET status=\'REJECTED\',rejection_reason=\'Payment deadline expired\',reviewed_by=$1,reviewed_at=NOW(),updated_at=NOW() WHERE id=$2',[manager(req),request.id]);
         await c.query('COMMIT'); return res.status(422).json({error:'Reservation payment deadline expired'});

@@ -1684,7 +1684,7 @@ object SelfHostedManager {
         }
     }
 
-    suspend fun syncReservationToCloud(reservation: Reservation, stationId: Long, isVip: Boolean = false): Boolean = withContext(Dispatchers.IO) {
+    suspend fun syncReservationToCloud(reservation: Reservation, stationId: Long, isVip: Boolean = false, paidAmount: Long = 0L): Boolean = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
                 put("id", if (reservation.id > 0) reservation.id else System.currentTimeMillis())
@@ -1696,6 +1696,7 @@ object SelfHostedManager {
                 put("stationId", stationId)
                 put("type", if (isVip) "FULL_HALL" else "NORMAL_RESERVATION")
                 put("isVip", isVip)
+                put("paidAmount", paidAmount.coerceAtLeast(0L))
                 put("idempotencyKey", "manager-reservation:" + reservation.phoneNumber + ":" + stationId + ":" + reservation.reservationTimeMillis + ":" + reservation.durationMinutes)
             }
             val req = Request.Builder()
@@ -1798,6 +1799,21 @@ object SelfHostedManager {
         } catch (e: Exception) {
             Log.w(TAG, "fetchCustomerStations error: ${e.message}")
             null
+        }
+    }
+
+    suspend fun fetchCustomerStationReservations(stationId: Long): List<JSONObject> = withContext(Dispatchers.IO) {
+        if (stationId <= 0L) return@withContext emptyList()
+        try {
+            val request = Request.Builder().url("$SERVER_URL/api/v1/customer/stations/$stationId/reservations").headers(getCustomerHeaders()).get().build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext emptyList()
+                val arr = JSONObject(response.body?.string() ?: "{}").optJSONArray("reservations") ?: JSONArray()
+                buildList { for (i in 0 until arr.length()) arr.optJSONObject(i)?.let(::add) }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchCustomerStationReservations error: ${e.message}")
+            emptyList()
         }
     }
 
