@@ -84,6 +84,7 @@ object SelfHostedManager {
     @Volatile var lastStationStartWasTransportFailure: Boolean = false
     @Volatile var lastStationStartError: String = ""
     @Volatile var lastSettlementHttpCode: Int = 0
+    @Volatile var lastTransactionDeleteHttpCode: Int = 0
     @Volatile var lastSettlementErrorBody: String = ""
     private const val TAG = "SelfHostedManager"
     
@@ -625,6 +626,11 @@ object SelfHostedManager {
             Log.e(TAG, "purgeArchivedCustomer error: ${e.message}", e)
             false
         }
+    }
+
+    fun publishArchivedCustomerLocally(customer: Customer) {
+        _archivedCloudCustomers.value = (_archivedCloudCustomers.value.filterNot { it.id == customer.id } + customer)
+            .sortedByDescending { it.id }
     }
 
     suspend fun fetchArchivedCustomersFromCloud(): Boolean = withContext(Dispatchers.IO) {
@@ -1284,15 +1290,19 @@ object SelfHostedManager {
     }
 
     suspend fun deleteManagerCustomerTransaction(transactionId: Long): Boolean = withContext(Dispatchers.IO) {
+        lastTransactionDeleteHttpCode = 0
         try {
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/manager/customer-transactions/$transactionId")
                 .headers(getBaseHeaders())
                 .delete()
                 .build()
-            client.newCall(req).execute().use { it.isSuccessful }
+            client.newCall(req).execute().use {
+                lastTransactionDeleteHttpCode = it.code
+                it.isSuccessful
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "deleteManagerCustomerTransaction error: ${e.message}", e)
+            Log.e(TAG, "deleteManagerCustomerTransaction error: " + e.message, e)
             false
         }
     }

@@ -198,7 +198,43 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private suspend fun flushPendingCustomerTransactionDeletes() {
+        repository.getAllAppSettings()
+            .filter { it.key.startsWith("customer_transaction_delete_outbox_") && it.value.isNotBlank() }
+            .forEach { setting ->
+                val obj = runCatching { org.json.JSONObject(setting.value) }.getOrNull() ?: return@forEach
+                val id = obj.optLong("localId", 0L)
+                if (id <= 0L) return@forEach
+                if (SelfHostedManager.deleteManagerCustomerTransaction(id)) {
+                    repository.saveSetting(setting.key, "")
+                } else if (SelfHostedManager.lastTransactionDeleteHttpCode in 400..499 && SelfHostedManager.lastTransactionDeleteHttpCode != 429) {
+                    repository.saveSetting(setting.key, "")
+                    val tx = CustomerTransaction(
+                        id = id,
+                        customerId = obj.optLong("customerId", 0L),
+                        customerName = obj.optString("customerName"),
+                        stationName = obj.optString("stationName"),
+                        title = obj.optString("title"),
+                        amount = obj.optLong("amount"),
+                        paidAmount = obj.optLong("paidAmount"),
+                        status = obj.optString("status", "UNREVIEWED"),
+                        dateStr = obj.optString("dateStr"),
+                        timeStr = obj.optString("timeStr"),
+                        segmentDetails = obj.optString("segmentDetails"),
+                        buffetDetails = obj.optString("buffetDetails"),
+                        timestamp = obj.optLong("timestamp"),
+                        playMinutes = obj.optInt("playMinutes"),
+                        gameCost = obj.optLong("gameCost"),
+                        foodCost = obj.optLong("foodCost"),
+                        sessionId = obj.optString("sessionId")
+                    )
+                    repository.restoreCustomerTransactionLocal(tx)
+                }
+            }
+    }
+
     private suspend fun flushPendingCustomerTransactions() {
+        flushPendingCustomerTransactionDeletes()
         repository.getAllAppSettings()
             .filter { it.key.startsWith("customer_transaction_outbox_") && it.value.isNotBlank() }
             .forEach { setting ->
@@ -4168,7 +4204,30 @@ loadSettings()
 
     fun deleteCustomerTransaction(transaction: CustomerTransaction) {
         viewModelScope.launch(Dispatchers.IO) {
-            repository.deleteCustomerTransaction(transaction)
+            // Optimistic local acknowledgement: the invoice disappears from the Manager UI
+            // immediately. Server deletion is durable and manager-scoped; a definitive rejection
+            // restores the exact previous row instead of silently losing it.
+            repository.deleteCustomerTransactionLocal(transaction)
+            if (NetworkClient.isTrialMode || transaction.id <= 0L) return@launch
+
+            val deleted = SelfHostedManager.deleteManagerCustomerTransaction(transaction.id)
+            if (deleted) return@launch
+
+            val code = SelfHostedManager.lastTransactionDeleteHttpCode
+            if (code == 0 || code == 408 || code == 429 || code >= 500) {
+                repository.saveSetting(
+                    "customer_transaction_delete_outbox_" + transaction.id,
+                    customerTransactionJson(transaction).toString()
+                )
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "فاکتور از صفحه حذف شد؛ حذف نهایی روی سرور در انتظار اتصال است. اتصال را بررسی کنید و رفرش بزنید.", Toast.LENGTH_LONG).show()
+                }
+            } else {
+                repository.restoreCustomerTransactionLocal(transaction)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "سرور حذف فاکتور را نپذیرفت؛ فاکتور به فهرست بازگردانده شد.", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -4687,6 +4746,9 @@ loadSettings()
                 return@launch
             }
             repository.deleteCustomer(customer)
+            // Publish the archived row immediately; then refresh from the canonical server list.
+            // This removes the visible refresh lag without making local data authoritative.
+            com.example.data.network.SelfHostedManager.publishArchivedCustomerLocally(customer)
             com.example.data.network.SelfHostedManager.fetchArchivedCustomersFromCloud()
             logOperatorActivity(
                 actionTitle = "حذف مشتری",
