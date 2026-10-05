@@ -174,6 +174,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         put("gameCost", t.gameCost)
         put("foodCost", t.foodCost)
         put("sessionId", t.sessionId)
+        put("earnedGn", t.earnedGn)
+        put("earnedLp", t.earnedLp)
     }
 
     private suspend fun queueOrSyncCustomerTransaction(transaction: CustomerTransaction) {
@@ -226,14 +228,70 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         playMinutes = obj.optInt("playMinutes"),
                         gameCost = obj.optLong("gameCost"),
                         foodCost = obj.optLong("foodCost"),
-                        sessionId = obj.optString("sessionId")
+                        sessionId = obj.optString("sessionId"),
+                        earnedGn = obj.optLong("earnedGn", 0L),
+                        earnedLp = obj.optLong("earnedLp", 0L)
                     )
                     repository.restoreCustomerTransactionLocal(tx)
                 }
             }
     }
 
+    private fun customerToJson(customer: Customer): org.json.JSONObject = org.json.JSONObject().apply {
+        put("id", customer.id); put("fullName", customer.fullName); put("phoneNumber", customer.phoneNumber)
+        put("debt", customer.debt); put("credit", customer.credit); put("description", customer.description)
+        put("points", customer.points); put("availableGn", customer.availableGn); put("pendingGn", customer.pendingGn)
+        put("lp", customer.lp); put("tier", customer.tier); put("lastActivityTimestamp", customer.lastActivityTimestamp)
+        put("totalQualifiedSpend", customer.totalQualifiedSpend); put("totalVisitsCount", customer.totalVisitsCount)
+        put("lastTierReviewTimestamp", customer.lastTierReviewTimestamp); put("inviteCode", customer.inviteCode)
+        put("invitedByCode", customer.invitedByCode); put("invitePointsAwarded", customer.invitePointsAwarded)
+        put("rewardsConsumed", customer.rewardsConsumed)
+    }
+
+    private fun customerFromJson(o: org.json.JSONObject): Customer = Customer(
+        id=o.optLong("id",0L), fullName=o.optString("fullName"), phoneNumber=o.optString("phoneNumber"),
+        debt=o.optLong("debt",0L), credit=o.optLong("credit",0L), description=o.optString("description"),
+        points=o.optLong("points",0L), availableGn=o.optLong("availableGn",0L), pendingGn=o.optLong("pendingGn",0L),
+        lp=o.optLong("lp",0L), tier=o.optString("tier","BRONZE"), lastActivityTimestamp=o.optLong("lastActivityTimestamp",System.currentTimeMillis()),
+        totalQualifiedSpend=o.optLong("totalQualifiedSpend",0L), totalVisitsCount=o.optInt("totalVisitsCount",0),
+        lastTierReviewTimestamp=o.optLong("lastTierReviewTimestamp",System.currentTimeMillis()),
+        inviteCode=o.optString("inviteCode"), invitedByCode=o.optString("invitedByCode"),
+        invitePointsAwarded=o.optBoolean("invitePointsAwarded",false), rewardsConsumed=o.optLong("rewardsConsumed",0L)
+    )
+
+    private suspend fun flushPendingCustomerArchives() {
+        val settings = repository.getAllAppSettings()
+        settings.filter { it.key.startsWith("local_archived_customer_") && it.value.isNotBlank() }.forEach {
+            runCatching { SelfHostedManager.publishArchivedCustomerLocally(customerFromJson(org.json.JSONObject(it.value))) }
+        }
+        settings.filter { it.key.startsWith("customer_archive_outbox_") && it.value.isNotBlank() }.forEach { setting ->
+            val customer = runCatching { customerFromJson(org.json.JSONObject(setting.value)) }.getOrNull() ?: return@forEach
+            val ok = runCatching { SelfHostedManager.deleteCustomer(customer.id, customer.phoneNumber) }.getOrDefault(false)
+            if (ok || SelfHostedManager.lastCustomerMutationHttpCode == 404) {
+                repository.saveSetting(setting.key, "")
+                repository.saveSetting("local_archived_customer_" + customer.id, "")
+            }
+        }
+        settings.filter { it.key.startsWith("customer_restore_outbox_") && it.value.isNotBlank() }.forEach { setting ->
+            val customer = runCatching { customerFromJson(org.json.JSONObject(setting.value)) }.getOrNull() ?: return@forEach
+            if (runCatching { SelfHostedManager.restoreCustomer(customer.id) }.getOrDefault(false)) {
+                repository.saveSetting(setting.key, "")
+                repository.saveSetting("local_archived_customer_" + customer.id, "")
+                repository.insertCustomer(customer)
+            }
+        }
+        settings.filter { it.key.startsWith("customer_purge_outbox_") && it.value.isNotBlank() }.forEach { setting ->
+            val customer = runCatching { customerFromJson(org.json.JSONObject(setting.value)) }.getOrNull() ?: return@forEach
+            val ok = runCatching { SelfHostedManager.purgeArchivedCustomer(customer.id) }.getOrDefault(false)
+            if (ok || SelfHostedManager.lastCustomerMutationHttpCode == 404) {
+                repository.saveSetting(setting.key, "")
+                repository.saveSetting("local_archived_customer_" + customer.id, "")
+            }
+        }
+    }
+
     private suspend fun flushPendingCustomerTransactions() {
+        flushPendingCustomerArchives()
         flushPendingCustomerTransactionDeletes()
         repository.getAllAppSettings()
             .filter { it.key.startsWith("customer_transaction_outbox_") && it.value.isNotBlank() }
@@ -857,7 +915,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private val _managerAuthInProgress = MutableStateFlow(false)
+
     fun authenticateAdmin(user: String, pass: String, onResult: (Boolean, String?) -> Unit) {
+        _managerAuthInProgress.value = true
         val cleanUser = toEnglishDigits(user.trim())
         val cleanPass = toEnglishDigits(pass.trim())
 
@@ -927,6 +988,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
             if (loginSuccess && (serverManagerId.isBlank() || serverToken.isBlank())) {
                 loginSuccess = false
+                _managerAuthInProgress.value = false
             }
 
             if (loginSuccess) {
@@ -948,6 +1010,12 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 encryptSetting("enc_auth_token", serverToken)
                 NetworkClient.authToken = serverToken
                 SelfHostedManager.setManagerId(finalManagerId)
+                _isServerConnected.value = true
+                _isGracePeriodExpired.value = false
+                _offlineGraceSecondsRemaining.value = totalGracePeriodSeconds
+                _superManagerOfflineBannerSecondsRemaining.value = totalGracePeriodSeconds
+                encryptSetting("enc_offline_used_ms", "0")
+                encryptSetting("enc_super_offline_used_ms", "0")
 
                 withContext(Dispatchers.Main) {
                     _currentAdminRole.value = finalRole
@@ -993,21 +1061,25 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                                 if (_isSubscribed.value) {
                                     _isAdminAuthenticated.value = true
                                     _isCustomerAuthenticated.value = false
+                                    _managerAuthInProgress.value = false
                                     logOperatorActivity("ورود موفق", "ورود مدیر ($finalRole) به پنل")
                                     onResult(true, if (isSuper) "ورود موفق مدیریت ارشد" else "ورود موفق مدیریت")
                                 } else {
+                                    _managerAuthInProgress.value = false
                                     onResult(false, "ورود انجام شد اما اشتراک فعال نیست یا قابل تأیید نیست.")
                                 }
                             }
                         } catch (e: Exception) {
                             android.util.Log.e("GameNetViewModel", "Error syncing on manager login", e)
                             withContext(Dispatchers.Main) {
+                                _managerAuthInProgress.value = false
                                 onResult(false, "اعتبار اشتراک از سرور تأیید نشد.")
                             }
                         }
                     }
                 }
             } else {
+                _managerAuthInProgress.value = false
                 withContext(Dispatchers.Main) {
                     onResult(false, "چنین مدیری ثبت نشده یا رمز اشتباه است")
                 }
@@ -2281,7 +2353,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 }
 
                 // 24-hour Offline Grace Period logic using SystemClock.elapsedRealtime()
-                if (!_isServerConnected.value) {
+                if (!_isServerConnected.value && !_managerAuthInProgress.value) {
                     val deltaMs = (currentElapsed - lastElapsedTick).coerceAtLeast(0L)
                     if (!isTrial && currentRole == "SUPER_MANAGER") {
                         val used = decryptSetting("enc_super_offline_used_ms").toLongOrNull() ?: 0L
@@ -3621,9 +3693,8 @@ loadSettings()
                     val finalAmount = (subtotal - fixedDiscTom).coerceAtLeast(0L)
 
                     val custPrepay = prepayMap[cid] ?: (if (allCids.size == 1) station.prepaymentAmount else 0L)
-                    val initialPaid = custPrepay.coerceAtMost(rawTotal)
-                    val isFullyPaid = initialPaid >= rawTotal && rawTotal > 0
-                    val initialStatus = if (isFullyPaid) "REVIEWED" else "UNREVIEWED"
+                    val initialPaid = 0L
+                    val initialStatus = "UNREVIEWED"
 
                     val consoleShort = when {
                         station.consoleType.contains("5", ignoreCase = true) || station.consoleType.contains("PlayStation 5", ignoreCase = true) -> "PS5"
@@ -3643,7 +3714,7 @@ loadSettings()
                         status = initialStatus,
                         dateStr = jalaliDate,
                         timeStr = jalaliTime,
-                        segmentDetails = "${existingSegments.size} بخش",
+                        segmentDetails = "${existingSegments.size} بخش | پرداخت اولیه نشست: ${String.format(Locale.US, "%,d", custPrepay)} تومان",
                         buffetDetails = customerBuffets,
                         timestamp = now,
                         playMinutes = existingSegments.sumOf { it.durationMinutes },
@@ -3657,59 +3728,8 @@ loadSettings()
                         queueOrSyncCustomerTransaction(transWithId)
                     }
 
-                    if (existingCust != null) {
-                        val playingRule = scoringRules.value.find { it.id == "playing" }?.points ?: 20L
-                        val spendingRule = scoringRules.value.find { it.id == "spending" }?.points ?: 1L
-                        val sessionPlayHours = trans.playMinutes / 60L
-                        val earnedPlayPts = sessionPlayHours * playingRule
-                        val earnedSpendPts = (trans.amount / 1000L) * spendingRule
-                        val totalSessionPts = earnedPlayPts + earnedSpendPts
-
-                        val newCustPts = (existingCust.points + totalSessionPts).coerceAtLeast(0L)
-                        val remainingDebt = (rawTotal - initialPaid).coerceAtLeast(0L)
-                        val gameGnReward = ((gameCost / 100_000L) * _gameRewardRate.value).coerceAtLeast(0L)
-                        val buffetGnReward = ((buffetCost / 100_000L) * _buffetRewardRate.value).coerceAtLeast(0L)
-                        val sessionGnReward = (gameGnReward + buffetGnReward).coerceAtLeast(0L)
-                        val gnStatus = if (isFullyPaid) "AVAILABLE" else "PENDING"
-                        val earnedLp = if (isFullyPaid && _lpTomanRate.value > 0L) {
-                            (rawTotal / _lpTomanRate.value).coerceAtLeast(0L)
-                        } else 0L
-                        val updatedCust = existingCust.copy(
-                            debt = existingCust.debt + remainingDebt,
-                            points = newCustPts,
-                            availableGn = existingCust.availableGn + if (gnStatus == "AVAILABLE") sessionGnReward else 0L,
-                            pendingGn = existingCust.pendingGn + if (gnStatus == "PENDING") sessionGnReward else 0L,
-                            lp = existingCust.lp + earnedLp
-                        )
-                        repository.insertCustomer(updatedCust)
-                        if (sessionGnReward > 0L) {
-                            repository.addGnLedgerEntry(
-                                GnLedgerEntry(
-                                    customerId = cid,
-                                    customerName = cName,
-                                    gnAmount = sessionGnReward,
-                                    transactionType = "GAME_REWARD",
-                                    source = "REWARD",
-                                    status = gnStatus,
-                                    timestamp = now,
-                                    referenceId = "SESSION_${now}_CUST_${cid}",
-                                    description = if (gnStatus == "PENDING") "پاداش بازی؛ تا تسویه کامل فاکتور در انتظار است" else "پاداش بازی؛ فاکتور تسویه شده"
-                                )
-                            )
-                        }
-
-                        if (totalSessionPts > 0) {
-                            val consoleName = trans.title.ifBlank { station.consoleType }
-                            repository.addPointLog(
-                                PointLog(
-                                    customerId = cid,
-                                    title = "بازی با کنسول $consoleName (ایستگاه ${station.id})",
-                                    points = totalSessionPts
-                                )
-                            )
-                        }
-
-                    }
+                    // No debt, GN, LP or point balance is finalized at salon settlement.
+                    // The invoice remains UNREVIEWED until the Manager explicitly reviews it.
                 }
             }
 
@@ -4154,48 +4174,66 @@ loadSettings()
                 else -> "DEBTOR"
             }
             val normalizedPaidAmount = paidAmount.coerceIn(0L, finalTxAmount)
-            val updated = transaction.copy(
-                paidAmount = normalizedPaidAmount,
-                status = normalizedStatus,
-                amount = finalTxAmount
-            )
-            repository.updateCustomerTransaction(updated)
-            queueOrSyncCustomerTransaction(updated)
-
             if (cust != null) {
-                val newDebt = if (normalizedStatus == "REVIEWED") {
-                    val remainingUnpaid = transaction.amount - transaction.paidAmount
-                    (cust.debt - remainingUnpaid).coerceAtLeast(0L)
-                } else {
-                    (cust.debt - (paidAmount - transaction.paidAmount) - discountDiff).coerceAtLeast(0L)
-                }
-
+                val oldOutstanding = (transaction.amount - transaction.paidAmount).coerceAtLeast(0L)
+                val newOutstanding = (finalTxAmount - normalizedPaidAmount).coerceAtLeast(0L)
+                val newDebt = (cust.debt - oldOutstanding + newOutstanding).coerceAtLeast(0L)
                 var updatedCust = cust.copy(debt = newDebt)
+                var earnedGn = 0L
+                var earnedLp = 0L
 
                 if (normalizedStatus == "REVIEWED" && transaction.status != "REVIEWED") {
-                    val refId = "SESSION_${transaction.timestamp}_CUST_${transaction.customerId}"
-                    val pendingEntry = repository.getGnLedgerEntryByRef(refId)
-                    if (pendingEntry != null && pendingEntry.status == "PENDING") {
-                        val gnAmt = pendingEntry.gnAmount
-                        if (gnAmt > 0) {
-                            updatedCust = updatedCust.copy(
-                                availableGn = updatedCust.availableGn + gnAmt,
-                                pendingGn = (updatedCust.pendingGn - gnAmt).coerceAtLeast(0L)
+                    val gameGnReward = ((transaction.gameCost / 100_000L) * _gameRewardRate.value).coerceAtLeast(0L)
+                    val buffetGnReward = ((transaction.foodCost / 100_000L) * _buffetRewardRate.value).coerceAtLeast(0L)
+                    earnedGn = gameGnReward + buffetGnReward
+                    earnedLp = if (_lpTomanRate.value > 0L) (finalTxAmount / _lpTomanRate.value).coerceAtLeast(0L) else 0L
+                    if (earnedGn > 0L) {
+                        updatedCust = updatedCust.copy(availableGn = updatedCust.availableGn + earnedGn)
+                        repository.addGnLedgerEntry(
+                            GnLedgerEntry(
+                                customerId = transaction.customerId,
+                                customerName = transaction.customerName,
+                                gnAmount = earnedGn,
+                                transactionType = if (transaction.gameCost > 0L && transaction.foodCost > 0L) "GAME_AND_BUFFET_REWARD" else if (transaction.gameCost > 0L) "GAME_REWARD" else "BUFFET_REWARD",
+                                source = "REWARD",
+                                status = "AVAILABLE",
+                                timestamp = System.currentTimeMillis(),
+                                referenceId = "SESSION_REVIEW_" + transaction.sessionId.ifBlank { transaction.timestamp.toString() } + "_CUST_" + transaction.customerId,
+                                description = buildString {
+                                    if (gameGnReward > 0L) append("بابت بازی: " + String.format(Locale.US, "%,d", gameGnReward) + " GN")
+                                    if (buffetGnReward > 0L) {
+                                        if (isNotEmpty()) append(" | ")
+                                        append("بابت بوفه: " + String.format(Locale.US, "%,d", buffetGnReward) + " GN")
+                                    }
+                                }
                             )
-                            val availableEntry = pendingEntry.copy(status = "AVAILABLE")
-                            repository.updateGnLedgerEntry(availableEntry)
-                        }
+                        )
                     }
-                    val earnedLp = if (_lpTomanRate.value > 0L) {
-                        (transaction.amount / _lpTomanRate.value).coerceAtLeast(0L)
-                    } else 0L
                     if (earnedLp > 0L) {
                         updatedCust = updatedCust.copy(lp = updatedCust.lp + earnedLp)
+                        SelfHostedManager.addLpLedgerEntry(transaction.customerId, earnedLp, transaction.sessionId.ifBlank { transaction.timestamp.toString() })
                     }
                 }
 
+                val updated = transaction.copy(
+                    paidAmount = normalizedPaidAmount,
+                    status = normalizedStatus,
+                    amount = finalTxAmount,
+                    earnedGn = earnedGn,
+                    earnedLp = earnedLp
+                )
+                repository.updateCustomerTransaction(updated)
+                queueOrSyncCustomerTransaction(updated)
                 repository.insertCustomer(updatedCust)
-                }
+            } else {
+                val updated = transaction.copy(
+                    paidAmount = normalizedPaidAmount,
+                    status = normalizedStatus,
+                    amount = finalTxAmount
+                )
+                repository.updateCustomerTransaction(updated)
+                queueOrSyncCustomerTransaction(updated)
+            }
             } catch (e: Exception) {
                 android.util.Log.e("GameNexa", "Customer transaction settlement failed", e)
             }
@@ -4734,67 +4772,66 @@ loadSettings()
 
     fun deleteCustomer(customer: Customer) {
         viewModelScope.launch(Dispatchers.IO) {
-            // Server is authoritative for customer deletion/archival. Do not remove the local
-            // row first: a failed server write would otherwise be resurrected by the next sync.
-            val cloudDeleted = runCatching {
-                com.example.data.network.SelfHostedManager.deleteCustomer(customer.id, customer.phoneNumber)
-            }.getOrDefault(false)
-            if (!cloudDeleted) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(getApplication(), "حذف مشتری از سرور انجام نشد؛ اطلاعات محلی حفظ شد.", Toast.LENGTH_LONG).show()
-                }
-                return@launch
-            }
             repository.deleteCustomer(customer)
-            // Publish the archived row immediately; then refresh from the canonical server list.
-            // This removes the visible refresh lag without making local data authoritative.
-            com.example.data.network.SelfHostedManager.publishArchivedCustomerLocally(customer)
-            com.example.data.network.SelfHostedManager.fetchArchivedCustomersFromCloud()
-            logOperatorActivity(
-                actionTitle = "حذف مشتری",
-                details = "مشتری ${customer.fullName} با شماره ${customer.phoneNumber} از فهرست فعال مشتریان حذف شد و سوابق مالی حفظ شد."
-            )
+            repository.saveSetting("local_archived_customer_" + customer.id, customerToJson(customer).toString())
+            repository.saveSetting("customer_archive_outbox_" + customer.id, customerToJson(customer).toString())
+            SelfHostedManager.publishArchivedCustomerLocally(customer)
+            withContext(Dispatchers.Main) {
+                Toast.makeText(getApplication(), "مشتری فوراً به آرشیو منتقل شد؛ همگام‌سازی با سرور در پس‌زمینه انجام می‌شود.", Toast.LENGTH_SHORT).show()
+            }
+            val cloudDeleted = runCatching { SelfHostedManager.deleteCustomer(customer.id, customer.phoneNumber) }.getOrDefault(false)
+            if (cloudDeleted || SelfHostedManager.lastCustomerMutationHttpCode == 404) {
+                repository.saveSetting("customer_archive_outbox_" + customer.id, "")
+                repository.saveSetting("local_archived_customer_" + customer.id, "")
+                SelfHostedManager.fetchArchivedCustomersFromCloud()
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "آرشیو با سرور همگام شد. سوابق مالی حفظ شد.", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "آرشیو محلی انجام شد؛ همگام‌سازی سرور در انتظار اتصال است.", Toast.LENGTH_LONG).show()
+                }
+            }
+            logOperatorActivity("حذف مشتری", "مشتری " + customer.fullName + " فوراً آرشیو شد و سوابق مالی حفظ شد.")
         }
     }
 
-    fun deleteCustomersBatch(customersToDelete: List<Customer>) {
-        if (customersToDelete.isEmpty()) return
+    fun restoreArchivedCustomer(customer: Customer) {
         viewModelScope.launch(Dispatchers.IO) {
-            val ids = customersToDelete.map { it.id }
-            val cloudDeleted = runCatching {
-                com.example.data.network.SelfHostedManager.deleteCustomersBatch(ids)
-            }.getOrDefault(false)
-            if (!cloudDeleted) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(getApplication(), "حذف مشتریان از سرور انجام نشد؛ اطلاعات محلی حفظ شد.", Toast.LENGTH_LONG).show()
-                }
-                return@launch
+            repository.insertCustomer(customer)
+            SelfHostedManager.removeArchivedCustomerLocally(customer.id)
+            repository.saveSetting("local_archived_customer_" + customer.id, "")
+            repository.saveSetting("customer_restore_outbox_" + customer.id, customerToJson(customer).toString())
+            withContext(Dispatchers.Main) {
+                Toast.makeText(getApplication(), "بازگردانی فوری انجام شد؛ همگام‌سازی با سرور در پس‌زمینه انجام می‌شود.", Toast.LENGTH_SHORT).show()
             }
-            repository.deleteCustomersBatch(customersToDelete)
-            com.example.data.network.SelfHostedManager.fetchArchivedCustomersFromCloud()
-            logOperatorActivity(
-                actionTitle = "حذف دسته‌جمعی مخاطبان",
-                details = "تعداد ${customersToDelete.size} مخاطب از فهرست فعال حذف شدند و سوابق مالی حفظ شدند."
-            )
+            val ok = runCatching { SelfHostedManager.restoreCustomer(customer.id) }.getOrDefault(false)
+            if (ok) {
+                repository.saveSetting("customer_restore_outbox_" + customer.id, "")
+                SelfHostedManager.fetchArchivedCustomersFromCloud()
+                withContext(Dispatchers.Main) { Toast.makeText(getApplication(), "بازگردانی با سرور همگام شد.", Toast.LENGTH_SHORT).show() }
+            } else {
+                withContext(Dispatchers.Main) { Toast.makeText(getApplication(), "بازگردانی محلی است؛ با برقراری اتصال با سرور همگام می‌شود.", Toast.LENGTH_LONG).show() }
+            }
         }
     }
 
     fun purgeArchivedCustomer(customer: Customer, onResult: ((Boolean) -> Unit)? = null) {
         viewModelScope.launch(Dispatchers.IO) {
-            val cloudPurged = runCatching {
-                com.example.data.network.SelfHostedManager.purgeArchivedCustomer(customer.id)
-            }.getOrDefault(false)
-            if (!cloudPurged) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(getApplication(), "حذف کامل از سرور انجام نشد؛ اطلاعات محلی دست‌نخورده ماند.", Toast.LENGTH_LONG).show()
-                    onResult?.invoke(false)
-                }
-                return@launch
-            }
             repository.purgeCustomerLocally(customer)
+            SelfHostedManager.removeArchivedCustomerLocally(customer.id)
+            repository.saveSetting("local_archived_customer_" + customer.id, "")
+            repository.saveSetting("customer_purge_outbox_" + customer.id, customerToJson(customer).toString())
             withContext(Dispatchers.Main) {
-                Toast.makeText(getApplication(), "مشتری و تمام داده‌های مرتبط به‌طور کامل حذف شد.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(getApplication(), "حذف کامل محلی انجام شد؛ حذف نهایی سرور در پس‌زمینه همگام می‌شود.", Toast.LENGTH_SHORT).show()
                 onResult?.invoke(true)
+            }
+            val ok = runCatching { SelfHostedManager.purgeArchivedCustomer(customer.id) }.getOrDefault(false)
+            if (ok || SelfHostedManager.lastCustomerMutationHttpCode == 404) {
+                repository.saveSetting("customer_purge_outbox_" + customer.id, "")
+                withContext(Dispatchers.Main) { Toast.makeText(getApplication(), "حذف کامل با سرور همگام شد و قابل بازگشت نیست.", Toast.LENGTH_SHORT).show() }
+            } else {
+                withContext(Dispatchers.Main) { Toast.makeText(getApplication(), "حذف کامل محلی انجام شد؛ سرور پس از اتصال حذف می‌شود.", Toast.LENGTH_LONG).show() }
             }
         }
     }
@@ -6451,6 +6488,17 @@ loadSettings()
                 logOperatorActivity("تغییر دستی LP", "تغییر LP برای کاربر ${cust.fullName} به میزان $delta")
             }
         }
+    }
+
+    suspend fun fetchManagerCustomerActivity(customerId: Long): com.example.data.network.ManagerCustomerActivity {
+        return com.example.data.network.SelfHostedManager.fetchManagerCustomerActivity(customerId)
+    }
+    suspend fun fetchSettlementReview(sessionId: String): com.example.data.network.SettlementReview? {
+        return com.example.data.network.SelfHostedManager.fetchSettlementReview(sessionId)
+    }
+
+    suspend fun refundUnusedPrepayment(sessionId: String, allocations: Map<Long, Long>): Boolean {
+        return com.example.data.network.SelfHostedManager.refundSessionPrepayment(sessionId, allocations)
     }
 
     fun getPointLogs(customerId: Long): Flow<List<PointLog>> {

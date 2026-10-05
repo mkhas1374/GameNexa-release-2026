@@ -131,6 +131,9 @@ interface CustomerDao {
     @Query("DELETE FROM customers WHERE id NOT IN (:serverIds)")
     suspend fun deleteCustomersMissingFromServer(serverIds: List<Long>)
 
+    @Query("DELETE FROM customers WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
     @Query("DELETE FROM customers WHERE phoneNumber NOT IN (:serverPhones)")
     suspend fun deleteCustomersMissingFromServerPhones(serverPhones: List<String>)
 
@@ -211,6 +214,9 @@ interface PointLogDao {
 
     @Query("DELETE FROM point_logs WHERE customerId = :customerId")
     suspend fun deleteByCustomerId(customerId: Long)
+
+    @Query("UPDATE point_logs SET customerId = :newId WHERE customerId = :oldId")
+    suspend fun migrateCustomerId(oldId: Long, newId: Long)
 }
 
 @Dao
@@ -250,6 +256,9 @@ interface GnLedgerDao {
 
     @Query("DELETE FROM gn_ledger WHERE customerId = :customerId")
     suspend fun deleteByCustomerId(customerId: Long)
+
+    @Query("UPDATE gn_ledger SET customerId = :newId WHERE customerId = :oldId")
+    suspend fun migrateCustomerId(oldId: Long, newId: Long)
 }
 
 @Dao
@@ -283,6 +292,9 @@ interface BehaviorLogDao {
 
     @Query("DELETE FROM behavior_logs WHERE customerId = :customerId")
     suspend fun deleteByCustomerId(customerId: Long)
+
+    @Query("UPDATE behavior_logs SET customerId = :newId WHERE customerId = :oldId")
+    suspend fun migrateCustomerId(oldId: Long, newId: Long)
 }
 
 @Dao
@@ -304,6 +316,9 @@ interface ReferralProgressRecordDao {
 
     @Query("DELETE FROM referral_progress_records WHERE referrerCustomerId = :customerId OR referredCustomerId = :customerId")
     suspend fun deleteByCustomerId(customerId: Long)
+
+    @Query("UPDATE referral_progress_records SET referrerCustomerId = CASE WHEN referrerCustomerId = :oldId THEN :newId ELSE referrerCustomerId END, referredCustomerId = CASE WHEN referredCustomerId = :oldId THEN :newId ELSE referredCustomerId END WHERE referrerCustomerId = :oldId OR referredCustomerId = :oldId")
+    suspend fun migrateCustomerId(oldId: Long, newId: Long)
 }
 
 

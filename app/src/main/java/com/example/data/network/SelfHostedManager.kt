@@ -40,6 +40,36 @@ data class CloudLiveStation(
     val payerCustomerNamesStr: String = ""
 )
 
+data class ManagerLpHistory(
+    val id: Long,
+    val customerId: Long,
+    val amount: Long,
+    val type: String,
+    val referenceType: String,
+    val referenceId: String,
+    val timestamp: Long
+)
+
+data class SettlementPayer(
+    val customerId: Long,
+    val name: String,
+    val prepaymentAmount: Long
+)
+
+data class SettlementReview(
+    val sessionId: String,
+    val totalPrepayment: Long,
+    val refundedPrepayment: Long,
+    val remainingRefundable: Long,
+    val payers: List<SettlementPayer>
+)
+
+data class ManagerCustomerActivity(
+    val transactions: List<CustomerTransaction> = emptyList(),
+    val gnLedger: List<GnLedgerEntry> = emptyList(),
+    val lpLedger: List<ManagerLpHistory> = emptyList()
+)
+
 data class CloudPaymentRecord(
     val id: Long = 0L,
     val managerId: String = "",
@@ -85,6 +115,7 @@ object SelfHostedManager {
     @Volatile var lastStationStartError: String = ""
     @Volatile var lastSettlementHttpCode: Int = 0
     @Volatile var lastTransactionDeleteHttpCode: Int = 0
+    @Volatile var lastCustomerMutationHttpCode: Int = 0
     @Volatile var lastSettlementErrorBody: String = ""
     private const val TAG = "SelfHostedManager"
     
@@ -549,34 +580,71 @@ object SelfHostedManager {
         _allCloudCustomers.value.any { it.id == customerId || (normPhone.isNotBlank() && normalizePhone(it.phoneNumber) == normPhone) }
     }
 
-    suspend fun upsertCustomer(customer: Customer): Boolean = withContext(Dispatchers.IO) {
+    suspend fun upsertCustomerCanonical(customer: Customer): Customer? = withContext(Dispatchers.IO) {
         try {
             val json=JSONObject().apply {
                 put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber)
                 put("debt",customer.debt); put("credit",customer.credit); put("tier",customer.tier)
-                // LP is server-authoritative. A stale local zero must never erase an earned
-                // server LP balance during an unrelated customer/profile sync.
                 if (customer.lp > 0L) put("lp", customer.lp)
                 put("availableGn",customer.availableGn); put("pendingGn",customer.pendingGn); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
             }
             val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
             client.newCall(req).execute().use { resp ->
-                if(!resp.isSuccessful) return@withContext false
-                val list=_allCloudCustomers.value.toMutableList(); val idx=list.indexOfFirst{it.id==customer.id || it.phoneNumber==customer.phoneNumber}; if(idx>=0) list[idx]=customer else list.add(0,customer); _allCloudCustomers.value=list; true
+                if(!resp.isSuccessful) return@withContext null
+                val body=resp.body?.string().orEmpty()
+                val root=runCatching { JSONObject(body) }.getOrNull() ?: return@withContext null
+                val canonical=parseCustomerObject(root.optJSONObject("customer") ?: root)
+                val list=_allCloudCustomers.value.toMutableList()
+                val idx=list.indexOfFirst{it.id==customer.id || it.id==canonical.id || normalizePhone(it.phoneNumber)==normalizePhone(customer.phoneNumber)}
+                if(idx>=0) list[idx]=canonical else list.add(0,canonical)
+                _allCloudCustomers.value=list
+                canonical
             }
-        } catch(e:Exception){Log.e(TAG,"upsertCustomer error: ${e.message}",e);false}
+        } catch(e:Exception){Log.e(TAG,"upsertCustomerCanonical error: \${e.message}",e);null}
+    }
+
+    suspend fun upsertCustomer(customer: Customer): Boolean = withContext(Dispatchers.IO) {
+        upsertCustomerCanonical(customer) != null
     }
 
     suspend fun deleteCustomer(customerId: Long, phoneNumber: String = ""): Boolean = withContext(Dispatchers.IO) {
         try {
-            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers/$customerId").headers(getBaseHeaders()).delete().build()
+            lastCustomerMutationHttpCode = 0
+            var canonicalId = customerId
+            var req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers/$canonicalId").headers(getBaseHeaders()).delete().build()
             client.newCall(req).execute().use { resp ->
-                if(!resp.isSuccessful) return@withContext false
-                _allCloudCustomers.value=_allCloudCustomers.value.filterNot{it.id==customerId || (phoneNumber.isNotBlank() && normalizePhone(it.phoneNumber)==normalizePhone(phoneNumber))}
-                if(_currentLoggedInCustomer.value?.id==customerId){_currentLoggedInCustomer.value=null;_isCustomerKickedOut.value=true}
-                true
+                lastCustomerMutationHttpCode = resp.code
+                if (resp.isSuccessful) {
+                    _allCloudCustomers.value=_allCloudCustomers.value.filterNot{it.id==canonicalId || (phoneNumber.isNotBlank() && normalizePhone(it.phoneNumber)==normalizePhone(phoneNumber))}
+                    return@withContext true
+                }
             }
-        } catch(e:Exception){Log.e(TAG,"deleteCustomer error: ${e.message}",e);false}
+            if (lastCustomerMutationHttpCode == 404 && phoneNumber.isNotBlank()) {
+                val listReq=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).get().build()
+                client.newCall(listReq).execute().use { resp ->
+                    if(resp.isSuccessful){
+                        val body=resp.body?.string().orEmpty()
+                        val arr=if(body.trim().startsWith("[")) JSONArray(body) else JSONObject(body).optJSONArray("data") ?: JSONArray()
+                        for(i in 0 until arr.length()){
+                            val o=arr.optJSONObject(i) ?: continue
+                            val p=normalizePhone(o.optString("phoneNumber",o.optString("phone_number","")))
+                            if(p==normalizePhone(phoneNumber)){ canonicalId=o.optLong("id",0L); break }
+                        }
+                    }
+                }
+                if(canonicalId>0L && canonicalId!=customerId){
+                    req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers/$canonicalId").headers(getBaseHeaders()).delete().build()
+                    client.newCall(req).execute().use { resp ->
+                        lastCustomerMutationHttpCode=resp.code
+                        if(resp.isSuccessful){
+                            _allCloudCustomers.value=_allCloudCustomers.value.filterNot{it.id==canonicalId || (phoneNumber.isNotBlank() && normalizePhone(it.phoneNumber)==normalizePhone(phoneNumber))}
+                            return@withContext true
+                        }
+                    }
+                }
+            }
+            false
+        } catch(e:Exception){lastCustomerMutationHttpCode=0;Log.e(TAG,"deleteCustomer error: \${e.message}",e);false}
     }
 
     suspend fun deleteCustomersBatch(customerIds: List<Long>): Boolean = withContext(Dispatchers.IO) {
@@ -605,14 +673,30 @@ object SelfHostedManager {
     }
 
 
+    suspend fun restoreCustomer(customerId: Long): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers/$customerId/restore").headers(getBaseHeaders()).post("{}".toRequestBody(JSON_MEDIA)).build()
+            client.newCall(req).execute().use { resp ->
+                lastCustomerMutationHttpCode = resp.code
+                resp.isSuccessful
+            }
+        } catch(e:Exception) {
+            lastCustomerMutationHttpCode = 0
+            Log.w(TAG,"restoreCustomer error: \${e.message}")
+            false
+        }
+    }
+
     suspend fun purgeArchivedCustomer(customerId: Long): Boolean = withContext(Dispatchers.IO) {
         try {
+            lastCustomerMutationHttpCode = 0
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/manager/customers/$customerId/purge")
                 .headers(getBaseHeaders())
                 .delete()
                 .build()
             client.newCall(req).execute().use { resp ->
+                lastCustomerMutationHttpCode = resp.code
                 if (!resp.isSuccessful) return@withContext false
                 _archivedCloudCustomers.value = _archivedCloudCustomers.value.filterNot { it.id == customerId }
                 _allCloudCustomers.value = _allCloudCustomers.value.filterNot { it.id == customerId }
@@ -626,6 +710,10 @@ object SelfHostedManager {
             Log.e(TAG, "purgeArchivedCustomer error: ${e.message}", e)
             false
         }
+    }
+
+    fun removeArchivedCustomerLocally(customerId: Long) {
+        _archivedCloudCustomers.value = _archivedCloudCustomers.value.filterNot { it.id == customerId }
     }
 
     fun publishArchivedCustomerLocally(customer: Customer) {
@@ -823,7 +911,7 @@ object SelfHostedManager {
             fullName = name,
             phoneNumber = phone,
             debt = obj.optLong("debt", 0L),
-            credit = obj.optLong("credit", 0L),
+            credit = obj.optLong("wallet_balance", obj.optLong("credit", 0L)),
             points = obj.optLong("points", 0L),
             availableGn = obj.optLong("availableGn", obj.optLong("available_gn", 0L)),
             pendingGn = obj.optLong("pendingGn", obj.optLong("pending_gn", 0L)),
@@ -1108,6 +1196,144 @@ object SelfHostedManager {
             resp.isSuccessful
         } catch (e: Exception) {
             Log.w(TAG, "addGnLedgerEntry error: ${e.message}")
+            false
+        }
+    }
+
+    suspend fun fetchManagerCustomerActivity(customerId: Long): ManagerCustomerActivity = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/customers/$customerId/activity")
+                .headers(getBaseHeaders())
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext ManagerCustomerActivity()
+                val body = resp.body?.string().orEmpty()
+                val root = JSONObject(body)
+                val txArray = root.optJSONArray("transactions") ?: JSONArray()
+                val gnArray = root.optJSONArray("gnLedger") ?: JSONArray()
+                val lpArray = root.optJSONArray("lpLedger") ?: JSONArray()
+                val tx = mutableListOf<CustomerTransaction>()
+                for (i in 0 until txArray.length()) {
+                    val o = txArray.optJSONObject(i) ?: continue
+                    tx += CustomerTransaction(
+                        id = o.optLong("id", 0L),
+                        customerId = o.optLong("customer_id", o.optLong("customerId", 0L)),
+                        customerName = o.optString("customer_name", o.optString("customerName", "")),
+                        stationName = o.optString("station_name", o.optString("stationName", "")),
+                        title = o.optString("title", ""),
+                        amount = o.optLong("amount", 0L),
+                        paidAmount = o.optLong("paid_amount", o.optLong("paidAmount", 0L)),
+                        status = o.optString("status", "UNREVIEWED"),
+                        dateStr = o.optString("date_str", o.optString("dateStr", "")),
+                        timeStr = o.optString("time_str", o.optString("timeStr", "")),
+                        segmentDetails = o.optString("segment_details", o.optString("segmentDetails", "")),
+                        buffetDetails = o.optString("buffet_details", o.optString("buffetDetails", "")),
+                        timestamp = o.optLong("event_timestamp", o.optLong("timestamp", 0L)),
+                        playMinutes = o.optInt("play_minutes", o.optInt("playMinutes", 0)),
+                        gameCost = o.optLong("game_cost", o.optLong("gameCost", 0L)),
+                        foodCost = o.optLong("food_cost", o.optLong("foodCost", 0L)),
+                        sessionId = o.optString("session_id", o.optString("sessionId", "")),
+                        earnedGn = o.optLong("earned_gn", o.optLong("earnedGn", 0L)),
+                        earnedLp = o.optLong("earned_lp", o.optLong("earnedLp", 0L))
+                    )
+                }
+                val gn = mutableListOf<GnLedgerEntry>()
+                for (i in 0 until gnArray.length()) {
+                    val o = gnArray.optJSONObject(i) ?: continue
+                    gn += GnLedgerEntry(
+                        id = o.optLong("id",0L),
+                        customerId = o.optLong("customer_id",o.optLong("customerId",0L)),
+                        customerName = "",
+                        gnAmount = o.optLong("amount",o.optLong("gnAmount",0L)),
+                        transactionType = o.optString("type",o.optString("transactionType","")),
+                        source = o.optString("reference_type","EARNED"),
+                        status = "AVAILABLE",
+                        timestamp = o.optString("created_at","").let { 0L },
+                        referenceId = o.optString("reference_id",o.optString("referenceId","")),
+                        description = o.optString("reference_type",o.optString("type",""))
+                    )
+                }
+                val lp = mutableListOf<ManagerLpHistory>()
+                for (i in 0 until lpArray.length()) {
+                    val o = lpArray.optJSONObject(i) ?: continue
+                    lp += ManagerLpHistory(
+                        id=o.optLong("id",0L),
+                        customerId=o.optLong("customer_id",o.optLong("customerId",0L)),
+                        amount=o.optLong("amount",0L),
+                        type=o.optString("type",""),
+                        referenceType=o.optString("reference_type",""),
+                        referenceId=o.optString("reference_id",""),
+                        timestamp=0L
+                    )
+                }
+                return@withContext ManagerCustomerActivity(tx,gn,lp)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchManagerCustomerActivity error: \${e.message}")
+            ManagerCustomerActivity()
+        }
+    }
+
+    suspend fun fetchSettlementReview(sessionId: String): SettlementReview? = withContext(Dispatchers.IO) {
+        try {
+            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/sessions/$sessionId/settlement-review").headers(getBaseHeaders()).get().build()
+            client.newCall(req).execute().use { resp ->
+                if(!resp.isSuccessful) return@withContext null
+                val root=JSONObject(resp.body?.string().orEmpty())
+                val arr=root.optJSONArray("participants") ?: JSONArray()
+                val payers=mutableListOf<SettlementPayer>()
+                for(i in 0 until arr.length()){
+                    val o=arr.optJSONObject(i) ?: continue
+                    val cid=o.optLong("customer_id",o.optLong("customerId",0L))
+                    if(cid>0L && o.optBoolean("is_payer",o.optBoolean("isPayer",true))) {
+                        payers += SettlementPayer(cid,o.optString("participant_name",o.optString("participantName","")),o.optLong("prepayment_amount",o.optLong("prepaymentAmount",0L)))
+                    }
+                }
+                SettlementReview(
+                    sessionId=sessionId,
+                    totalPrepayment=root.optString("totalPrepayment","0").toLongOrNull() ?: root.optLong("totalPrepayment",0L),
+                    refundedPrepayment=root.optString("refundedPrepayment","0").toLongOrNull() ?: root.optLong("refundedPrepayment",0L),
+                    remainingRefundable=root.optString("remainingRefundable","0").toLongOrNull() ?: root.optLong("remainingRefundable",0L),
+                    payers=payers
+                )
+            }
+        }catch(e:Exception){Log.w(TAG,"fetchSettlementReview error: \${e.message}");null}
+    }
+
+    suspend fun refundSessionPrepayment(sessionId: String, allocations: Map<Long,Long>): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val arr=JSONArray()
+            allocations.filter { it.key>0L && it.value>0L }.forEach { (cid,amount) ->
+                arr.put(JSONObject().apply{put("customerId",cid);put("amount",amount)})
+            }
+            if(arr.length()==0) return@withContext false
+            val body=JSONObject().apply{put("allocations",arr)}
+            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/sessions/$sessionId/prepayment-refund").headers(getBaseHeaders()).post(body.toString().toRequestBody(JSON_MEDIA)).build()
+            client.newCall(req).execute().use { it.isSuccessful }
+        }catch(e:Exception){Log.w(TAG,"refundSessionPrepayment error: \${e.message}");false}
+    }
+
+    suspend fun addLpLedgerEntry(customerId: Long, amount: Long, referenceId: String): Boolean = withContext(Dispatchers.IO) {
+        if (customerId <= 0L || amount <= 0L || referenceId.isBlank()) return@withContext false
+        try {
+            val idem = "lp-session-review:" + referenceId + ":" + customerId
+            val json = JSONObject().apply {
+                put("customerId", customerId)
+                put("lpAmount", amount)
+                put("referenceType", "SESSION_PAYMENT")
+                put("referenceId", referenceId)
+                put("idempotencyKey", idem)
+            }
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/club/lp-ledger")
+                .headers(getBaseHeaders().newBuilder().add("Idempotency-Key", idem).build())
+                .post(json.toString().toRequestBody(JSON_MEDIA))
+                .build()
+            client.newCall(req).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.w(TAG, "addLpLedgerEntry error: \${e.message}")
             false
         }
     }

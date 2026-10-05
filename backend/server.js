@@ -1563,8 +1563,11 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
                 }
                 const prepayment = BigInt(String(payer.prepayment_amount || "0"));
                 const invoiceTotal = invoiceGameCost + invoiceBuffetCost;
-                const appliedPrepayment = prepayment > invoiceTotal ? invoiceTotal : prepayment;
-                const invoiceStatus = appliedPrepayment >= invoiceTotal ? 'PAID' : 'UNPAID';
+                // Settlement never auto-determines a financial invoice. The Manager reviews the
+                // invoice in the unreviewed queue and explicitly decides how any initial payment
+                // is applied and how unused balance is returned to wallet.
+                const appliedPrepayment = 0n;
+                const invoiceStatus = 'UNPAID';
                 // Invoice identity must be unique per payer, not merely per session/customer.
                 // Guest payers have NULL customer_id, so using only GUEST caused two guests in
                 // the same session to collide on invoices_manager_id_invoice_number_key.
@@ -1576,20 +1579,6 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
                     "INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,$3,$4,$5,$6,'IRT',$7,$8,($7::numeric+$8::numeric),$9,$10,$11::jsonb,$12::jsonb,$13::jsonb) ON CONFLICT(manager_id,invoice_number) DO UPDATE SET status=EXCLUDED.status,game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,paid_amount=EXCLUDED.paid_amount,settlement_idempotency_key=COALESCE(invoices.settlement_idempotency_key,EXCLUDED.settlement_idempotency_key),pricing_snapshot=EXCLUDED.pricing_snapshot,customer_snapshot=EXCLUDED.customer_snapshot,updated_at=NOW()",
                     [invoiceNumber,managerId,payer.customer_id,sessionId,session.station_id,invoiceStatus,invoiceGameCost.toString(),invoiceBuffetCost.toString(),appliedPrepayment.toString(),"settle_"+sessionId+"_"+(payer.customer_id || "guest")+"_"+payer.participant_key,JSON.stringify(invoicePricingSnapshot),JSON.stringify({id:payer.customer_id || null,name:payer.participant_name,isGuest:Boolean(payer.is_guest)}),JSON.stringify({id:managerId})]
                 );
-                // Fully prepaid settlement invoices earn LP immediately. The ledger key makes this idempotent.
-                if (invoiceStatus === 'PAID' && payer.customer_id) {
-                    // Keep the canonical default identical to Android's offline/default LP rule.
-                    // Manager configuration still overrides this value whenever explicitly saved.
-                    const configuredLpRate = Number(managerConfig.settings?.policy_lp_toman_rate ?? managerConfig.settings?.policies?.loyalty?.lpTomanRate ?? 1000);
-                    if (Number.isFinite(configuredLpRate) && configuredLpRate > 0) {
-                        const lpResult = await client.query("SELECT FLOOR($1::numeric / $2::numeric)::bigint AS lp_amount", [invoiceTotal.toString(), String(Math.trunc(configuredLpRate))]);
-                        const lpAmount = Number(lpResult.rows[0]?.lp_amount || 0);
-                        if (lpAmount > 0) {
-                            const lpInsert = await client.query("INSERT INTO lp_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_PAYMENT',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id", [managerId,payer.customer_id,lpAmount,sessionId,"session_lp_"+sessionId+"_"+payer.customer_id]);
-                            if (lpInsert.rowCount) await client.query("UPDATE customers SET lp_balance=lp_balance+$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3", [lpAmount,payer.customer_id,managerId]);
-                        }
-                    }
-                }
             }
         }
         await client.query("DELETE FROM active_session_customer_claims WHERE session_id=$1 AND manager_id=$2", [sessionId,managerId]);

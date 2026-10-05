@@ -298,11 +298,11 @@ class GameNetRepository(private val db: AppDatabase) {
                 val localCustomers = customerDao.getAllList()
                 for (remote in remoteCustomers) {
                     val existing = localCustomers.find { it.phoneNumber == remote.phoneNumber || it.id == remote.id }
-                    if (existing != null) {
-                        customerDao.insert(remote.copy(id = existing.id))
-                    } else {
-                        customerDao.insert(remote)
+                    if (existing != null && existing.id != remote.id) {
+                        migrateLocalCustomerId(existing.id, remote.id)
+                        customerDao.deleteById(existing.id)
                     }
+                    customerDao.insert(remote)
                 }
 
                 val remotePhones = remoteCustomers.map { it.phoneNumber.trim() }.filter { it.isNotBlank() }.toSet()
@@ -761,6 +761,35 @@ class GameNetRepository(private val db: AppDatabase) {
         stationStateDao.insertAll(newStates)
     }
 
+    private suspend fun migrateLocalCustomerId(oldId: Long, newId: Long) {
+        if (oldId <= 0L || newId <= 0L || oldId == newId) return
+        customerTransactionDao.migrateCustomerId(oldId, newId)
+        gnLedgerDao.migrateCustomerId(oldId, newId)
+        pointLogDao.migrateCustomerId(oldId, newId)
+        behaviorLogDao.migrateCustomerId(oldId, newId)
+        referralProgressRecordDao.migrateCustomerId(oldId, newId)
+        val stations = stationStateDao.getAll().firstOrNull().orEmpty()
+        for (station in stations) {
+            fun replaceIds(raw: String): String {
+                if (raw.isBlank()) return raw
+                return raw.split(",").joinToString(",") { token ->
+                    if (token.trim().toLongOrNull() == oldId) newId.toString() else token.trim()
+                }
+            }
+            val newSelected = replaceIds(station.selectedCustomerIdsStr)
+            val newPayers = replaceIds(station.payerCustomerIdsStr)
+            val newPrepayments = if (station.customerPrepaymentsJson.isBlank()) "" else {
+                station.customerPrepaymentsJson.split(",").joinToString(",") { token ->
+                    val parts = token.split(":", limit = 2)
+                    if (parts.size == 2 && parts[0].trim().toLongOrNull() == oldId) "\${newId}:\${parts[1].trim()}" else token.trim()
+                }
+            }
+            if (newSelected != station.selectedCustomerIdsStr || newPayers != station.payerCustomerIdsStr || newPrepayments != station.customerPrepaymentsJson) {
+                stationStateDao.insert(station.copy(selectedCustomerIdsStr = newSelected, payerCustomerIdsStr = newPayers, customerPrepaymentsJson = newPrepayments))
+            }
+        }
+    }
+
     // Customers
     fun getMockTrialCustomers(): List<Customer> {
         // Compatibility only; Trial UI now reads the persistent Room customer table.
@@ -798,11 +827,13 @@ class GameNetRepository(private val db: AppDatabase) {
 
             val matchByPhone = if (trimmedPhone.isNotBlank()) existingLocal.find { it.phoneNumber.trim() == trimmedPhone } else null
             val matchById = existingLocal.find { it.id == cloud.id && cloud.id > 0L }
-            val matchByName = if (trimmedName.isNotBlank()) existingLocal.find { it.fullName.trim().equals(trimmedName, ignoreCase = true) } else null
-
-            val targetLocal = matchByPhone ?: matchById ?: matchByName
+            val targetLocal = matchByPhone ?: matchById
             if (targetLocal != null) {
-                val updated = targetLocal.copy(
+                if (targetLocal.id != cloud.id && cloud.id > 0L) {
+                    migrateLocalCustomerId(targetLocal.id, cloud.id)
+                    customerDao.deleteById(targetLocal.id)
+                }
+                val updated = cloud.copy(
                     fullName = if (cloud.fullName.isNotBlank()) cloud.fullName else targetLocal.fullName,
                     phoneNumber = if (cloud.phoneNumber.isNotBlank()) cloud.phoneNumber else targetLocal.phoneNumber,
                     debt = cloud.debt,
@@ -845,43 +876,34 @@ class GameNetRepository(private val db: AppDatabase) {
 
     suspend fun insertCustomer(customer: Customer): Long {
         val localId = customerDao.insert(customer)
-        val finalCust = if (customer.id == 0L) customer.copy(id = localId) else customer
         if (com.example.data.network.NetworkClient.isTrialMode) return if (customer.id == 0L) localId else customer.id
+        // Existing server IDs are already canonical. Keep ordinary local edits instant; the
+        // Manager ViewModel owns their explicit background cloud sync.
+        if (customer.id >= 100_000L) return customer.id
         try {
-            com.example.data.network.SelfHostedManager.upsertCustomer(finalCust)
-        } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", ignored) }
+            val canonical = com.example.data.network.SelfHostedManager.upsertCustomerCanonical(customer)
+            if (canonical != null && canonical.id > 0L && canonical.id != customer.id) {
+                migrateLocalCustomerId(if (customer.id > 0L) customer.id else localId, canonical.id)
+                customerDao.deleteById(if (customer.id > 0L) customer.id else localId)
+                customerDao.insert(canonical)
+                return canonical.id
+            }
+        } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Customer canonical sync failed", ignored) }
         if (isSyncModeEnabled()) {
             try {
-                getApi()?.saveCustomer(finalCust)
+                getApi()?.saveCustomer(customer)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
-        return localId
+        return if (customer.id == 0L) localId else customer.id
     }
 
     suspend fun deleteCustomer(customer: Customer) = withContext(Dispatchers.IO) {
         if (com.example.data.network.NetworkClient.isTrialMode) return@withContext
-        try {
-            // Normal customer deletion is an archive, not a purge. Keep every local
-            // reservation, invoice/transaction, point and GN record intact; only remove the
-            // active customer row from the active directory.
-            customerDao.delete(customer)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        try {
-            com.example.data.network.SelfHostedManager.deleteCustomer(customer.id, customer.phoneNumber)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        if (isSyncModeEnabled()) {
-            try {
-                getApi()?.deleteCustomer(customer.id)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        // Local-first archive. Network synchronization is handled by GameNetViewModel so
+        // the Manager UI never waits on a remote request.
+        customerDao.delete(customer)
     }
 
     suspend fun purgeCustomerLocally(customer: Customer) = withContext(Dispatchers.IO) {

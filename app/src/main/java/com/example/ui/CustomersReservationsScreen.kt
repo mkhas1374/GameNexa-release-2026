@@ -283,6 +283,13 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
                             viewModel.deleteCustomer(it)
                         }
                     },
+                    onRestoreArchivedCustomer = { customer ->
+                        if (isTrialActive || currentAdminRole == "TRIAL_USER") {
+                            showTrialLimitDialog = true
+                        } else {
+                            viewModel.restoreArchivedCustomer(customer)
+                        }
+                    },
                     onPurgeArchivedCustomer = { customer ->
                         if (isTrialActive || currentAdminRole == "TRIAL_USER") {
                             showTrialLimitDialog = true
@@ -493,6 +500,7 @@ fun CustomersTabContent(
     canDelete: Boolean,
     onEditCustomer: (Customer) -> Unit,
     onDeleteCustomer: (Customer) -> Unit,
+    onRestoreArchivedCustomer: (Customer) -> Unit,
     onPurgeArchivedCustomer: (Customer) -> Unit,
     onAddClick: () -> Unit,
     onUpdateTransactionStatus: (CustomerTransaction, String) -> Unit,
@@ -778,11 +786,21 @@ IconButton(
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
-                                        TextButton(
-                                            onClick = { showPurgeConfirm = true },
-                                            enabled = canDelete
-                                        ) {
-                                            Text(if (lang == "fa") "حذف کامل" else "Purge", color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+                                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            IconButton(
+                                                onClick = { onRestoreArchivedCustomer(customer) },
+                                                enabled = canDelete,
+                                                modifier = Modifier.size(32.dp)
+                                            ) {
+                                                Text("⤴️", fontSize = 16.sp)
+                                            }
+                                            IconButton(
+                                                onClick = { showPurgeConfirm = true },
+                                                enabled = canDelete,
+                                                modifier = Modifier.size(32.dp)
+                                            ) {
+                                                Icon(Icons.Default.Delete, contentDescription = if (lang == "fa") "حذف کامل" else "Purge", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(17.dp))
+                                            }
                                         }
                                     }
                                     Text(
@@ -1022,6 +1040,10 @@ fun CustomerTransactionCard(
     
     var expanded by remember { mutableStateOf(isAlwaysExpanded) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showPrepaymentDialog by remember { mutableStateOf(false) }
+    var settlementReview by remember { mutableStateOf<com.example.data.network.SettlementReview?>(null) }
+    var prepaymentAllocations by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
+    var refundRequested by remember { mutableStateOf(false) }
     var isSubmitting by remember(transaction) { mutableStateOf(false) }
     var isPayFieldFocused by remember { mutableStateOf(false) }
     val payFieldBringIntoViewRequester = remember { BringIntoViewRequester() }
@@ -1042,6 +1064,36 @@ fun CustomerTransactionCard(
         if (isPayFieldFocused) {
             kotlinx.coroutines.delay(180)
             payFieldBringIntoViewRequester.bringIntoView()
+        }
+    }
+
+    LaunchedEffect(showPrepaymentDialog, transaction.sessionId) {
+        if (showPrepaymentDialog && transaction.sessionId.isNotBlank()) {
+            settlementReview = viewModel.fetchSettlementReview(transaction.sessionId)
+            prepaymentAllocations = emptyMap()
+        }
+    }
+
+    LaunchedEffect(refundRequested) {
+        if (refundRequested) {
+            refundRequested = false
+            val review = settlementReview
+            if (review != null) {
+                val allocations = prepaymentAllocations.mapNotNull { (id, value) ->
+                    val amount = value.filter { it.isDigit() }.toLongOrNull() ?: 0L
+                    if (amount > 0L) id to amount else null
+                }.toMap()
+                if (allocations.isNotEmpty()) {
+                    val ok = viewModel.refundUnusedPrepayment(transaction.sessionId, allocations)
+                    if (ok) {
+                        settlementReview = viewModel.fetchSettlementReview(transaction.sessionId)
+                        prepaymentAllocations = emptyMap()
+                        android.widget.Toast.makeText(viewModel.getApplication(), "مانده پرداخت اولیه با انتخاب مدیر به کیف پول مشتریان برگشت داده شد.", android.widget.Toast.LENGTH_SHORT).show()
+                    } else {
+                        android.widget.Toast.makeText(viewModel.getApplication(), "بازگشت کیف پول انجام نشد؛ عملیات پس از اتصال مجدد قابل تکرار است.", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
         }
     }
 
@@ -1385,6 +1437,54 @@ fun CustomerTransactionCard(
                             }
                             Text("+$earnedLpPoints LP", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
                         }
+                    }
+
+                    if (transaction.status == "UNREVIEWED" && transaction.sessionId.isNotBlank()) {
+                        OutlinedButton(
+                            onClick = { showPrepaymentDialog = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("💳 تعیین تکلیف و بازگشت مانده پرداخت اولیه")
+                        }
+                    }
+
+                    if (showPrepaymentDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showPrepaymentDialog = false },
+                            title = { Text("تعیین تکلیف پرداخت اولیه نشست") },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    val review = settlementReview
+                                    if (review == null) {
+                                        Text("در حال دریافت اطلاعات نشست از سرور...")
+                                    } else {
+                                        Text("کل پرداخت اولیه: " + String.format(Locale.US, "%,d", review.totalPrepayment) + " تومان")
+                                        Text("قبلاً برگشت داده شده: " + String.format(Locale.US, "%,d", review.refundedPrepayment) + " تومان")
+                                        Text("مانده قابل بازگشت: " + String.format(Locale.US, "%,d", review.remainingRefundable) + " تومان", fontWeight = FontWeight.Bold)
+                                        review.payers.forEach { payer ->
+                                            OutlinedTextField(
+                                                value = prepaymentAllocations[payer.customerId].orEmpty(),
+                                                onValueChange = { value ->
+                                                    prepaymentAllocations = prepaymentAllocations.toMutableMap().apply { put(payer.customerId, value.filter { it.isDigit() }) }
+                                                },
+                                                label = { Text(payer.name.ifBlank { "مشتری " + payer.customerId }) },
+                                                supportingText = { Text("پرداخت اولیه این مشتری: " + String.format(Locale.US, "%,d", payer.prepaymentAmount) + " تومان") },
+                                                singleLine = true
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = { refundRequested = true },
+                                    enabled = settlementReview != null
+                                ) { Text("ثبت بازگشت کیف پول") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showPrepaymentDialog = false }) { Text("بستن") }
+                            }
+                        )
                     }
 
                     // Share / Print Receipt Action Button
@@ -2155,6 +2255,11 @@ fun PointHistoryDialog(
     }
     var purchasePointsInput by remember { mutableStateOf("") }
     var purchaseTitleInput by remember { mutableStateOf("خرید امتیاز از گیم‌نت") }
+    var managerActivity by remember { mutableStateOf<com.example.data.network.ManagerCustomerActivity?>(null) }
+
+    LaunchedEffect(customer.id) {
+        managerActivity = viewModel.fetchManagerCustomerActivity(customer.id)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -2209,6 +2314,39 @@ fun PointHistoryDialog(
                                     color = MaterialTheme.colorScheme.error,
                                     fontWeight = FontWeight.Bold
                                 )
+                            }
+                        }
+                    }
+                }
+
+                managerActivity?.let { activity ->
+                    if (activity.transactions.isNotEmpty() || activity.lpLedger.isNotEmpty()) {
+                        Card(
+                            shape = RoundedCornerShape(8.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                        ) {
+                            Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Text("📚 جزئیات دریافت GN و LP", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                activity.transactions.forEach { tx ->
+                                    val sourceText = when {
+                                        tx.gameCost > 0L && tx.foodCost > 0L -> "بازی + بوفه"
+                                        tx.gameCost > 0L -> "بازی"
+                                        tx.foodCost > 0L -> "بوفه"
+                                        else -> "سایر"
+                                    }
+                                    Text(
+                                        text = sourceText + " • GN: +" + String.format(Locale.US, "%,d", tx.earnedGn) + " • LP: +" + String.format(Locale.US, "%,d", tx.earnedLp) + " • " + tx.status,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                activity.lpLedger.forEach { lp ->
+                                    Text(
+                                        text = "LP " + (if (lp.type == "CREDIT") "+" else "-") + String.format(Locale.US, "%,d", lp.amount) + " • " + lp.referenceType.ifBlank { "تراکنش" } + " • " + lp.referenceId,
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
                             }
                         }
                     }

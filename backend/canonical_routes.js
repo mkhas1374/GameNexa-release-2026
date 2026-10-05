@@ -64,7 +64,7 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
 
   const normalizeCustomer = (r) => ({
     id:r.id, manager_id:r.manager_id, fullName:r.full_name || '', phoneNumber:r.phone_number || '',
-    debt:Number(r.debt || 0), credit:Number(r.credit || 0), points:Number(r.gn_balance || 0),
+    debt:Number(r.debt || 0), credit:Number(r.wallet_balance ?? r.credit ?? 0), points:Number(r.gn_balance || 0),
     availableGn:Number(r.gn_balance || 0), pendingGn:Number(r.pending_gn || 0), lp:Number(r.lp_balance || 0), lp_balance:Number(r.lp_balance || 0),
     tier:r.club_tier || 'BRONZE', inviteCode:r.invite_code || '', invitedByCode:r.invited_by_code || '',
     description:r.description || '', totalQualifiedSpend:Number(r.total_qualified_spend || 0), totalVisitsCount:Number(r.total_visits_count || 0)
@@ -110,8 +110,8 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
   } catch(e){res.status(500).json({error:'Internal server error'});} });
 
   app.get('/api/v1/manager/customers/archived', requireManagerAuth, requireActiveEntitlement, async (req,res)=>{ try {
-    const q=await pool.query("SELECT * FROM customers WHERE manager_id=$1 AND COALESCE(description,'') LIKE '[GAMENEX_ARCHIVED:%' ORDER BY id DESC",[manager(req)]);
-    res.json(q.rows.map(normalizeCustomer));
+    const q=await pool.query(`SELECT c.*,COALESCE(NULLIF(substring(c.description from 'original_phone=([^ ]+)'),''),c.phone_number) AS archived_original_phone,regexp_replace(COALESCE(c.description,''),'^\\[GAMENEX_ARCHIVED:[^]]+\\] ?','') AS archived_description FROM customers c WHERE c.manager_id=$1 AND COALESCE(c.description,'') LIKE '[GAMENEX_ARCHIVED:%' ORDER BY c.id DESC`,[manager(req)]);
+    res.json(q.rows.map(r=>normalizeCustomer({...r,phone_number:r.archived_original_phone,description:r.archived_description})));
   } catch(e){res.status(500).json({error:'Internal server error'});} });
 
   app.post('/api/v1/manager/customers', requireManagerAuth, requireActiveEntitlement, async (req,res)=>{ try {
@@ -119,8 +119,8 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
     const name=String(b.fullName||b.full_name||b.customer_name||'').trim(); if(!phone||!name) return res.status(400).json({error:'fullName and phoneNumber are required'});
     const existing=await pool.query('SELECT id FROM customers WHERE manager_id=$1 AND phone_number=$2 LIMIT 1',[mid,phone]);
     let q;
-    if(existing.rows[0]) q=await pool.query("UPDATE customers SET full_name=$1,debt=COALESCE($2,debt),credit=COALESCE($3,credit),description=COALESCE($4,description),club_tier=COALESCE($5,club_tier),invite_code=COALESCE(NULLIF($6,''),invite_code),invited_by_code=COALESCE(NULLIF($7,''),invited_by_code),lp_balance=GREATEST(0,COALESCE($8,lp_balance)),gn_balance=GREATEST(0,COALESCE($9,gn_balance)),pending_gn=GREATEST(0,COALESCE($10,pending_gn)),updated_at=NOW() WHERE id=$11 AND manager_id=$12 RETURNING *",[name,b.debt,b.credit,b.description,b.tier,b.inviteCode,b.invitedByCode,b.lp,b.availableGn,b.pendingGn,existing.rows[0].id,mid]);
-    else q=await pool.query("INSERT INTO customers(manager_id,phone_number,full_name,debt,credit,description,club_tier,invite_code,invited_by_code,pending_gn,lp_balance,gn_balance,last_activity_at,last_tier_review_at) VALUES($1,$2,$3,COALESCE($4,0),COALESCE($5,0),COALESCE($6,''),COALESCE($7,'BRONZE'),NULLIF($8,''),NULLIF($9,''),GREATEST(0,COALESCE($10,0)),GREATEST(0,COALESCE($11,0)),GREATEST(0,COALESCE($12,0)),NOW(),NOW()) RETURNING *",[mid,phone,name,b.debt,b.credit,b.description,b.tier,b.inviteCode,b.invitedByCode,b.pendingGn,b.lp,b.availableGn]);
+    if(existing.rows[0]) q=await pool.query("UPDATE customers SET full_name=$1,debt=COALESCE($2,debt),wallet_balance=COALESCE($3,wallet_balance),credit=COALESCE($3,credit),description=COALESCE($4,description),club_tier=COALESCE($5,club_tier),invite_code=COALESCE(NULLIF($6,''),invite_code),invited_by_code=COALESCE(NULLIF($7,''),invited_by_code),lp_balance=GREATEST(0,COALESCE($8,lp_balance)),gn_balance=GREATEST(0,COALESCE($9,gn_balance)),pending_gn=GREATEST(0,COALESCE($10,pending_gn)),updated_at=NOW() WHERE id=$11 AND manager_id=$12 RETURNING *",[name,b.debt,b.credit,b.description,b.tier,b.inviteCode,b.invitedByCode,b.lp,b.availableGn,b.pendingGn,existing.rows[0].id,mid]);
+    else q=await pool.query("INSERT INTO customers(manager_id,phone_number,full_name,debt,wallet_balance,credit,description,invite_code,invited_by_code,pending_gn,lp_balance,gn_balance,last_activity_at,last_tier_review_at) VALUES($1,$2,$3,COALESCE($4,0),COALESCE($5,0),COALESCE($5,0),COALESCE($6,''),COALESCE($7,'BRONZE'),NULLIF($8,''),NULLIF($9,''),GREATEST(0,COALESCE($10,0)),GREATEST(0,COALESCE($11,0)),GREATEST(0,COALESCE($12,0)),NOW(),NOW()) RETURNING *",[mid,phone,name,b.debt,b.credit,b.description,b.tier,b.inviteCode,b.invitedByCode,b.pendingGn,b.lp,b.availableGn]);
     if(typeof b.password==='string' && b.password.length>=8) await pool.query('UPDATE customers SET password_hash=$1,token_version=token_version+1,updated_at=NOW() WHERE id=$2 AND manager_id=$3',[await bcrypt.hash(b.password,12),q.rows[0].id,mid]);
     res.status(existing.rows[0]?200:201).json(normalizeCustomer(q.rows[0]));
   } catch(e){res.status(500).json({error:'Internal server error'});} });
@@ -163,6 +163,27 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
       await c.query('COMMIT');
       return res.json({success:true,archivedCustomerIds:rows.rows.map(r=>r.id),count:rows.rows.length});
     }catch(e){try{await c.query('ROLLBACK')}catch(_){} return res.status(500).json({error:'Customer batch archive failed'});}
+    finally{c.release();}
+  });
+
+  app.post('/api/v1/manager/customers/:id/restore', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{
+    const mid=manager(req), id=Number(req.params.id);
+    if(!Number.isInteger(id)||id<=0) return res.status(400).json({error:'Invalid customer id'});
+    const c=await pool.connect();
+    try{
+      await c.query('BEGIN');
+      const customer=(await c.query("SELECT id,phone_number,description FROM customers WHERE id=$1 AND manager_id=$2 FOR UPDATE",[id,mid])).rows[0];
+      if(!customer){await c.query('ROLLBACK');return res.status(404).json({error:'Customer not found'});}
+      if(!String(customer.description||'').startsWith('[GAMENEX_ARCHIVED:')){await c.query('COMMIT');return res.json({success:true,restored:false,idempotent:true,customerId:id});}
+      const originalPhone=(String(customer.description||'').match(/original_phone=([^ ]+)/)||[])[1] || '';
+      if(!originalPhone){await c.query('ROLLBACK');return res.status(409).json({success:false,code:'ORIGINAL_PHONE_MISSING'});}
+      const duplicate=(await c.query("SELECT id FROM customers WHERE manager_id=$1 AND phone_number=$2 AND id<>$3 LIMIT 1",[mid,originalPhone,id])).rows[0];
+      if(duplicate){await c.query('ROLLBACK');return res.status(409).json({success:false,code:'PHONE_ALREADY_IN_USE',customerId:duplicate.id});}
+      const cleanDescription=String(customer.description||'').replace(/^\\[GAMENEX_ARCHIVED:[^\\]]+\\] ?/,'').replace(/ ?original_phone=[^ ]+/,'').trim();
+      await c.query("UPDATE customers SET phone_number=$1,description=$2,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[originalPhone,cleanDescription,id,mid]);
+      await c.query('COMMIT');
+      return res.json({success:true,restored:true,customerId:id});
+    }catch(e){try{await c.query('ROLLBACK')}catch(_){}return res.status(500).json({error:'Customer restore failed'});}
     finally{c.release();}
   });
 
@@ -599,8 +620,25 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
     }catch(e){try{await c.query('ROLLBACK')}catch(_){} console.error('[stations/purge-extra]',e?.message||e);res.status(500).json({error:'Internal server error',code:'STATION_PURGE_FAILED'});}finally{c.release();}
   });
 
+  app.get('/api/v1/manager/customers/:id/activity', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{
+    try{
+      const mid=manager(req), id=Number(req.params.id);
+      if(!Number.isInteger(id)||id<=0) return res.status(400).json({error:'Invalid customer id'});
+      const customer=(await pool.query('SELECT * FROM customers WHERE id=$1 AND manager_id=$2',[id,mid])).rows[0];
+      if(!customer) return res.status(404).json({error:'Customer not found'});
+      const [tx,gn,lp,behavior,payments]=await Promise.all([
+        pool.query(`SELECT ct.*,COALESCE((SELECT SUM(g.amount) FROM gn_ledger g WHERE g.manager_id=ct.manager_id AND g.customer_id=ct.customer_id AND g.type='CREDIT' AND (g.reference_id LIKE ('SESSION_REVIEW_'||ct.session_id::text||'_CUST_'||ct.customer_id::text||'%') OR g.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=ct.manager_id AND i.session_id=ct.session_id AND i.customer_id=ct.customer_id))),0)::bigint AS earned_gn,COALESCE((SELECT SUM(l.amount) FROM lp_ledger l WHERE l.manager_id=ct.manager_id AND l.customer_id=ct.customer_id AND l.type='CREDIT' AND (l.reference_id=ct.session_id::text OR l.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=ct.manager_id AND i.session_id=ct.session_id AND i.customer_id=ct.customer_id))),0)::bigint AS earned_lp FROM customer_transactions ct WHERE ct.manager_id=$1 AND ct.customer_id=$2 AND ct.status<>'DELETED' ORDER BY ct.created_at DESC LIMIT 500`,[mid,id]),
+        pool.query("SELECT * FROM gn_ledger WHERE manager_id=$1 AND customer_id=$2 ORDER BY created_at DESC LIMIT 500",[mid,id]),
+        pool.query("SELECT * FROM lp_ledger WHERE manager_id=$1 AND customer_id=$2 ORDER BY created_at DESC LIMIT 500",[mid,id]),
+        pool.query("SELECT * FROM behavior_logs WHERE manager_id=$1 AND customer_id=$2 ORDER BY timestamp DESC LIMIT 500",[mid,id]).catch(()=>({rows:[]})),
+        pool.query("SELECT * FROM payment_transactions WHERE manager_id=$1 AND customer_id=$2 ORDER BY created_at DESC LIMIT 500",[mid,id]).catch(()=>({rows:[]}))
+      ]);
+      res.json({success:true,customer:normalizeCustomer(customer),transactions:tx.rows,gnLedger:gn.rows,lpLedger:lp.rows,behaviorLogs:behavior.rows,payments:payments.rows});
+    }catch(e){console.error('[customer-activity]',e?.message||e);res.status(500).json({error:'Customer activity lookup failed'});}
+  });
+
   app.post('/api/v1/manager/customer-transactions', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const b=req.body||{},mid=manager(req),customerId=Number(b.customerId||0),localId=Number(b.localId||0)||null;const customerOrNull=customerId>0?customerId:null;if(customerOrNull!==null){const customer=await pool.query('SELECT id FROM customers WHERE id=$1 AND manager_id=$2',[customerOrNull,mid]);if(!customer.rows[0])return res.status(404).json({error:'Customer not found'});}const amount=Math.max(0,Math.trunc(Number(b.amount||0)));const paidAmount=Math.max(0,Math.trunc(Number(b.paidAmount||0)));const gameCost=Math.max(0,Math.trunc(Number(b.gameCost||b.game_cost||0)));const foodCost=Math.max(0,Math.trunc(Number(b.foodCost||b.food_cost||0)));const sessionId=String(b.sessionId||b.session_id||'').trim()||null;const q=await pool.query(`INSERT INTO customer_transactions(manager_id,customer_id,customer_name,station_name,title,amount,paid_amount,status,date_str,time_str,segment_details,buffet_details,event_timestamp,play_minutes,game_cost,food_cost,local_id,session_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT (manager_id,local_id) WHERE local_id IS NOT NULL DO UPDATE SET customer_id=EXCLUDED.customer_id,customer_name=EXCLUDED.customer_name,station_name=EXCLUDED.station_name,title=EXCLUDED.title,amount=EXCLUDED.amount,paid_amount=EXCLUDED.paid_amount,status=EXCLUDED.status,date_str=EXCLUDED.date_str,time_str=EXCLUDED.time_str,segment_details=EXCLUDED.segment_details,buffet_details=EXCLUDED.buffet_details,event_timestamp=EXCLUDED.event_timestamp,play_minutes=EXCLUDED.play_minutes,game_cost=EXCLUDED.game_cost,food_cost=EXCLUDED.food_cost,session_id=COALESCE(EXCLUDED.session_id,customer_transactions.session_id),updated_at=NOW() RETURNING *`,[mid,customerOrNull,b.customerName||'',b.stationName||'',b.title||'',amount,paidAmount,b.status||'UNREVIEWED',b.dateStr||'',b.timeStr||'',b.segmentDetails||'',b.buffetDetails||'',Number(b.timestamp||0),Number(b.playMinutes||b.play_minutes||0),gameCost,foodCost,localId,sessionId]);res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]',e?.message||e);res.status(500).json({error:'Internal server error'});} });
-  app.get('/api/v1/manager/customer-transactions', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const q=await pool.query(`SELECT ct.*, COALESCE((SELECT SUM(g.amount) FROM gn_ledger g WHERE g.manager_id=ct.manager_id AND g.customer_id=ct.customer_id AND g.type='CREDIT' AND g.reference_type='SESSION_PAYMENT' AND (g.reference_id=ct.session_id::text OR g.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=ct.manager_id AND i.session_id=ct.session_id AND i.customer_id=ct.customer_id))),0)::bigint AS earned_gn, COALESCE((SELECT SUM(l.amount) FROM lp_ledger l WHERE l.manager_id=ct.manager_id AND l.customer_id=ct.customer_id AND l.type='CREDIT' AND l.reference_type='SESSION_PAYMENT' AND (l.reference_id=ct.session_id::text OR l.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=ct.manager_id AND i.session_id=ct.session_id AND i.customer_id=ct.customer_id))),0)::bigint AS earned_lp FROM customer_transactions ct WHERE ct.manager_id=$1 AND ct.status <> 'DELETED' ORDER BY ct.created_at DESC LIMIT 1000`,[manager(req)]);res.json(q.rows);}catch(e){console.error('[customer-transactions/list]',e?.message||e);res.status(500).json({error:'Internal server error'});} });
+  app.get('/api/v1/manager/customer-transactions', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const q=await pool.query(`SELECT ct.*, COALESCE((SELECT SUM(g.amount) FROM gn_ledger g WHERE g.manager_id=ct.manager_id AND g.customer_id=ct.customer_id AND g.type='CREDIT' AND (g.reference_id LIKE ('SESSION_REVIEW_'||ct.session_id::text||'_CUST_'||ct.customer_id::text||'%') OR g.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=ct.manager_id AND i.session_id=ct.session_id AND i.customer_id=ct.customer_id))),0)::bigint AS earned_gn, COALESCE((SELECT SUM(l.amount) FROM lp_ledger l WHERE l.manager_id=ct.manager_id AND l.customer_id=ct.customer_id AND l.type='CREDIT' AND (l.reference_id=ct.session_id::text OR l.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=ct.manager_id AND i.session_id=ct.session_id AND i.customer_id=ct.customer_id))),0)::bigint AS earned_lp FROM customer_transactions ct WHERE ct.manager_id=$1 AND ct.status <> 'DELETED' ORDER BY ct.created_at DESC LIMIT 1000`,[manager(req)]);res.json(q.rows);}catch(e){console.error('[customer-transactions/list]',e?.message||e);res.status(500).json({error:'Internal server error'});} });
   app.delete('/api/v1/manager/customer-transactions/:id', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const id=Number(req.params.id);if(!Number.isSafeInteger(id)||id<=0)return res.status(422).json({error:'Invalid transaction id'});const mid=manager(req);let q=await pool.query("UPDATE customer_transactions SET status='DELETED',updated_at=NOW() WHERE id=$1 AND manager_id=$2 AND status <> 'DELETED' RETURNING id,local_id",[id,mid]);if(!q.rows[0]) q=await pool.query("UPDATE customer_transactions SET status='DELETED',updated_at=NOW() WHERE local_id=$1 AND manager_id=$2 AND status <> 'DELETED' RETURNING id,local_id",[id,mid]);if(!q.rows[0]){const existing=await pool.query("SELECT id,local_id,status FROM customer_transactions WHERE manager_id=$1 AND (id=$2 OR local_id=$2) LIMIT 1",[mid,id]);if(existing.rows[0] && existing.rows[0].status==='DELETED')return res.json({success:true,id:existing.rows[0].id,localId:existing.rows[0].local_id||null,idempotent:true});return res.status(404).json({error:'Transaction not found'});}res.json({success:true,id:q.rows[0].id,localId:q.rows[0].local_id||null});}catch(e){console.error('[customer-transactions/delete]',e?.message||e);res.status(500).json({error:'Internal server error'});} });
   app.get('/api/v1/customer/transactions', requireCustomerAuth, async(req,res)=>{try{const q=await pool.query('SELECT * FROM customer_transactions WHERE manager_id=$1 AND customer_id=$2 ORDER BY created_at DESC LIMIT 500',[req.user.managerId,req.user.id]);res.json(q.rows);}catch(e){res.status(500).json({error:'Internal server error'});} });
   app.get('/api/v1/manager/payment-methods', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const q=await pool.query('SELECT * FROM manager_payment_methods WHERE manager_id=$1 ORDER BY id',[manager(req)]);res.json({success:true,methods:q.rows});}catch(e){res.status(500).json({error:'Internal server error'});} });
@@ -682,5 +720,68 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
     } catch(e){console.error('[subscription-buy]',e?.code||'',e?.message||'');res.status(500).json({error:'Internal server error'});}
   });
   app.post('/api/v1/subscriptions/set-password', async(req,res)=>{try{const b=req.body||{},code=String(b.licenseCode||'').trim(),phone=String(b.userPhone||b.user_phone||'').trim(),deviceId=String(b.deviceId||b.device_id||'').trim(),secret=String(b.activationSecret||'').trim(),password=String(b.password||'');if(!/^PENDING_\d+$/.test(code)||password.length<8||!secret)return res.status(400).json(false);const q=await pool.query('SELECT manager_id,status,buyer_phone,buyer_device_id,activation_secret_hash FROM subscription_payment_requests WHERE id=$1',[Number(code.slice(8))]);const r=q.rows[0];if(!r?.manager_id||r.status!=='CONFIRMED'||!r.activation_secret_hash)return res.status(403).json(false);if(!await bcrypt.compare(secret,r.activation_secret_hash))return res.status(403).json(false);const phoneMatch=phone && r.buyer_phone && phone===String(r.buyer_phone),deviceMatch=deviceId && r.buyer_device_id && deviceId===String(r.buyer_device_id);if(!phoneMatch && !deviceMatch)return res.status(403).json(false);const hash=await bcrypt.hash(password,12);await pool.query('UPDATE managers SET password_hash=$1,updated_at=NOW() WHERE id=$2',[hash,r.manager_id]);await pool.query('UPDATE subscription_payment_requests SET activation_secret_hash=NULL,updated_at=NOW() WHERE id=$1',[Number(code.slice(8))]);res.json(true);}catch(e){res.status(500).json(false);} });
+  app.get('/api/v1/manager/sessions/:sessionId/settlement-review', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{
+    try{
+      const mid=manager(req), sid=String(req.params.sessionId||'');
+      const session=(await pool.query("SELECT id,station_id,status,started_at,ended_at,game_cost,buffet_cost,total_cost FROM game_sessions WHERE id=$1 AND manager_id=$2",[sid,mid])).rows[0];
+      if(!session) return res.status(404).json({error:'Session not found'});
+      const participants=(await pool.query("SELECT customer_id,participant_key,participant_name,is_guest,is_payer,prepayment_amount FROM session_participants WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sid,mid])).rows;
+      const poolAmount=participants.reduce((n,p)=>n+Number(p.prepayment_amount||0),0);
+      const refunded=(await pool.query("SELECT COALESCE(SUM(amount),0) amount FROM wallet_transactions WHERE manager_id=$1 AND reference_type='SESSION_PREPAYMENT_REFUND' AND reference_id=$2",[mid,sid])).rows[0].amount;
+      return res.json({success:true,session,participants,totalPrepayment:String(poolAmount),refundedPrepayment:String(refunded),remainingRefundable:String(Math.max(0,poolAmount-Number(refunded||0)))});
+    }catch(e){return res.status(500).json({error:'Settlement review lookup failed'});}
+  });
+
+  app.post('/api/v1/manager/sessions/:sessionId/prepayment-refund', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{
+    const c=await pool.connect();
+    try{
+      const mid=manager(req), sid=String(req.params.sessionId||''), allocations=Array.isArray(req.body?.allocations)?req.body.allocations:[];
+      if(!sid || allocations.length===0) return res.status(400).json({error:'allocations are required'});
+      await c.query('BEGIN');
+      const session=(await c.query("SELECT id,status FROM game_sessions WHERE id=$1 AND manager_id=$2 FOR UPDATE",[sid,mid])).rows[0];
+      if(!session){await c.query('ROLLBACK');return res.status(404).json({error:'Session not found'});}
+      const participants=(await c.query("SELECT customer_id,participant_key,participant_name,is_guest,prepayment_amount FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND is_payer=TRUE FOR UPDATE",[sid,mid])).rows;
+      const byId=new Map(participants.filter(p=>p.customer_id).map(p=>[Number(p.customer_id),p]));
+      const totalPool=participants.reduce((n,p)=>n+Number(p.prepayment_amount||0),0);
+      const already=Number((await c.query("SELECT COALESCE(SUM(amount),0) amount FROM wallet_transactions WHERE manager_id=$1 AND reference_type='SESSION_PREPAYMENT_REFUND' AND reference_id=$2",[mid,sid])).rows[0].amount||0);
+      const requested=allocations.reduce((n,a)=>n+Math.max(0,Math.trunc(Number(a.amount||0))),0);
+      if(requested<=0 || already+requested>totalPool+0.0001){await c.query('ROLLBACK');return res.status(422).json({error:'Refund exceeds the unused initial-payment pool',totalPrepayment:String(totalPool),alreadyRefunded:String(already),requested:String(requested)});}
+      const results=[];
+      for(const a of allocations){
+        const cid=Number(a.customerId||0), amount=Math.max(0,Math.trunc(Number(a.amount||0)));
+        if(amount<=0) continue;
+        const participant=byId.get(cid);
+        if(!participant){await c.query('ROLLBACK');return res.status(422).json({error:'Customer is not a payer in this session',customerId:cid});}
+        const key='session-prepayment-refund:'+sid+':'+cid;
+        const ins=await c.query("INSERT INTO wallet_transactions(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_PREPAYMENT_REFUND',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",[mid,cid,amount,sid,key]);
+        if(ins.rowCount>0){
+          await c.query("UPDATE customers SET wallet_balance=wallet_balance+$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3",[amount,cid,mid]);
+          results.push({customerId:cid,amount:String(amount),refunded:true});
+        }else results.push({customerId:cid,amount:String(amount),refunded:false,idempotent:true});
+      }
+      await c.query('COMMIT');
+      return res.json({success:true,sessionId:sid,results});
+    }catch(e){try{await c.query('ROLLBACK')}catch(_){}return res.status(500).json({error:'Prepayment refund failed'});}
+    finally{c.release();}
+  });
+
+  app.post('/api/v1/manager/club/lp-ledger', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{
+    const c=await pool.connect();
+    try{
+      const b=req.body||{}, mid=manager(req), customerId=Number(b.customerId||0), amount=Math.max(0,Math.trunc(Number(b.lpAmount||b.amount||0)));
+      const key=String(req.headers['idempotency-key']||b.idempotencyKey||'').trim();
+      if(!customerId||amount<=0||!key)return res.status(400).json({error:'Valid customerId, amount and idempotency key are required'});
+      await c.query('BEGIN');
+      const customer=(await c.query('SELECT id FROM customers WHERE id=$1 AND manager_id=$2 FOR UPDATE',[customerId,mid])).rows[0];
+      if(!customer){await c.query('ROLLBACK');return res.status(404).json({error:'Customer not found'});}
+      const prior=(await c.query('SELECT * FROM lp_ledger WHERE manager_id=$1 AND idempotency_key=$2 LIMIT 1 FOR UPDATE',[mid,key])).rows[0];
+      if(prior){await c.query('COMMIT');return res.json({...prior,idempotent:true});}
+      const q=await c.query("INSERT INTO lp_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT',$4,$5,$6) RETURNING *",[mid,customerId,amount,String(b.referenceType||'SESSION_PAYMENT'),String(b.referenceId||''),key]);
+      await c.query('UPDATE customers SET lp_balance=lp_balance+$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3',[amount,customerId,mid]);
+      await c.query('COMMIT');return res.json(q.rows[0]);
+    }catch(e){try{await c.query('ROLLBACK')}catch(_){}return res.status(500).json({error:'LP ledger update failed'});}
+    finally{c.release();}
+  });
+
   app.post('/api/v1/coupons/validate', async(req,res)=>res.json({valid:false,discountPercent:0,message:'کد تخفیف معتبر یافت نشد.'}));
 };

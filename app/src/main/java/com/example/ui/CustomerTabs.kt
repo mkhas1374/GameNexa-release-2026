@@ -568,12 +568,8 @@ fun CustomerHistoryTab(viewModel: GameNetViewModel) {
 
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
-                                val earnedGnPoints = remember(trans) {
-                                    val playHours = trans.playMinutes / 60.0
-                                    val pPts = playHours * 20.0
-                                    val sPts = (trans.amount / 1000.0) * 1.0
-                                    (pPts + sPts).toInt()
-                                }
+                                val earnedGnPoints = trans.earnedGn
+                                val earnedLpPoints = trans.earnedLp
 
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
@@ -591,6 +587,22 @@ fun CustomerHistoryTab(viewModel: GameNetViewModel) {
                                             Text("پاداش GN دریافتی این نشست:", fontSize = 11.sp, color = Color(0xFF3B82F6), fontWeight = FontWeight.Bold)
                                         }
                                         Text("+$earnedGnPoints GN", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF3B82F6))
+                                    }
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFF42A5F5).copy(alpha = 0.10f),
+                                    border = BorderStroke(0.5.dp, Color(0xFF42A5F5).copy(alpha = 0.3f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("🏆 LP دریافتی از این نشست:", fontSize = 11.sp, color = Color(0xFF1565C0), fontWeight = FontWeight.Bold)
+                                        Text("+$earnedLpPoints LP", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF1565C0))
                                     }
                                 }
 
@@ -644,6 +656,7 @@ fun CustomerHistoryTab(viewModel: GameNetViewModel) {
                                                 appendLine("✅ وضعیت: تسویه کامل")
                                             }
                                             appendLine("💎 پاداش GN کسب شده: +$earnedGnPoints GN")
+                                            appendLine("🏆 پاداش LP کسب شده: +$earnedLpPoints LP")
                                             appendLine("================================")
                                             appendLine("    با تشکر از حضور گرم شما!")
                                         }
