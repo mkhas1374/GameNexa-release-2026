@@ -3478,7 +3478,7 @@ fun ReservationFormDialog(
 }
 
 @Composable
-private fun JalaliReservationDatePicker(
+fun JalaliReservationDatePicker(
     year: Int,
     month: Int,
     day: Int,
