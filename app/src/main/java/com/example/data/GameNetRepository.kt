@@ -863,14 +863,10 @@ class GameNetRepository(private val db: AppDatabase) {
     suspend fun deleteCustomer(customer: Customer) = withContext(Dispatchers.IO) {
         if (com.example.data.network.NetworkClient.isTrialMode) return@withContext
         try {
+            // Normal customer deletion is an archive, not a purge. Keep every local
+            // reservation, invoice/transaction, point and GN record intact; only remove the
+            // active customer row from the active directory.
             customerDao.delete(customer)
-            customerTransactionDao.deleteByCustomerId(customer.id)
-            if (customer.phoneNumber.isNotBlank()) {
-                reservationDao.deleteByPhone(customer.phoneNumber)
-                reservationDao.deleteByPhone(com.example.data.network.SelfHostedManager.normalizePhone(customer.phoneNumber))
-            }
-            pointLogDao.deleteByCustomerId(customer.id)
-            gnLedgerDao.deleteByCustomerId(customer.id)
         } catch (e: Exception) {
             e.printStackTrace()
         }

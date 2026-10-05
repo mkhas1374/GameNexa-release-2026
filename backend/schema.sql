@@ -167,7 +167,7 @@ ALTER SEQUENCE public.customer_point_logs_id_seq OWNED BY public.customer_point_
 CREATE TABLE public.customer_transactions (
     id bigint NOT NULL,
     manager_id character varying(50) NOT NULL,
-    customer_id integer NOT NULL,
+    customer_id integer,
     customer_name character varying(150) DEFAULT ''::character varying NOT NULL,
     station_name character varying(150) DEFAULT ''::character varying NOT NULL,
     title character varying(255) DEFAULT ''::character varying NOT NULL,

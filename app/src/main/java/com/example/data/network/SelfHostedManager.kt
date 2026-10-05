@@ -1317,7 +1317,7 @@ object SelfHostedManager {
                     val id = o.optLong("id", o.optLong("localId", 0L))
                     val customerId = o.optLong("customerId", o.optLong("customer_id", 0L))
                     val ts = o.optLong("timestamp", o.optLong("event_timestamp", 0L))
-                    if (id <= 0L || customerId <= 0L) continue
+                    if (id <= 0L) continue
                     list += CustomerTransaction(
                         id = id,
                         customerId = customerId,
