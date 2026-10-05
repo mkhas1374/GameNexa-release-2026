@@ -763,7 +763,6 @@ class GameNetRepository(private val db: AppDatabase) {
 
     private suspend fun migrateLocalCustomerId(oldId: Long, newId: Long) {
         if (oldId <= 0L || newId <= 0L || oldId == newId) return
-        customerTransactionDao.migrateCustomerId(oldId, newId)
         gnLedgerDao.migrateCustomerId(oldId, newId)
         pointLogDao.migrateCustomerId(oldId, newId)
         behaviorLogDao.migrateCustomerId(oldId, newId)
