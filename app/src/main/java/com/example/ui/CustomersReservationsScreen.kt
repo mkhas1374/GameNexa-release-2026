@@ -2320,7 +2320,7 @@ fun PointHistoryDialog(
                 }
 
                 managerActivity?.let { activity ->
-                    if (activity.transactions.isNotEmpty() || activity.lpLedger.isNotEmpty()) {
+                    if (activity.transactions.isNotEmpty() || activity.gnLedger.isNotEmpty() || activity.lpLedger.isNotEmpty()) {
                         Card(
                             shape = RoundedCornerShape(8.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
@@ -2338,6 +2338,22 @@ fun PointHistoryDialog(
                                         text = sourceText + " • GN: +" + String.format(Locale.US, "%,d", tx.earnedGn) + " • LP: +" + String.format(Locale.US, "%,d", tx.earnedLp) + " • " + tx.status,
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                activity.gnLedger.forEach { gn ->
+                                    val source = when (gn.transactionType.uppercase()) {
+                                        "GAME_REWARD" -> "بابت بازی"
+                                        "BUFFET_REWARD" -> "بابت بوفه"
+                                        "GAME_AND_BUFFET_REWARD" -> "بابت بازی + بوفه"
+                                        "BEHAVIOR_REWARD" -> "تشویقی مدیر / رفتار"
+                                        "ADMIN_ADJUSTMENT" -> "اصلاح یا تشویق مدیر"
+                                        "REFERRAL" -> "معرفی / دعوت"
+                                        else -> gn.description.ifBlank { gn.transactionType.ifBlank { "سایر" } }
+                                    }
+                                    Text(
+                                        text = "GN +" + String.format(Locale.US, "%,d", gn.gnAmount) + " • " + source + " • مرجع: " + gn.referenceId,
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.secondary
                                     )
                                 }
                                 activity.lpLedger.forEach { lp ->

@@ -274,7 +274,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
         settings.filter { it.key.startsWith("customer_restore_outbox_") && it.value.isNotBlank() }.forEach { setting ->
             val customer = runCatching { customerFromJson(org.json.JSONObject(setting.value)) }.getOrNull() ?: return@forEach
-            if (runCatching { SelfHostedManager.restoreCustomer(customer.id) }.getOrDefault(false)) {
+            if (runCatching { SelfHostedManager.restoreCustomer(customer.id, customer.phoneNumber) }.getOrDefault(false)) {
                 repository.saveSetting(setting.key, "")
                 repository.saveSetting("local_archived_customer_" + customer.id, "")
                 repository.insertCustomer(customer)
@@ -282,7 +282,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
         settings.filter { it.key.startsWith("customer_purge_outbox_") && it.value.isNotBlank() }.forEach { setting ->
             val customer = runCatching { customerFromJson(org.json.JSONObject(setting.value)) }.getOrNull() ?: return@forEach
-            val ok = runCatching { SelfHostedManager.purgeArchivedCustomer(customer.id) }.getOrDefault(false)
+            val ok = runCatching { SelfHostedManager.purgeArchivedCustomer(customer.id, customer.phoneNumber) }.getOrDefault(false)
             if (ok || SelfHostedManager.lastCustomerMutationHttpCode == 404) {
                 repository.saveSetting(setting.key, "")
                 repository.saveSetting("local_archived_customer_" + customer.id, "")
@@ -1007,6 +1007,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 encryptSetting("enc_manager_id", finalManagerId)
                 encryptSetting("enc_user_id", finalManagerId)
                 encryptSetting("enc_auth_phone", cleanUser)
+                encryptSetting("enc_user_phone", cleanUser)
                 encryptSetting("enc_auth_token", serverToken)
                 NetworkClient.authToken = serverToken
                 SelfHostedManager.setManagerId(finalManagerId)
@@ -1036,10 +1037,15 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                             encryptSetting("enc_manager_id", finalManagerId)
                             encryptSetting("enc_user_id", finalManagerId)
                             encryptSetting("enc_auth_phone", cleanUser)
+                            encryptSetting("enc_user_phone", cleanUser)
                             encryptSetting("enc_auth_token", serverToken)
                             com.example.data.network.NetworkClient.authToken = serverToken
                             // Establish Manager identity before any authenticated post-login verification request.
                             SelfHostedManager.setManagerId(finalManagerId)
+                            // The subscription endpoint resolves a paid Manager by phone or an
+                            // active device binding. A fresh login has neither cached yet, so bind
+                            // this authenticated device before the first entitlement check.
+                            ensureDeviceBoundForManager(finalManagerId)
                             encryptSetting("enc_license_status", "UNKNOWN")
                             encryptSetting("enc_plan_type", "")
                             encryptSetting("enc_expire_time", "0")
@@ -4780,7 +4786,7 @@ loadSettings()
                 Toast.makeText(getApplication(), "مشتری فوراً به آرشیو منتقل شد؛ همگام‌سازی با سرور در پس‌زمینه انجام می‌شود.", Toast.LENGTH_SHORT).show()
             }
             val cloudDeleted = runCatching { SelfHostedManager.deleteCustomer(customer.id, customer.phoneNumber) }.getOrDefault(false)
-            if (cloudDeleted || SelfHostedManager.lastCustomerMutationHttpCode == 404) {
+            if (cloudDeleted) {
                 repository.saveSetting("customer_archive_outbox_" + customer.id, "")
                 repository.saveSetting("local_archived_customer_" + customer.id, "")
                 SelfHostedManager.fetchArchivedCustomersFromCloud()
@@ -4821,7 +4827,7 @@ loadSettings()
             withContext(Dispatchers.Main) {
                 Toast.makeText(getApplication(), "بازگردانی فوری انجام شد؛ همگام‌سازی با سرور در پس‌زمینه انجام می‌شود.", Toast.LENGTH_SHORT).show()
             }
-            val ok = runCatching { SelfHostedManager.restoreCustomer(customer.id) }.getOrDefault(false)
+            val ok = runCatching { SelfHostedManager.restoreCustomer(customer.id, customer.phoneNumber) }.getOrDefault(false)
             if (ok) {
                 repository.saveSetting("customer_restore_outbox_" + customer.id, "")
                 SelfHostedManager.fetchArchivedCustomersFromCloud()
@@ -4842,7 +4848,7 @@ loadSettings()
                 Toast.makeText(getApplication(), "حذف کامل محلی انجام شد؛ حذف نهایی سرور در پس‌زمینه همگام می‌شود.", Toast.LENGTH_SHORT).show()
                 onResult?.invoke(true)
             }
-            val ok = runCatching { SelfHostedManager.purgeArchivedCustomer(customer.id) }.getOrDefault(false)
+            val ok = runCatching { SelfHostedManager.purgeArchivedCustomer(customer.id, customer.phoneNumber) }.getOrDefault(false)
             if (ok || SelfHostedManager.lastCustomerMutationHttpCode == 404) {
                 repository.saveSetting("customer_purge_outbox_" + customer.id, "")
                 withContext(Dispatchers.Main) { Toast.makeText(getApplication(), "حذف کامل با سرور همگام شد و قابل بازگشت نیست.", Toast.LENGTH_SHORT).show() }
@@ -6125,6 +6131,24 @@ loadSettings()
         }
     }
 
+    private suspend fun ensureDeviceBoundForManager(userId: String): Boolean = withContext(Dispatchers.IO) {
+        if (userId.isBlank()) return@withContext false
+        val lastBoundUser = decryptSetting("enc_device_bound_user_id")
+        if (lastBoundUser == userId) return@withContext true
+        return@withContext try {
+            val api = NetworkClient.getApi(_serverUrl.value)
+            val payload = mapOf(
+                "user_id" to userId,
+                "device_id" to getDeviceId(),
+                "device_name" to "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
+                "os_version" to "Android ${Build.VERSION.RELEASE}"
+            )
+            api.addUserDevice(payload)
+            encryptSetting("enc_device_bound_user_id", userId)
+            true
+        } catch (_: Exception) { false }
+    }
+
     fun bindDeviceToUser(userId: String, onResult: ((Boolean) -> Unit)? = null) {
         if (userId.isBlank()) {
             onResult?.invoke(false)
@@ -6514,7 +6538,14 @@ loadSettings()
     }
 
     suspend fun refundUnusedPrepayment(sessionId: String, allocations: Map<Long, Long>): Boolean {
-        return com.example.data.network.SelfHostedManager.refundSessionPrepayment(sessionId, allocations)
+        val ok = com.example.data.network.SelfHostedManager.refundSessionPrepayment(sessionId, allocations)
+        if (ok) {
+            allocations.filter { it.key > 0L && it.value > 0L }.forEach { (customerId, amount) ->
+                val customer = repository.allCustomers.firstOrNull()?.firstOrNull { it.id == customerId }
+                if (customer != null) repository.insertCustomer(customer.copy(credit = customer.credit + amount))
+            }
+        }
+        return ok
     }
 
     fun getPointLogs(customerId: Long): Flow<List<PointLog>> {

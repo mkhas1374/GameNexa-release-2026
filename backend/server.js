@@ -1342,40 +1342,9 @@ app.post("/api/station/invoice/pay", requireManagerAuth, requireActiveEntitlemen
             [requestedAmountText,invoiceId,managerId]
         );
         await client.query("INSERT INTO financial_audit_logs(manager_id,customer_id,invoice_id,payment_id,event_type,amount,currency,actor,idempotency_key,metadata) VALUES($1,$2,$3,$4,'INVOICE_PAYMENT',$5,$6,'MANAGER',$7,$8::jsonb)", [managerId,invoice.customer_id,invoiceId,payment.rows[0].id,requestedAmountText,invoice.currency || "IRT",idempotencyKey,JSON.stringify({invoiceStatus:updated.rows[0].status,paidAmount:String(updated.rows[0].paid_amount),totalAmount:String(updated.rows[0].total_amount),provider:"MANAGER_CONFIRMATION"})]);
-        const config = await getManagerConfiguration(client, managerId);
-        const policy = config.settings?.policies?.loyalty?.gameSettlement || {};
-        const gnPer10000 = String(policy.gnPer10000 ?? "0").trim();
-        const lpPer10000 = String(policy.lpPer10000 ?? "0").trim();
-        const nonNegativeRate = /^(?:0|[1-9][0-9]*)(?:[.][0-9]+)?$/;
-        if (!nonNegativeRate.test(gnPer10000) || !nonNegativeRate.test(lpPer10000)) {
-            await client.query("ROLLBACK");
-            return res.status(422).json({success:false,code:"LOYALTY_POLICY_INVALID"});
-        }
-        const loyaltyConfigured = Number(gnPer10000) > 0 || Number(lpPer10000) > 0;
-        if (updated.rows[0].status === 'PAID' && loyaltyConfigured) {
-            const paidGameEligible = await client.query("SELECT game_cost FROM invoices WHERE id=$1 AND manager_id=$2", [invoiceId,managerId]);
-            const eligibleText = String(paidGameEligible.rows[0]?.game_cost || "0");
-            const loyaltyAmounts = await client.query("SELECT FLOOR(($1::numeric / 10000::numeric) * $2::numeric)::bigint AS gn_amount, FLOOR(($1::numeric / 10000::numeric) * $3::numeric)::bigint AS lp_amount", [eligibleText,gnPer10000,lpPer10000]);
-            const gnAmount = Number(loyaltyAmounts.rows[0].gn_amount || 0);
-            const lpAmount = Number(loyaltyAmounts.rows[0].lp_amount || 0);
-            if (invoice.customer_id == null) {
-                if (gnAmount > 0 || lpAmount > 0) { await client.query("ROLLBACK"); return res.status(422).json({success:false,code:"LOYALTY_REQUIRES_REGISTERED_CUSTOMER"}); }
-            }
-            if (gnAmount > 0) {
-                const ins = await client.query("INSERT INTO gn_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_PAYMENT',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id", [managerId,invoice.customer_id,gnAmount,invoiceId,"invoice_gn_"+invoiceId]);
-                if (ins.rowCount) await client.query("UPDATE customers SET gn_balance=gn_balance+$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3", [gnAmount,invoice.customer_id,managerId]);
-            }
-            if (lpAmount > 0) {
-                const ins = await client.query("INSERT INTO lp_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_PAYMENT',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id", [managerId,invoice.customer_id,lpAmount,invoiceId,"invoice_lp_"+invoiceId]);
-                if (ins.rowCount) await client.query("UPDATE customers SET lp_balance=lp_balance+$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3", [lpAmount,invoice.customer_id,managerId]);
-            }
-            if (gnAmount > 0 || lpAmount > 0) {
-                await client.query(
-                    "INSERT INTO financial_audit_logs(manager_id,customer_id,invoice_id,event_type,amount,currency,actor,idempotency_key,metadata) VALUES($1,$2,$3,'INVOICE_LOYALTY_SETTLEMENT',$4,$5,'SYSTEM',$6,$7::jsonb)",
-                    [managerId,invoice.customer_id,invoiceId,String(gnAmount),invoice.currency || "IRT","invoice_loyalty_"+invoiceId,JSON.stringify({gnAmount,lpAmount,gameCost:eligibleText,gnRatePer10000:gnPer10000,lpRatePer10000:lpPer10000})]
-                );
-            }
-        }
+        // Loyalty is deliberately NOT awarded at invoice payment time. Station settlement
+        // creates an UNREVIEWED transaction; the Manager reviews/approves it first, and only
+        // that review action awards GN/LP. This prevents automatic financial determination.
         await client.query("COMMIT");
         return res.json({success:true,payment:payment.rows[0],invoice:{id:invoiceId,paidAmount:updated.rows[0].paid_amount,totalAmount:updated.rows[0].total_amount,status:updated.rows[0].status}});
     } catch(e) {

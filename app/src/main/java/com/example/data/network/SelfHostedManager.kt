@@ -611,7 +611,7 @@ object SelfHostedManager {
         try {
             lastCustomerMutationHttpCode = 0
             var canonicalId = customerId
-            var req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers/$canonicalId").headers(getBaseHeaders()).delete().build()
+            var req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers/$canonicalId" + if(phoneNumber.isNotBlank()) "?phone=" + java.net.URLEncoder.encode(phoneNumber, "UTF-8") else "").headers(getBaseHeaders()).delete().build()
             client.newCall(req).execute().use { resp ->
                 lastCustomerMutationHttpCode = resp.code
                 if (resp.isSuccessful) {
@@ -633,7 +633,7 @@ object SelfHostedManager {
                     }
                 }
                 if(canonicalId>0L && canonicalId!=customerId){
-                    req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers/$canonicalId").headers(getBaseHeaders()).delete().build()
+                    req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers/$canonicalId" + if(phoneNumber.isNotBlank()) "?phone=" + java.net.URLEncoder.encode(phoneNumber, "UTF-8") else "").headers(getBaseHeaders()).delete().build()
                     client.newCall(req).execute().use { resp ->
                         lastCustomerMutationHttpCode=resp.code
                         if(resp.isSuccessful){
@@ -673,9 +673,9 @@ object SelfHostedManager {
     }
 
 
-    suspend fun restoreCustomer(customerId: Long): Boolean = withContext(Dispatchers.IO) {
+    suspend fun restoreCustomer(customerId: Long, phoneNumber: String = ""): Boolean = withContext(Dispatchers.IO) {
         try {
-            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers/$customerId/restore").headers(getBaseHeaders()).post("{}".toRequestBody(JSON_MEDIA)).build()
+            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers/$customerId/restore" + if(phoneNumber.isNotBlank()) "?phone=" + java.net.URLEncoder.encode(phoneNumber, "UTF-8") else "").headers(getBaseHeaders()).post("{}".toRequestBody(JSON_MEDIA)).build()
             client.newCall(req).execute().use { resp ->
                 lastCustomerMutationHttpCode = resp.code
                 resp.isSuccessful
@@ -687,11 +687,11 @@ object SelfHostedManager {
         }
     }
 
-    suspend fun purgeArchivedCustomer(customerId: Long): Boolean = withContext(Dispatchers.IO) {
+    suspend fun purgeArchivedCustomer(customerId: Long, phoneNumber: String = ""): Boolean = withContext(Dispatchers.IO) {
         try {
             lastCustomerMutationHttpCode = 0
             val req = Request.Builder()
-                .url("$SERVER_URL/api/v1/manager/customers/$customerId/purge")
+                .url("$SERVER_URL/api/v1/manager/customers/$customerId/purge" + if(phoneNumber.isNotBlank()) "?phone=" + java.net.URLEncoder.encode(phoneNumber, "UTF-8") else "")
                 .headers(getBaseHeaders())
                 .delete()
                 .build()
