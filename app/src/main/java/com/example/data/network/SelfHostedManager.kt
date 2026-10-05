@@ -10,6 +10,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.delay
 import okhttp3.*
 import okhttp3.logging.HttpLoggingInterceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -117,6 +120,12 @@ data class CloudAuditLog(
 )
 
 object SelfHostedManager {
+    // Serialize and pace settings writes so concurrent startup/config hydration cannot
+    // burst through the Nginx API rate limit and turn healthy requests into HTTP 503s.
+    private val managerSettingsWriteMutex = Mutex()
+    private var lastManagerSettingsWriteAtMs = 0L
+    private const val MIN_MANAGER_SETTINGS_WRITE_INTERVAL_MS = 125L
+
     @Volatile var lastStationStartWasTransportFailure: Boolean = false
     @Volatile var lastStationStartError: String = ""
     @Volatile var lastSettlementHttpCode: Int = 0
@@ -1063,30 +1072,35 @@ object SelfHostedManager {
     }
 
     suspend fun saveManagerSetting(key: String, value: String): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val body = JSONObject().apply { put("key", key); put("value", value) }
-                .toString().toRequestBody(JSON_MEDIA)
-            val request = Request.Builder()
-                .url("$SERVER_URL/api/v1/manager/settings")
-                .headers(getBaseHeaders())
-                .post(body)
-                .build()
-            client.newCall(request).execute().use { response ->
-                val responseBody = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    Log.w(TAG, "Manager setting sync failed: HTTP " + response.code + " " + responseBody)
-                    return@withContext false
+        managerSettingsWriteMutex.withLock {
+            try {
+                val now = System.currentTimeMillis()
+                val waitMs = (MIN_MANAGER_SETTINGS_WRITE_INTERVAL_MS - (now - lastManagerSettingsWriteAtMs)).coerceAtLeast(0L)
+                if (waitMs > 0L) delay(waitMs)
+
+                val body = JSONObject().apply { put("key", key); put("value", value) }
+                    .toString().toRequestBody(JSON_MEDIA)
+                val request = Request.Builder()
+                    .url("$SERVER_URL/api/v1/manager/settings")
+                    .headers(getBaseHeaders())
+                    .post(body)
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    lastManagerSettingsWriteAtMs = System.currentTimeMillis()
+                    val responseBody = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        Log.w(TAG, "Manager setting sync failed: HTTP " + response.code + " " + responseBody)
+                        return@withLock false
+                    }
+                    val updated = _cloudAppConfigs.value.toMutableMap()
+                    updated[key] = value
+                    _cloudAppConfigs.value = updated
+                    true
                 }
-                // Keep the in-memory cloud configuration cache coherent with the value
-                // just persisted; otherwise the next sync can resurrect the old value.
-                val updated = _cloudAppConfigs.value.toMutableMap()
-                updated[key] = value
-                _cloudAppConfigs.value = updated
-                true
+            } catch (_: Exception) {
+                Log.w(TAG, "saveManagerSetting failed")
+                false
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "saveManagerSetting error: ${e.message}")
-            false
         }
     }
 
