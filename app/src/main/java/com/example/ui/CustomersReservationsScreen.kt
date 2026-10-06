@@ -1077,7 +1077,11 @@ fun CustomerTransactionCard(
 
     LaunchedEffect(showPrepaymentDialog, transaction.sessionId) {
         if (showPrepaymentDialog && transaction.sessionId.isNotBlank()) {
-            settlementReview = viewModel.fetchSettlementReview(transaction.sessionId, transaction.customerId)
+            settlementReview = viewModel.fetchSettlementReview(
+                transaction.sessionId,
+                transaction.customerId,
+                transaction.customerName.takeIf { transaction.customerId <= 0L && it.isNotBlank() }
+            )
             prepaymentAllocations = emptyMap()
         }
     }
