@@ -602,10 +602,16 @@ fun StationCard(
             }
 
             if (showMultiPrepaymentDialog) {
-                val stationCustomers = station.getStationCustomers(allCustomers)
+                val stationCustomers = selectedCustomerIds.mapIndexed { index, id ->
+                    val name = selectedCustomerNames.getOrNull(index)?.takeIf { it.isNotBlank() }
+                        ?: allCustomers.find { it.id == id }?.fullName
+                        ?: if (id < 0) "مهمان " + (-id) else "مشتری " + id
+                    Customer(id = id, fullName = name, phoneNumber = "")
+                }
                 MultiCustomerPrepaymentDialog(
                     selectedCustomers = stationCustomers,
                     initialPrepayments = pendingCustomerPrepayments,
+                    totalPrepayment = payInput.filter(Char::isDigit).toLongOrNull() ?: 0L,
                     onDismiss = { showMultiPrepaymentDialog = false },
                     onConfirm = { prepayMap, totalSum ->
                         showMultiPrepaymentDialog = false

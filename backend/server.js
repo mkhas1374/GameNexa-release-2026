@@ -996,20 +996,48 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
         res.locals.diagnosticCode='INVALID_START_BILLING_INPUT';
         return res.status(422).json({success:false,code:'INVALID_START_BILLING_INPUT'});
     }
+    // Initial payment belongs to the session first, then is allocated across every payer.
+    // Payers may be registered customers, transient customers, or guests. A Manager must
+    // never be blocked from starting a real session merely because the UI did not manually
+    // enter an allocation map. When no explicit allocation is supplied, split the exact
+    // integer amount equally and put any indivisible remainder on the final payer.
     const normalizedCustomerPrepayments = {};
+    const participantByBillingKey = new Map();
+    participants.forEach((p,index) => {
+        const billingKey = p.isGuest || !p.customerId ? String(-(index + 1)) : String(p.customerId);
+        participantByBillingKey.set(billingKey,p);
+        participantByBillingKey.set(String(p.participantKey),p);
+    });
     for (const [key, value] of Object.entries(customerPrepayments)) {
-        const customerId = Number(key);
+        const billingKey = String(key);
         const amount = Number(value);
-        if (Number.isSafeInteger(customerId) && customerId > 0 && Number.isSafeInteger(amount) && amount > 0) {
-            normalizedCustomerPrepayments[String(customerId)] = amount;
+        if (!Number.isSafeInteger(amount) || amount < 0) {
+            return res.status(422).json({success:false,code:'INVALID_INITIAL_PREPAYMENT_ALLOCATION',error:'Invalid customer initial-payment allocation',customerId:billingKey});
         }
+        if (amount === 0) continue;
+        if (!participantByBillingKey.has(billingKey)) {
+            return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_PARTICIPANT_NOT_FOUND',error:'Initial-payment allocation does not belong to a participant in this session',customerId:billingKey});
+        }
+        normalizedCustomerPrepayments[billingKey] = amount;
+    }
+    const payerCount = participants.filter(p => p.is_payer).length;
+    const explicitAllocationTotal = Object.values(normalizedCustomerPrepayments).reduce((sum, amount) => sum + Number(amount || 0), 0);
+    if (explicitAllocationTotal > 0 && explicitAllocationTotal !== requestedPrepayment) {
+        return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_ALLOCATION_MISMATCH',error:'Customer initial-payment allocation must equal the session initial payment',initialPrepaymentAmount:requestedPrepayment,allocatedPrepaymentAmount:explicitAllocationTotal});
+    }
+    if (requestedPrepayment > 0 && payerCount > 0 && explicitAllocationTotal === 0) {
+        const payers = participants.filter(p => p.is_payer);
+        const base = Math.floor(requestedPrepayment / payers.length);
+        const remainder = requestedPrepayment % payers.length;
+        payers.forEach((p) => {
+            const participantIndex = participants.indexOf(p);
+            const key = p.isGuest || !p.customerId ? String(-(participantIndex + 1)) : String(p.customerId);
+            normalizedCustomerPrepayments[key] = base + (payers.indexOf(p) === payers.length - 1 ? remainder : 0);
+        });
     }
     const allocatedPrepaymentTotal = Object.values(normalizedCustomerPrepayments).reduce((sum, amount) => sum + Number(amount || 0), 0);
-    if (allocatedPrepaymentTotal > 0 && allocatedPrepaymentTotal !== requestedPrepayment) {
-        return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_ALLOCATION_MISMATCH',error:'Customer initial-payment allocation must equal the session initial payment',initialPrepaymentAmount:requestedPrepayment,allocatedPrepaymentAmount:allocatedPrepaymentTotal});
-    }
-    if (requestedPrepayment > 0 && participants.length > 1 && allocatedPrepaymentTotal !== requestedPrepayment) {
-        return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_ALLOCATION_REQUIRED',error:'For a multi-customer session, the initial payment must be allocated to customers before the session starts',initialPrepaymentAmount:requestedPrepayment});
+    if (requestedPrepayment > 0 && payerCount > 0 && allocatedPrepaymentTotal !== requestedPrepayment) {
+        return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_ALLOCATION_MISMATCH',error:'Initial-payment allocation does not reconcile with the session payment',initialPrepaymentAmount:requestedPrepayment,allocatedPrepaymentAmount:allocatedPrepaymentTotal});
     }
     const client = await pool.connect();
     try {
@@ -1113,12 +1141,18 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
                 "INSERT INTO session_participants(manager_id,session_id,customer_id,participant_key,participant_name,is_guest,is_payer) VALUES($1,$2,$3,$4,$5,$6,TRUE)",
                 [managerId,session.id,p.customerId,p.participantKey,p.participantName,p.isGuest]
             );
+            const participantIndex = participants.indexOf(p);
+            const billingKey = p.isGuest || !p.customerId ? String(-(participantIndex + 1)) : String(p.customerId);
+            const customerPrepayment = Number(normalizedCustomerPrepayments[billingKey] || 0);
+            if (customerPrepayment > 0) {
+                if (!p.isGuest && p.customerId) {
+                    await client.query("UPDATE session_participants SET prepayment_amount=$1::numeric WHERE session_id=$2 AND manager_id=$3 AND customer_id=$4",[customerPrepayment,session.id,managerId,p.customerId]);
+                } else {
+                    await client.query("UPDATE session_participants SET prepayment_amount=$1::numeric WHERE session_id=$2 AND manager_id=$3 AND participant_key=$4",[customerPrepayment,session.id,managerId,p.participantKey]);
+                }
+            }
             if (!p.isGuest) {
                 await client.query("INSERT INTO active_session_customer_claims(customer_id,manager_id,session_id) VALUES($1,$2,$3)",[p.customerId,managerId,session.id]);
-                const customerPrepayment = normalizedCustomerPrepayments[String(p.customerId)] || 0;
-                if (customerPrepayment > 0) {
-                    await client.query("UPDATE session_participants SET prepayment_amount=$1::numeric WHERE session_id=$2 AND manager_id=$3 AND customer_id=$4",[customerPrepayment,session.id,managerId,p.customerId]);
-                }
             }
         }
         await client.query("COMMIT");
@@ -1141,18 +1175,40 @@ app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlem
     const durationLimitMinutes = Number(req.body?.durationLimitMinutes ?? 0);
     const customerPrepayments = req.body?.customerPrepayments && typeof req.body.customerPrepayments === 'object' && !Array.isArray(req.body.customerPrepayments)
         ? req.body.customerPrepayments : {};
-    const normalizedCustomerPrepayments = {};
-    for (const [keyName, value] of Object.entries(customerPrepayments)) {
-        const customerId = Number(keyName), amount = Number(value);
-        if (Number.isSafeInteger(customerId) && customerId > 0 && Number.isSafeInteger(amount) && amount > 0) normalizedCustomerPrepayments[String(customerId)] = amount;
-    }
     const participants = Array.isArray(req.body?.participants) ? req.body.participants : [];
-    const allocatedPrepaymentTotal = Object.values(normalizedCustomerPrepayments).reduce((sum, amount) => sum + Number(amount || 0), 0);
-    if (allocatedPrepaymentTotal > 0 && allocatedPrepaymentTotal !== requestedPrepayment) {
-        return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_ALLOCATION_MISMATCH',error:'Customer initial-payment allocation must equal the session initial payment',initialPrepaymentAmount:requestedPrepayment,allocatedPrepaymentAmount:allocatedPrepaymentTotal});
+    const normalizedCustomerPrepayments = {};
+    const participantBillingKeys = new Set();
+    participants.forEach((p,index) => {
+        const cid = Number(p.customerId || 0);
+        if (cid > 0) participantBillingKeys.add(String(cid));
+        else {
+            participantBillingKeys.add(String(-(index + 1)));
+            participantBillingKeys.add(String(p.participantKey || "guest:" + cid));
+        }
+    });
+    for (const [keyName, value] of Object.entries(customerPrepayments)) {
+        const billingKey = String(keyName), amount = Number(value);
+        if (!Number.isSafeInteger(amount) || amount < 0) {
+            return res.status(422).json({success:false,code:'INVALID_INITIAL_PREPAYMENT_ALLOCATION',error:'Invalid customer initial-payment allocation',customerId:billingKey});
+        }
+        if (amount > 0 && !participantBillingKeys.has(billingKey)) {
+            return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_PARTICIPANT_NOT_FOUND',error:'Initial-payment allocation does not belong to a participant in this session',customerId:billingKey});
+        }
+        if (amount > 0) normalizedCustomerPrepayments[billingKey] = amount;
     }
-    if (requestedPrepayment > 0 && participants.length > 1 && allocatedPrepaymentTotal !== requestedPrepayment) {
-        return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_ALLOCATION_REQUIRED',error:'For a multi-customer session, the initial payment must be allocated to customers before the session starts',initialPrepaymentAmount:requestedPrepayment});
+    const payers = participants;
+    const explicitAllocationTotal = Object.values(normalizedCustomerPrepayments).reduce((sum, amount) => sum + Number(amount || 0), 0);
+    if (explicitAllocationTotal > 0 && explicitAllocationTotal !== requestedPrepayment) {
+        return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_ALLOCATION_MISMATCH',error:'Customer initial-payment allocation must equal the session initial payment',initialPrepaymentAmount:requestedPrepayment,allocatedPrepaymentAmount:explicitAllocationTotal});
+    }
+    if (requestedPrepayment > 0 && payers.length > 0 && explicitAllocationTotal === 0) {
+        const base = Math.floor(requestedPrepayment / payers.length);
+        const remainder = requestedPrepayment % payers.length;
+        payers.forEach((p,index) => {
+            const cid = Number(p.customerId || 0);
+            const key = cid > 0 ? String(cid) : String(p.participantKey || "guest:" + cid);
+            normalizedCustomerPrepayments[key] = base + (index === payers.length - 1 ? remainder : 0);
+        });
     }
     const key = String(req.headers["idempotency-key"] || "").trim();
     if (!managerId || !sessionId || !isUuid || !key || !Number.isInteger(stationId) || stationId <= 0 || !Number.isFinite(startTimeMillis) || !consoleType || controllerCount < 1 || controllerCount > 4 || !Number.isSafeInteger(requestedPrepayment) || requestedPrepayment < 0 || !Number.isSafeInteger(durationLimitMinutes) || durationLimitMinutes < 0) return res.status(400).json({success:false,error:"Invalid offline session start payload"});
@@ -1185,7 +1241,7 @@ app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlem
         const pricingSnapshot = {source:"MANAGER_CONFIGURATION_REVISION",configurationRevisionId:configuration.id,configurationVersion:configuration.version_number,currency:configuration.settings?.currency || "IRT",consoleType:canonicalConsoleType,controllerCount,hourlyRate:configuredRate,initialPrepaymentAmount:requestedPrepayment,durationLimitMinutes,customerPrepayments:normalizedCustomerPrepayments,capturedAt:new Date().toISOString(),offlineReconciled:true};
         await client.query("INSERT INTO game_sessions(id,manager_id,station_id,status,console_type,controller_count,started_at,pricing_snapshot) VALUES($1,$2,$3,'ACTIVE',$4,$5,$6,$7::jsonb)",[sessionId,managerId,stationId,canonicalConsoleType,controllerCount,startedAt.toISOString(),JSON.stringify(pricingSnapshot)]);
         await client.query("INSERT INTO session_events(manager_id,session_id,event_id,event_type,occurred_at,payload,sequence_no) VALUES($1,$2,$3,'START',$4,$5::jsonb,1)",[managerId,sessionId,key,startedAt.toISOString(),JSON.stringify({consoleType:canonicalConsoleType,controllerCount,offlineReconciled:true})]);
-        for (const part of participants) {
+        for (const [participantIndex, part] of participants.entries()) {
             const cid = Number(part.customerId || 0), isGuest = !(cid > 0);
             const participantKey = String(part.participantKey || (isGuest ? "guest:"+cid : "customer:"+cid));
             const participantName = String(part.name || part.participantName || "");
@@ -1194,10 +1250,17 @@ app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlem
                 if (!c.rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({success:false,code:"CUSTOMER_NOT_FOUND"}); }
             }
             await client.query("INSERT INTO session_participants(manager_id,session_id,customer_id,participant_key,participant_name,is_guest,is_payer) VALUES($1,$2,$3,$4,$5,$6,TRUE) ON CONFLICT DO NOTHING",[managerId,sessionId,isGuest?null:cid,participantKey,participantName,isGuest]);
+            const billingKey = cid > 0 ? String(cid) : String(-(participantIndex + 1));
+            const customerPrepayment = Number(normalizedCustomerPrepayments[billingKey] || 0);
+            if (customerPrepayment > 0) {
+                if (!isGuest) {
+                    await client.query("UPDATE session_participants SET prepayment_amount=$1::numeric WHERE session_id=$2 AND manager_id=$3 AND customer_id=$4",[customerPrepayment,sessionId,managerId,cid]);
+                } else {
+                    await client.query("UPDATE session_participants SET prepayment_amount=$1::numeric WHERE session_id=$2 AND manager_id=$3 AND participant_key=$4",[customerPrepayment,sessionId,managerId,participantKey]);
+                }
+            }
             if (!isGuest) {
                 await client.query("INSERT INTO active_session_customer_claims(customer_id,manager_id,session_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",[cid,managerId,sessionId]);
-                const customerPrepayment = normalizedCustomerPrepayments[String(cid)] || 0;
-                if (customerPrepayment > 0) await client.query("UPDATE session_participants SET prepayment_amount=$1::numeric WHERE session_id=$2 AND manager_id=$3 AND customer_id=$4",[customerPrepayment,sessionId,managerId,cid]);
             }
         }
         await client.query("COMMIT");
@@ -1578,7 +1641,7 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
                 const invoicePricingSnapshot = {...pricing,clubTier:tier,gameDiscountPercent,buffetDiscountPercent,fixedDiscountToman,prepaymentAmount:prepayment.toString(),appliedPrepayment:appliedPrepayment.toString()};
                 await client.query(
                     "INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,$3,$4,$5,$6,'IRT',$7,$8,($7::numeric+$8::numeric),$9,$10,$11::jsonb,$12::jsonb,$13::jsonb) ON CONFLICT(manager_id,invoice_number) DO UPDATE SET status=EXCLUDED.status,game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,paid_amount=EXCLUDED.paid_amount,settlement_idempotency_key=COALESCE(invoices.settlement_idempotency_key,EXCLUDED.settlement_idempotency_key),pricing_snapshot=EXCLUDED.pricing_snapshot,customer_snapshot=EXCLUDED.customer_snapshot,updated_at=NOW()",
-                    [invoiceNumber,managerId,payer.customer_id,sessionId,session.station_id,invoiceStatus,invoiceGameCost.toString(),invoiceBuffetCost.toString(),appliedPrepayment.toString(),"settle_"+sessionId+"_"+(payer.customer_id || "guest")+"_"+payer.participant_key,JSON.stringify(invoicePricingSnapshot),JSON.stringify({id:payer.customer_id || null,name:payer.participant_name,isGuest:Boolean(payer.is_guest)}),JSON.stringify({id:managerId})]
+                    [invoiceNumber,managerId,payer.customer_id,sessionId,session.station_id,invoiceStatus,invoiceGameCost.toString(),invoiceBuffetCost.toString(),appliedPrepayment.toString(),"settle_"+sessionId+"_"+(payer.customer_id || "guest")+"_"+payer.participant_key,JSON.stringify(invoicePricingSnapshot),JSON.stringify({id:payer.customer_id || null,name:payer.participant_name,isGuest:Boolean(payer.is_guest),participantKey:payer.participant_key}),JSON.stringify({id:managerId})]
                 );
             }
         }

@@ -2993,7 +2993,7 @@ loadSettings()
 
             val finalPrepaymentsMap = mutableMapOf<Long, Long>()
             customerPrepaymentsMap?.forEach { (id, amount) ->
-                if (id > 0L && amount > 0L) finalPrepaymentsMap[id] = amount
+                if (id != 0L && amount > 0L) finalPrepaymentsMap[id] = amount
             }
 
             val requestedStart = System.currentTimeMillis()
@@ -6560,8 +6560,8 @@ loadSettings()
     suspend fun fetchManagerCustomerActivity(customerId: Long): com.example.data.network.ManagerCustomerActivity {
         return com.example.data.network.SelfHostedManager.fetchManagerCustomerActivity(customerId)
     }
-    suspend fun fetchSettlementReview(sessionId: String, customerId: Long? = null): com.example.data.network.SettlementReview? {
-        return com.example.data.network.SelfHostedManager.fetchSettlementReview(sessionId, customerId)
+    suspend fun fetchSettlementReview(sessionId: String, customerId: Long? = null, participantName: String? = null): com.example.data.network.SettlementReview? {
+        return com.example.data.network.SelfHostedManager.fetchSettlementReview(sessionId, customerId, participantName)
     }
 
     suspend fun finalizeSettlementReview(sessionId: String, decisions: List<org.json.JSONObject>): Boolean = withContext(Dispatchers.IO) {
@@ -6571,7 +6571,13 @@ loadSettings()
         for (i in 0 until results.length()) {
             val r = results.optJSONObject(i) ?: continue
             val cid = r.optLong("customerId", 0L)
-            val tx = all.firstOrNull { it.sessionId == sessionId && it.customerId == cid && it.status != "DELETED" } ?: continue
+            val customerName = r.optString("customerName", "")
+            val tx = all.firstOrNull {
+                it.sessionId == sessionId &&
+                    it.status != "DELETED" &&
+                    if (cid > 0L) it.customerId == cid
+                    else it.customerId <= 0L && customerName.isNotBlank() && it.customerName == customerName
+            } ?: continue
             val status = r.optString("status", "REVIEWED")
             val earnedGn = r.optLong("earnedGn", 0L)
             val earnedLp = r.optLong("earnedLp", 0L)

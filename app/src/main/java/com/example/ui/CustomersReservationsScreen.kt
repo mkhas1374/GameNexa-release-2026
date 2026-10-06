@@ -1052,12 +1052,12 @@ fun CustomerTransactionCard(
     var isSubmitting by remember(transaction) { mutableStateOf(false) }
     var isPayFieldFocused by remember { mutableStateOf(false) }
     val payFieldBringIntoViewRequester = remember { BringIntoViewRequester() }
+    fun partialPaymentKey(customerId: Long): Long = Long.MIN_VALUE + kotlin.math.abs(customerId.coerceAtLeast(Long.MIN_VALUE + 1L))
 
     val customers by viewModel.customers.collectAsState()
     val clubLevels by viewModel.clubLevels.collectAsState()
     val gameRewardRate by viewModel.gameRewardRate.collectAsState()
     val buffetRewardRate by viewModel.buffetRewardRate.collectAsState()
-    val lpTomanRate by viewModel.lpTomanRate.collectAsState()
 
     val customer = remember(customers, transaction.customerId) {
         customers.find { it.id == transaction.customerId }
@@ -1095,10 +1095,10 @@ fun CustomerTransactionCard(
                     val method = when (selectedRefundMethod) {
                         "PARTIAL_CASH" -> "CASH"
                         "WALLET", "CASH" -> selectedRefundMethod
-                        else -> if (refund > 0L) { if (payer.customerId == 0L) "CASH" else "WALLET" } else "NONE"
+                        else -> if (refund > 0L) { if (payer.customerId <= 0L) "CASH" else "WALLET" } else "NONE"
                     }
                     val status = reviewStatuses[payer.customerId].orEmpty().ifBlank { if (payer.invoiceTotal - payer.prepaymentAmount > 0L) "DEBTOR" else "REVIEWED" }
-                    val partialPaid = if (status == "PARTIAL") prepaymentAllocations[-payer.customerId].orEmpty().filter { it.isDigit() }.toLongOrNull() ?: 0L else 0L
+                    val partialPaid = if (status == "PARTIAL") prepaymentAllocations[partialPaymentKey(payer.customerId)].orEmpty().filter { it.isDigit() }.toLongOrNull() ?: 0L else 0L
                     val payable = (payer.invoiceTotal - payer.prepaymentAmount).coerceAtLeast(0L)
                     val paidAmount = when (status) {
                         "REVIEWED" -> payer.invoiceTotal
@@ -1144,7 +1144,8 @@ fun CustomerTransactionCard(
     val origFoodCost: Double = transaction.foodCost.toDouble()
     val origTotal: Double = if (transaction.amount > 0L) transaction.amount.toDouble() else (origGameCost + origFoodCost)
     val previewGn = ((origGameCost.toLong() / 10_000L) * gameRewardRate + (origFoodCost.toLong() / 10_000L) * buffetRewardRate).coerceAtLeast(0L)
-    val previewLp = (if (lpTomanRate > 0L) origGameCost.toLong() / lpTomanRate else 0L) + ((origFoodCost.toLong() / 10_000L) * 5L)
+    // Normal session preview uses the same authoritative rates for GN and LP.
+    val previewLp = ((origGameCost.toLong() / 10_000L) * gameRewardRate + (origFoodCost.toLong() / 10_000L) * buffetRewardRate).coerceAtLeast(0L)
 
     val gameDiscount: Double = origGameCost * (gameDiscPct / 100.0)
     val discountedGameCost: Double = (origGameCost - gameDiscount).coerceAtLeast(0.0)
@@ -1633,7 +1634,7 @@ fun CustomerTransactionCard(
                                         review.payers.forEach { payer ->
                                             val payable = (payer.invoiceTotal - payer.prepaymentAmount).coerceAtLeast(0L)
                                             val refundable = payer.unusedPrepayment
-                                            val payText = prepaymentAllocations[(-payer.customerId)] ?: ""
+                                            val payText = prepaymentAllocations[partialPaymentKey(payer.customerId)] ?: ""
                                             val refundText = prepaymentAllocations[payer.customerId].orEmpty()
                                             val status = reviewStatuses[payer.customerId].orEmpty()
                                             Surface(
@@ -1662,7 +1663,7 @@ fun CustomerTransactionCard(
                                                     if (status == "PARTIAL") {
                                                         OutlinedTextField(
                                                             value = payText,
-                                                            onValueChange = { v -> prepaymentAllocations = prepaymentAllocations.toMutableMap().apply { put(-payer.customerId, v.filter { it.isDigit() }) } },
+                                                            onValueChange = { v -> prepaymentAllocations = prepaymentAllocations.toMutableMap().apply { put(partialPaymentKey(payer.customerId), v.filter { it.isDigit() }) } },
                                                             label = { Text("مبلغ پرداخت بخشی") },
                                                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                                             singleLine = true,

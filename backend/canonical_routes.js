@@ -783,7 +783,8 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       const requestedCustomerId = req.query?.customerId !== undefined && req.query?.customerId !== ''
         ? Number(req.query.customerId)
         : null;
-      if (requestedCustomerId !== null && (!Number.isSafeInteger(requestedCustomerId) || requestedCustomerId < 0)) {
+      const requestedParticipantName = String(req.query?.participantName || '').trim();
+      if (requestedCustomerId !== null && (!Number.isSafeInteger(requestedCustomerId) || (requestedCustomerId === 0 && !requestedParticipantName))) {
         return res.status(400).json({error:'Invalid customerId'});
       }
       const session=(await pool.query("SELECT id,station_id,status,started_at,ended_at,game_cost,buffet_cost,total_cost,pricing_snapshot FROM game_sessions WHERE id=$1 AND manager_id=$2",[sid,mid])).rows[0];
@@ -796,28 +797,46 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       if(participants.length===0 && Number(snapshot.initialPrepaymentAmount||0)>0){
         participants.push({customer_id:null,participant_key:'guest:walk-in',participant_name:'مشتری گذری (بدون اشتراک)',is_guest:true,is_payer:true,prepayment_amount:Number(snapshot.initialPrepaymentAmount||0)});
       }
-      const invoiceRows=(await pool.query("SELECT customer_id,game_cost,buffet_cost,total_amount,paid_amount,status FROM invoices WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sid,mid])).rows;
+      const invoiceRows=(await pool.query("SELECT invoice_number,customer_id,game_cost,buffet_cost,total_amount,paid_amount,status,customer_snapshot FROM invoices WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sid,mid])).rows;
       const orderBuffet=Number((await pool.query("SELECT COALESCE(SUM(line_total),0) amount FROM session_orders WHERE session_id=$1 AND manager_id=$2",[sid,mid])).rows[0]?.amount||0);
       const invoiceByCustomer=new Map(invoiceRows.filter(r=>r.customer_id!==null).map(r=>[Number(r.customer_id),r]));
-      const enriched=participants.map(p=>{
+      const invoiceByParticipantKey=new Map();
+      invoiceRows.filter(r=>r.customer_id===null).forEach(r=>{
+        const snapshotKey=String(r.customer_snapshot?.participantKey||'');
+        if(snapshotKey) invoiceByParticipantKey.set(snapshotKey,r);
+        const match=String(r.invoice_number||'').match(/-((?:guest|walk-in|customer)[-_].*)$/i);
+        if(match) {
+          invoiceByParticipantKey.set(match[1],r);
+          invoiceByParticipantKey.set(match[1].replace(/_/g, ':'),r);
+        }
+      });
+      const enriched=participants.map((p,pIndex)=>{
         const cid=p.customer_id===null?0:Number(p.customer_id);
-        const snapshotPre=cid>0 ? Number(snapshotPrepayments[String(cid)]||0) : 0;
+        const guestBillingId=String(-(pIndex+1));
+        const snapshotPre=cid>0
+          ? Number(snapshotPrepayments[String(cid)]||0)
+          : Number(snapshotPrepayments[guestBillingId]||snapshotPrepayments[String(p.participant_key)]||0);
         const sessionInitial=Number(snapshot.initialPrepaymentAmount||0);
         const solePayerFallback=(participants.filter(x=>x.is_payer).length===1 && p.is_payer && sessionInitial>0)?sessionInitial:0;
         const prepayment=Math.max(0,Number(p.prepayment_amount||0)||snapshotPre||solePayerFallback);
-        const inv=cid>0?invoiceByCustomer.get(cid):null;
-        const gameCost=cid>0?Number(inv?.game_cost||0):Number(session.game_cost||0);
-        const buffetCost=cid>0?Number(inv?.buffet_cost||0):Number(session.buffet_cost||0);
-        const invoiceTotal=cid>0?Number(inv?.total_amount||0):gameCost+buffetCost;
+        const inv=cid>0
+          ? invoiceByCustomer.get(cid)
+          : invoiceByParticipantKey.get(String(p.participant_key||'')) || invoiceRows.find(r=>r.customer_id===null && String(r.customer_snapshot?.name||'')===String(p.participant_name||''));
+        const gameCost=Number(inv?.game_cost||0);
+        const buffetCost=Number(inv?.buffet_cost||0);
+        const invoiceTotal=Number(inv?.total_amount||0);
         // Initial payment covers the full final invoice (game + buffet), not game time alone.
         const unusedPrepayment=Math.max(0,prepayment-invoiceTotal);
         return {...p,prepayment_amount:String(prepayment),game_cost:String(gameCost),buffet_cost:String(buffetCost),invoice_total:String(invoiceTotal),unused_prepayment:String(unusedPrepayment)};
       });
+      const guestParticipants=enriched.filter(p=>Boolean(p.is_guest) && p.customer_id===null);
       const selectedParticipants = requestedCustomerId === null
         ? enriched
-        : enriched.filter(p => requestedCustomerId === 0
-          ? Boolean(p.is_guest) && p.customer_id === null
-          : Number(p.customer_id || 0) === requestedCustomerId);
+        : requestedCustomerId < 0
+          ? (guestParticipants[-requestedCustomerId-1] ? [guestParticipants[-requestedCustomerId-1]] : [])
+          : requestedCustomerId === 0
+            ? guestParticipants.filter(p => String(p.participant_name||'') === requestedParticipantName).slice(0,1)
+            : enriched.filter(p => Number(p.customer_id || 0) === requestedCustomerId);
       if (requestedCustomerId !== null && selectedParticipants.length === 0) {
         return res.status(404).json({error:'Customer is not a payer in this session',customerId:requestedCustomerId});
       }
@@ -826,7 +845,13 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       const poolAmount=selectedParticipants.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.prepayment_amount||0),0);
       const gameCost=selectedParticipants.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.game_cost||0),0);
       const buffetCost=selectedParticipants.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.buffet_cost||0),0);
-      const refundParams = requestedCustomerId === null ? [mid,sid] : [mid,sid,requestedCustomerId];
+      const requestedGuestIndex = requestedCustomerId === 0
+        ? guestParticipants.findIndex(p => String(p.participant_name||'') === requestedParticipantName)
+        : -1;
+      const requestedBillingCustomerId = requestedCustomerId === 0 && requestedGuestIndex >= 0
+        ? -(requestedGuestIndex + 1)
+        : requestedCustomerId;
+      const refundParams = requestedBillingCustomerId === null ? [mid,sid] : [mid,sid,requestedBillingCustomerId];
       const refunded=(await pool.query(
         requestedCustomerId === null
           ? "SELECT COALESCE(SUM(refund_amount),0) amount FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 AND method='WALLET'"
@@ -840,7 +865,13 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         refundParams
       )).rows;
       const unusedPool=selectedParticipants.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.unused_prepayment||0),0);
-      return res.json({success:true,session:{...session,game_cost:String(gameCost),buffet_cost:String(buffetCost),total_cost:String(gameCost+buffetCost)},participants:selectedParticipants,totalPrepayment:String(poolAmount),sessionTotalPrepayment:String(sessionTotalPrepayment),gameCost:String(gameCost),buffetCost:String(buffetCost),unusedPool:String(unusedPool),refundedPrepayment:String(refunded),remainingRefundable:String(Math.max(0,unusedPool-Number(refunded||0))),finalized});
+      const responseParticipants=selectedParticipants.map(p=>{
+        const billingCustomerId=p.customer_id!==null
+          ? Number(p.customer_id)
+          : -(guestParticipants.findIndex(g=>g.participant_key===p.participant_key)+1);
+        return {...p,billing_customer_id:billingCustomerId};
+      });
+      return res.json({success:true,session:{...session,game_cost:String(gameCost),buffet_cost:String(buffetCost),total_cost:String(gameCost+buffetCost)},participants:responseParticipants,totalPrepayment:String(poolAmount),sessionTotalPrepayment:String(sessionTotalPrepayment),gameCost:String(gameCost),buffetCost:String(buffetCost),unusedPool:String(unusedPool),refundedPrepayment:String(refunded),remainingRefundable:String(Math.max(0,unusedPool-Number(refunded||0))),finalized});
     }catch(e){console.error('[settlement-review]',e?.message||e);return res.status(500).json({error:'Settlement review lookup failed'});}
   });
 
@@ -854,36 +885,57 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       if(!session){await c.query('ROLLBACK');return res.status(404).json({error:'Session not found'});}
       const config=await getManagerConfiguration(c,mid);
       const settings=config.settings||{};
-      const gameGnPer10000=Math.max(0,Number(settings.policy_game_reward_rate??10));
-      const gameLpPer10000=Math.max(0,10000/Math.max(1,Number(settings.policy_lp_toman_rate??1000)));
-      const buffetGnPer10000=Math.max(0,Number(settings.policy_buffet_reward_rate??5));
-      const buffetLpPer10000=Math.max(0,Number(settings.policy_buffet_lp_per_10000??5));
+      // Normal session rewards use one authoritative rule for both ledgers:
+      // default game = 1 GN + 1 LP per 1,000 Toman;
+      // default buffet = 0.5 GN + 0.5 LP per 1,000 Toman.
+      // Manager may change the GN-side rates in Settings; GN and LP must remain
+      // mathematically identical for the same eligible spend.
+      const gameRewardPer10000=Math.max(0,Number(settings.policy_game_reward_rate??10));
+      const buffetRewardPer10000=Math.max(0,Number(settings.policy_buffet_reward_rate??5));
       const participants=(await c.query("SELECT customer_id,participant_key,participant_name,is_guest,is_payer,prepayment_amount FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND is_payer=TRUE FOR UPDATE",[sid,mid])).rows;
       const authoritativeBuffet=Number((await c.query("SELECT COALESCE(SUM(line_total),0) amount FROM session_orders WHERE session_id=$1 AND manager_id=$2",[sid,mid])).rows[0]?.amount||0);
       const byId=new Map(participants.filter(p=>p.customer_id).map(p=>[Number(p.customer_id),p]));
-      const guestPayer=participants.find(p=>!p.customer_id && p.is_guest && p.is_payer) || null;
+      const guestPayers=participants.filter(p=>!p.customer_id && p.is_guest && p.is_payer);
       const snapshot=session.pricing_snapshot && typeof session.pricing_snapshot==='object'?session.pricing_snapshot:{};
       const snapPre=snapshot.customerPrepayments && typeof snapshot.customerPrepayments==='object'?snapshot.customerPrepayments:{};
+      const invoiceRowsForSession=(await c.query("SELECT id,invoice_number,customer_id,game_cost,buffet_cost,total_amount,paid_amount,status,customer_snapshot FROM invoices WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sid,mid])).rows;
+      const guestInvoiceByKey=new Map();
+      invoiceRowsForSession.filter(r=>r.customer_id===null).forEach(r=>{
+        const key=String(r.customer_snapshot?.participantKey||'');
+        if(key) guestInvoiceByKey.set(key,r);
+        const m=String(r.invoice_number||'').match(/-((?:guest|walk-in|customer)[-_].*)$/i);
+        if(m) {
+          guestInvoiceByKey.set(m[1],r);
+          guestInvoiceByKey.set(m[1].replace(/_/g,':'),r);
+        }
+      });
       const results=[];
       for(const d of decisions){
         const cid=Number(d.customerId||0), method=String(d.refundMethod||'NONE').toUpperCase(), refund=Math.max(0,Math.trunc(Number(d.refundAmount||0))), status=String(d.status||'REVIEWED').toUpperCase();
-        const isGuestDecision=cid===0;
-        if(cid<0) continue;
-        const participant=isGuestDecision ? guestPayer : byId.get(cid); if(!participant){await c.query('ROLLBACK');return res.status(422).json({error:'Customer is not a payer in this session',customerId:cid});}
+        const isGuestDecision=cid<=0;
+        const participant=isGuestDecision
+          ? guestPayers[Math.max(0,(-cid)-1)] || (cid===0 ? guestPayers[0] : null)
+          : byId.get(cid);
+        if(!participant){await c.query('ROLLBACK');return res.status(422).json({error:'Customer is not a payer in this session',customerId:cid});}
         const priorReview=(await c.query("SELECT refund_amount,method,status FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 AND customer_id=$3 LIMIT 1",[mid,sid,cid])).rows[0];
         if(priorReview){
           const rg=Number((await c.query("SELECT COALESCE(SUM(amount),0) amount FROM gn_ledger WHERE manager_id=$1 AND customer_id=$2 AND reference_type='SESSION_REVIEW' AND reference_id=$3 AND type='CREDIT'",[mid,cid,sid])).rows[0].amount||0);
           const rl=Number((await c.query("SELECT COALESCE(SUM(amount),0) amount FROM lp_ledger WHERE manager_id=$1 AND customer_id=$2 AND reference_type='SESSION_REVIEW' AND reference_id=$3 AND type='CREDIT'",[mid,cid,sid])).rows[0].amount||0);
-          results.push({customerId:cid,refundAmount:String(priorReview.refund_amount||0),refundMethod:String(priorReview.method||'NONE'),earnedGn:rg,earnedLp:rl,status:String(priorReview.status==='FINALIZED'?(await c.query("SELECT status FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND customer_id=$3 AND status<>'DELETED' ORDER BY id DESC LIMIT 1",[mid,sid,cid])).rows[0]?.status||'REVIEWED':'REVIEWED'),idempotent:true});
+          results.push({customerId:cid,customerName:participant.participant_name,refundAmount:String(priorReview.refund_amount||0),refundMethod:String(priorReview.method||'NONE'),earnedGn:rg,earnedLp:rl,status:String(priorReview.status||'REVIEWED'),idempotent:true});
           continue;
         }
         const solePayerFallback=(participants.length===1 && participant.is_payer)?Number(snapshot.initialPrepaymentAmount||0):0;
-        const prepayment=Math.max(0,Number(participant.prepayment_amount||0)||(isGuestDecision?Number(snapshot.initialPrepaymentAmount||0):Number(snapPre[String(cid)]||0))||solePayerFallback);
-        let inv=(await c.query("SELECT id,game_cost,buffet_cost,total_amount,paid_amount,status FROM invoices WHERE session_id=$1 AND manager_id=$2 AND customer_id IS NOT DISTINCT FROM $3 ORDER BY id DESC LIMIT 1 FOR UPDATE",[sid,mid,isGuestDecision?null:cid])).rows[0];
+        const prepayment=Math.max(0,Number(participant.prepayment_amount||0)||(isGuestDecision?Number(snapPre[String(participant.participant_key)]||0):Number(snapPre[String(cid)]||0))||solePayerFallback);
+        let inv;
+        if (isGuestDecision) {
+          inv=guestInvoiceByKey.get(String(participant.participant_key||'')) || (await c.query("SELECT id,game_cost,buffet_cost,total_amount,paid_amount,status FROM invoices WHERE session_id=$1 AND manager_id=$2 AND customer_id IS NULL AND customer_snapshot->>'name'=$3 ORDER BY id DESC LIMIT 1 FOR UPDATE",[sid,mid,participant.participant_name])).rows[0];
+        } else {
+          inv=(await c.query("SELECT id,game_cost,buffet_cost,total_amount,paid_amount,status FROM invoices WHERE session_id=$1 AND manager_id=$2 AND customer_id=$3 ORDER BY id DESC LIMIT 1 FOR UPDATE",[sid,mid,cid])).rows[0];
+        }
         if(!inv){
           if(!isGuestDecision){await c.query('ROLLBACK');return res.status(422).json({error:'Invoice not found for customer',customerId:cid});}
-          const guestInvoiceNumber='GN-'+sid+'-guest-walk-in';
-          inv=(await c.query("INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,NULL,$3,$4,'UNPAID','IRT',$5,$6,$7,0,$8,$9::jsonb,$10::jsonb,$11::jsonb) ON CONFLICT(manager_id,invoice_number) DO UPDATE SET game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,updated_at=NOW() RETURNING id,game_cost,buffet_cost,total_amount,paid_amount,status",[guestInvoiceNumber,mid,sid,session.station_id,String(session.game_cost||0),String(session.buffet_cost||0),String(session.total_cost||0),'review_guest_'+sid,JSON.stringify(snapshot),JSON.stringify({id:null,name:participant.participant_name,isGuest:true}),JSON.stringify({id:mid})])).rows[0];
+          const guestInvoiceNumber='GN-'+sid+'-'+String(participant.participant_key||('guest-'+(-cid))).replace(/[^A-Za-z0-9_-]/g,'_');
+          inv=(await c.query("INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,NULL,$3,$4,'UNPAID','IRT',$5,$6,$7,0,$8,$9::jsonb,$10::jsonb,$11::jsonb) ON CONFLICT(manager_id,invoice_number) DO UPDATE SET game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,updated_at=NOW() RETURNING id,game_cost,buffet_cost,total_amount,paid_amount,status",[guestInvoiceNumber,mid,sid,session.station_id,String(session.game_cost||0),String(session.buffet_cost||0),String(session.total_cost||0),'review_guest_'+sid+'_'+String(participant.participant_key||cid),JSON.stringify(snapshot),JSON.stringify({id:null,name:participant.participant_name,isGuest:true,participantKey:participant.participant_key}),JSON.stringify({id:mid})])).rows[0];
         }
         const gameCost=Number(inv.game_cost||0);
         const buffetCost=participants.length===1 ? authoritativeBuffet : Number(inv.buffet_cost||0);
@@ -907,12 +959,10 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         // Rewards are based on the authoritative final invoice components.
         // Rates are configurable as points per 10,000 Toman; floor is intentional
         // so no partial GN/LP is fabricated in the integer ledgers.
-        const gnGame=Math.floor((gameCost/10000)*gameGnPer10000);
-        const gnBuffet=Math.floor((buffetCost/10000)*buffetGnPer10000);
-        const lpGame=Math.floor((gameCost/10000)*gameLpPer10000);
-        const lpBuffet=Math.floor((buffetCost/10000)*buffetLpPer10000);
-        const earnedGn=Math.max(0,gnGame+gnBuffet);
-        const earnedLp=Math.max(0,lpGame+lpBuffet);
+        const gameReward=Math.floor((gameCost/10000)*gameRewardPer10000);
+        const buffetReward=Math.floor((buffetCost/10000)*buffetRewardPer10000);
+        const earnedGn=Math.max(0,gameReward+buffetReward);
+        const earnedLp=Math.max(0,gameReward+buffetReward);
         const reviewKey='session-review:'+sid+':'+cid;
         if(!isGuestDecision && earnedGn>0){const g=await c.query("INSERT INTO gn_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_REVIEW',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",[mid,cid,earnedGn,sid,reviewKey+':GN']);if(g.rowCount>0) await c.query('UPDATE customers SET gn_balance=gn_balance+$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3',[earnedGn,cid,mid]);}
         if(!isGuestDecision && earnedLp>0){const l=await c.query("INSERT INTO lp_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_REVIEW',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",[mid,cid,earnedLp,sid,reviewKey+':LP']);if(l.rowCount>0) await c.query('UPDATE customers SET lp_balance=lp_balance+$1 WHERE id=$2 AND manager_id=$3',[earnedLp,cid,mid]);}
@@ -923,12 +973,16 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         const paidAmount=requestedStatus==='REVIEWED'?total:(requestedStatus==='DEBTOR'?minimumPaid:Math.min(total,Math.max(minimumPaid,requestedPaid)));
         if(requestedStatus==='PARTIAL' && paidAmount<=minimumPaid){await c.query('ROLLBACK');return res.status(422).json({error:'Partial payment must be greater than the applied initial payment',customerId:cid});}
         await c.query("UPDATE invoices SET status=$1,paid_amount=$2,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[finalStatus,paidAmount,inv.id,mid]);
-        await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,earned_gn=$3,earned_lp=$4,session_id=COALESCE(session_id,$6),updated_at=NOW() WHERE manager_id=$5 AND session_id IS NOT DISTINCT FROM $6 AND customer_id IS NOT DISTINCT FROM $7 AND status<>'DELETED'",[finalStatus,paidAmount,earnedGn,earnedLp,mid,sid,isGuestDecision?null:cid]);
+        if (isGuestDecision) {
+          await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,session_id=COALESCE(session_id,$4),updated_at=NOW() WHERE manager_id=$3 AND session_id IS NOT DISTINCT FROM $4 AND customer_id IS NULL AND customer_name=$5 AND status<>'DELETED'",[finalStatus,paidAmount,mid,sid,participant.participant_name]);
+        } else {
+          await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,earned_gn=$3,earned_lp=$4,session_id=COALESCE(session_id,$6),updated_at=NOW() WHERE manager_id=$5 AND session_id IS NOT DISTINCT FROM $6 AND customer_id=$7 AND status<>'DELETED'",[finalStatus,paidAmount,earnedGn,earnedLp,mid,sid,cid]);
+        }
         if(finalStatus==='DEBTOR' && !isGuestDecision){
           const outstanding=Math.max(0,total-paidAmount);
           if(outstanding>0) await c.query("UPDATE customers SET debt=GREATEST(0,COALESCE(debt,0)+$1),updated_at=NOW() WHERE id=$2 AND manager_id=$3",[outstanding,cid,mid]);
         }
-        results.push({customerId:cid,refundAmount:String(refund),refundMethod:method,earnedGn,earnedLp,status:finalStatus});
+        results.push({customerId:cid,customerName:participant.participant_name,refundAmount:String(refund),refundMethod:method,earnedGn,earnedLp,status:finalStatus});
       }
       await c.query('COMMIT');
       return res.json({success:true,sessionId:sid,results});

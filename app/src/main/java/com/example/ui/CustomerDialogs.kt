@@ -1117,13 +1117,18 @@ fun StationPauseDialog(
 fun MultiCustomerPrepaymentDialog(
     selectedCustomers: List<Customer>,
     initialPrepayments: Map<Long, Long>,
+    totalPrepayment: Long = 0L,
     onDismiss: () -> Unit,
     onConfirm: (Map<Long, Long>, Long) -> Unit
 ) {
-    val prepayMap = remember {
+    val prepayMap = remember(selectedCustomers, initialPrepayments, totalPrepayment) {
         mutableStateMapOf<Long, String>().apply {
-            selectedCustomers.forEach { cust ->
-                val initVal = initialPrepayments[cust.id]?.takeIf { it > 0 }?.toString() ?: ""
+            val hasExplicitAllocation = initialPrepayments.values.any { it > 0L }
+            val base = if (!hasExplicitAllocation && totalPrepayment > 0L && selectedCustomers.isNotEmpty()) totalPrepayment / selectedCustomers.size else 0L
+            val remainder = if (!hasExplicitAllocation && totalPrepayment > 0L && selectedCustomers.isNotEmpty()) totalPrepayment % selectedCustomers.size else 0L
+            selectedCustomers.forEachIndexed { index, cust ->
+                val initVal = initialPrepayments[cust.id]?.takeIf { it > 0L }?.toString()
+                    ?: if (!hasExplicitAllocation && totalPrepayment > 0L) (base + if (index == selectedCustomers.lastIndex) remainder else 0L).toString() else ""
                 put(cust.id, initVal)
             }
         }

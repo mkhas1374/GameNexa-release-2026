@@ -1297,10 +1297,15 @@ object SelfHostedManager {
         }
     }
 
-    suspend fun fetchSettlementReview(sessionId: String, customerId: Long? = null): SettlementReview? = withContext(Dispatchers.IO) {
+    suspend fun fetchSettlementReview(sessionId: String, customerId: Long? = null, participantName: String? = null): SettlementReview? = withContext(Dispatchers.IO) {
         try {
-            val selectedCustomerId = customerId?.let { if (it > 0L) it else 0L }
-            val query = selectedCustomerId?.let { "?customerId=$it" } ?: ""
+            val selectedCustomerId = customerId
+            val encodedParticipantName = participantName?.takeIf { it.isNotBlank() }?.let { java.net.URLEncoder.encode(it, "UTF-8") }
+            val query = when {
+                selectedCustomerId == 0L && encodedParticipantName != null -> "?customerId=0&participantName=$encodedParticipantName"
+                selectedCustomerId != null -> "?customerId=$selectedCustomerId"
+                else -> ""
+            }
             val req=Request.Builder().url("$SERVER_URL/api/v1/manager/sessions/$sessionId/settlement-review$query").headers(getBaseHeaders()).get().build()
             client.newCall(req).execute().use { resp ->
                 if(!resp.isSuccessful) return@withContext null
@@ -1309,7 +1314,7 @@ object SelfHostedManager {
                 val payers=mutableListOf<SettlementPayer>()
                 for(i in 0 until arr.length()){
                     val o=arr.optJSONObject(i) ?: continue
-                    val cid=o.optLong("customer_id",o.optLong("customerId",0L))
+                    val cid=o.optLong("billing_customer_id",o.optLong("customer_id",o.optLong("customerId",0L)))
                     if(o.optBoolean("is_payer",o.optBoolean("isPayer",true)) && (cid>0L || o.optBoolean("is_guest",o.optBoolean("isGuest",false)))) {
                         payers += SettlementPayer(
                             cid,
