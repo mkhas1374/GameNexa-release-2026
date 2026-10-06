@@ -2451,6 +2451,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 // Rehydrate financial history from the authoritative Manager endpoint on
                 // every cold start. Room is destroyed by uninstall/reinstall.
                 if (!NetworkClient.isTrialMode && SelfHostedManager.currentManagerId.isNotBlank()) {
+                    // Financial history is intentionally hydrated before the broad sync graph.
+                    repository.syncCustomerTransactionsFromServer()
                     SelfHostedManager.fetchAllFromCloud()
                     SelfHostedManager.fetchArchivedCustomersFromCloud()
                     flushPendingCustomerTransactions()
@@ -3517,8 +3519,16 @@ loadSettings()
                 val alreadySegmentedMs = existingSegments.sumOf { (it.endTimeMs - it.startTimeMs).coerceAtLeast(0L).takeIf { d -> d > 0L } ?: (it.durationMinutes * 60 * 1000L) }
                 val remainingMs = totalElapsed - alreadySegmentedMs
 
-                val effectivePayerIds = if (payerCustomerIds.isNotEmpty()) payerCustomerIds else (customPayerId?.let { listOf(it) } ?: emptyList())
-                val effectivePayerNames = if (payerCustomerNames.isNotEmpty()) payerCustomerNames else (customPayerName?.let { listOf(it) } ?: emptyList())
+                val effectivePayerIds = when {
+                    payerCustomerIds.isNotEmpty() -> payerCustomerIds
+                    customPayerId != null -> listOf(customPayerId)
+                    else -> station.getCustomerIds()
+                }
+                val effectivePayerNames = when {
+                    payerCustomerNames.isNotEmpty() -> payerCustomerNames
+                    customPayerName != null -> listOf(customPayerName)
+                    else -> station.getCustomerNames()
+                }
 
                 if (remainingMs > 0 || existingSegments.isEmpty()) {
                     val durationMin = maxOf(1, ((if (remainingMs > 0) remainingMs else totalElapsed) / (1000L * 60L)).toInt())
@@ -3699,6 +3709,25 @@ loadSettings()
                             customerBuffetMap.getOrPut(cid) { mutableListOf() }.add(shareItemStr)
                         }
                     }
+                }
+            }
+
+            if (effectivePayerIds.isNotEmpty()) {
+                customerGameCostMap.clear()
+                customerBuffetCostMap.clear()
+                customerBuffetMap.clear()
+                customerNameMap.clear()
+                val payerCount = effectivePayerIds.size
+                val gameBase = gameCost / payerCount
+                val gameRemainder = gameCost % payerCount
+                val buffetBase = foodCost / payerCount
+                val buffetRemainder = foodCost % payerCount
+                effectivePayerIds.forEachIndexed { index, pid ->
+                    customerGameCostMap[pid] = gameBase + if (index == payerCount - 1) gameRemainder else 0L
+                    customerBuffetCostMap[pid] = buffetBase + if (index == payerCount - 1) buffetRemainder else 0L
+                    customerNameMap[pid] = effectivePayerNames.getOrNull(index)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: if (pid < 0L) "مهمان " + (-pid) else "مشتری " + pid
                 }
             }
 
@@ -5946,8 +5975,8 @@ loadSettings()
                 _isAdminAuthenticated.value = false
                 _isCustomerAuthenticated.value = false
                 SelfHostedManager.setManagerId(savedManagerId)
-                SelfHostedManager.fetchAllFromCloud()
-                repository.syncAllWithServer()
+                // Full cloud synchronization is deliberately not part of auth restoration.
+                // It runs after authentication so a cold start can publish the Manager session quickly.
             } else {
                 // Never treat a partial/corrupt local session as an authenticated Manager.
                 _isAdminAuthenticated.value = false

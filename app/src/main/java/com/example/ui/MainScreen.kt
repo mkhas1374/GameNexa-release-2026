@@ -1461,12 +1461,16 @@ fun StationCard(
                 Button(
                     onClick = {
                         if (isFinishingAction) return@Button
+                        isFinishingAction = true
+                        // Final settlement is always based on the complete participant set.
+                        // Backend settlement divides the session invoice across every payer;
+                        // opening a second payer-selection dialog created both a crash path
+                        // and a local/server allocation mismatch.
                         val cIds = station.getCustomerIds()
-                        if (cIds.isNotEmpty() && station.status != "PAUSED") {
-                            pendingFinishAction = true
-                            showPayerAllocationDialog = true
+                        val cNames = station.getCustomerNames()
+                        if (cIds.isNotEmpty()) {
+                            viewModel.finishStation(station.id, cIds, cNames)
                         } else {
-                            isFinishingAction = true
                             onFinish()
                         }
                     },

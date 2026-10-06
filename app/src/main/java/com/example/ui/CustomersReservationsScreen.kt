@@ -1126,7 +1126,11 @@ fun CustomerTransactionCard(
                 } else {
                     val ok = viewModel.finalizeSettlementReview(transaction.sessionId, (0 until decisions.length()).map { decisions.getJSONObject(it) })
                     if (ok) {
-                        settlementReview = viewModel.fetchSettlementReview(transaction.sessionId, transaction.customerId)
+                        settlementReview = viewModel.fetchSettlementReview(
+                            transaction.sessionId,
+                            transaction.customerId,
+                            transaction.customerName.takeIf { transaction.customerId <= 0L && it.isNotBlank() }
+                        )
                         prepaymentAllocations = emptyMap()
                         refundMethods = emptyMap()
                         reviewStatuses = emptyMap()
@@ -1624,7 +1628,7 @@ fun CustomerTransactionCard(
                                     } else {
                                         val grandTotal = review.gameCost + review.buffetCost
                                         val totalUnused = review.payers.sumOf { it.unusedPrepayment }
-                                        val totalPayable = (grandTotal - review.totalPrepayment).coerceAtLeast(0L)
+                                        val totalPayable = review.payers.sumOf { (it.invoiceTotal - it.prepaymentAmount).coerceAtLeast(0L) }
                                         Text("مشتری این فاکتور:", fontWeight = FontWeight.Bold)
                                         review.payers.forEach { Text(it.name.ifBlank { "مشتری ${it.customerId}" }, fontWeight = FontWeight.Bold) }
                                         HorizontalDivider()

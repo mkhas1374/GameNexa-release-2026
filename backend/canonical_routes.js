@@ -833,7 +833,13 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       const selectedParticipants = requestedCustomerId === null
         ? enriched
         : requestedCustomerId < 0
-          ? (guestParticipants[-requestedCustomerId-1] ? [guestParticipants[-requestedCustomerId-1]] : [])
+          ? (() => {
+              const billingKey = "guest:" + requestedCustomerId;
+              const byParticipantKey = guestParticipants.find(p => String(p.participant_key || '') === billingKey);
+              if (byParticipantKey) return [byParticipantKey];
+              const byBillingIndex = guestParticipants[-requestedCustomerId-1];
+              return byBillingIndex ? [byBillingIndex] : [];
+            })()
           : requestedCustomerId === 0
             ? guestParticipants.filter(p => String(p.participant_name||'') === requestedParticipantName).slice(0,1)
             : enriched.filter(p => Number(p.customer_id || 0) === requestedCustomerId);
@@ -847,10 +853,14 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       const buffetCost=selectedParticipants.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.buffet_cost||0),0);
       const requestedGuestIndex = requestedCustomerId === 0
         ? guestParticipants.findIndex(p => String(p.participant_name||'') === requestedParticipantName)
-        : -1;
+        : requestedCustomerId < 0
+          ? guestParticipants.findIndex(p => String(p.participant_key || '') === "guest:" + requestedCustomerId)
+          : -1;
       const requestedBillingCustomerId = requestedCustomerId === 0 && requestedGuestIndex >= 0
         ? -(requestedGuestIndex + 1)
-        : requestedCustomerId;
+        : requestedCustomerId < 0 && requestedGuestIndex >= 0
+          ? requestedCustomerId
+          : requestedCustomerId;
       const refundParams = requestedBillingCustomerId === null ? [mid,sid] : [mid,sid,requestedBillingCustomerId];
       const refunded=(await pool.query(
         requestedCustomerId === null
@@ -914,7 +924,9 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         const cid=Number(d.customerId||0), method=String(d.refundMethod||'NONE').toUpperCase(), refund=Math.max(0,Math.trunc(Number(d.refundAmount||0))), status=String(d.status||'REVIEWED').toUpperCase();
         const isGuestDecision=cid<=0;
         const participant=isGuestDecision
-          ? guestPayers[Math.max(0,(-cid)-1)] || (cid===0 ? guestPayers[0] : null)
+          ? (guestPayers.find(p => String(p.participant_key || '') === "guest:" + cid)
+              || guestPayers[Math.max(0,(-cid)-1)]
+              || (cid===0 ? guestPayers[0] : null))
           : byId.get(cid);
         if(!participant){await c.query('ROLLBACK');return res.status(422).json({error:'Customer is not a payer in this session',customerId:cid});}
         const priorReview=(await c.query("SELECT refund_amount,method,status FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 AND customer_id=$3 LIMIT 1",[mid,sid,cid])).rows[0];
@@ -956,27 +968,29 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
           const key='session-review-refund:'+sid+':'+cid;
           await c.query("INSERT INTO session_review_refunds(manager_id,session_id,customer_id,refund_amount,method,status,idempotency_key) VALUES($1,$2,$3,$4,$5,'FINALIZED',$6) ON CONFLICT(manager_id,session_id,customer_id) DO UPDATE SET refund_amount=EXCLUDED.refund_amount,method=EXCLUDED.method,status='FINALIZED'",[mid,sid,cid,refund,method,key]);
         }
-        // Rewards are based on the authoritative final invoice components.
-        // Rates are configurable as points per 10,000 Toman; floor is intentional
-        // so no partial GN/LP is fabricated in the integer ledgers.
-        const gameReward=Math.floor((gameCost/10000)*gameRewardPer10000);
-        const buffetReward=Math.floor((buffetCost/10000)*buffetRewardPer10000);
-        const earnedGn=Math.max(0,gameReward+buffetReward);
-        const earnedLp=Math.max(0,gameReward+buffetReward);
-        const reviewKey='session-review:'+sid+':'+cid;
-        if(!isGuestDecision && earnedGn>0){const g=await c.query("INSERT INTO gn_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_REVIEW',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",[mid,cid,earnedGn,sid,reviewKey+':GN']);if(g.rowCount>0) await c.query('UPDATE customers SET gn_balance=gn_balance+$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3',[earnedGn,cid,mid]);}
-        if(!isGuestDecision && earnedLp>0){const l=await c.query("INSERT INTO lp_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_REVIEW',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",[mid,cid,earnedLp,sid,reviewKey+':LP']);if(l.rowCount>0) await c.query('UPDATE customers SET lp_balance=lp_balance+$1 WHERE id=$2 AND manager_id=$3',[earnedLp,cid,mid]);}
         const requestedStatus=status==='PARTIAL'?'PARTIAL':(status==='DEBTOR'?'DEBTOR':'REVIEWED');
         const finalStatus=requestedStatus==='PARTIAL'?'DEBTOR':requestedStatus;
         const requestedPaid=Math.max(0,Math.trunc(Number(d.paidAmount||0)));
         const minimumPaid=Math.min(total,prepayment);
         const paidAmount=requestedStatus==='REVIEWED'?total:(requestedStatus==='DEBTOR'?minimumPaid:Math.min(total,Math.max(minimumPaid,requestedPaid)));
         if(requestedStatus==='PARTIAL' && paidAmount<=minimumPaid){await c.query('ROLLBACK');return res.status(422).json({error:'Partial payment must be greater than the applied initial payment',customerId:cid});}
+
+        // Rewards are earned from the amount actually settled/paid, not from an unpaid invoice total.
+        const paidRatio = total > 0 ? Math.min(1, paidAmount / total) : 0;
+        const eligibleGameCost = Math.floor(gameCost * paidRatio);
+        const eligibleBuffetCost = Math.floor(buffetCost * paidRatio);
+        const gameReward=Math.floor((eligibleGameCost/10000)*gameRewardPer10000);
+        const buffetReward=Math.floor((eligibleBuffetCost/10000)*buffetRewardPer10000);
+        const earnedGn=Math.max(0,gameReward+buffetReward);
+        const earnedLp=Math.max(0,gameReward+buffetReward);
+        const reviewKey='session-review:'+sid+':'+cid;
+        if(!isGuestDecision && earnedGn>0){const g=await c.query("INSERT INTO gn_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_REVIEW',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",[mid,cid,earnedGn,sid,reviewKey+':GN']);if(g.rowCount>0) await c.query('UPDATE customers SET gn_balance=gn_balance+$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3',[earnedGn,cid,mid]);}
+        if(!isGuestDecision && earnedLp>0){const l=await c.query("INSERT INTO lp_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_REVIEW',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",[mid,cid,earnedLp,sid,reviewKey+':LP']);if(l.rowCount>0) await c.query('UPDATE customers SET lp_balance=lp_balance+$1 WHERE id=$2 AND manager_id=$3',[earnedLp,cid,mid]);}
         await c.query("UPDATE invoices SET status=$1,paid_amount=$2,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[finalStatus,paidAmount,inv.id,mid]);
         if (isGuestDecision) {
           await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,session_id=COALESCE(session_id,$4),updated_at=NOW() WHERE manager_id=$3 AND session_id IS NOT DISTINCT FROM $4 AND customer_id IS NULL AND customer_name=$5 AND status<>'DELETED'",[finalStatus,paidAmount,mid,sid,participant.participant_name]);
         } else {
-          await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,earned_gn=$3,earned_lp=$4,session_id=COALESCE(session_id,$6),updated_at=NOW() WHERE manager_id=$5 AND session_id IS NOT DISTINCT FROM $6 AND customer_id=$7 AND status<>'DELETED'",[finalStatus,paidAmount,earnedGn,earnedLp,mid,sid,cid]);
+          await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,session_id=COALESCE(session_id,$4),updated_at=NOW() WHERE manager_id=$3 AND session_id IS NOT DISTINCT FROM $4 AND customer_id=$5 AND status<>'DELETED'",[finalStatus,paidAmount,mid,sid,cid]);
         }
         if(finalStatus==='DEBTOR' && !isGuestDecision){
           const outstanding=Math.max(0,total-paidAmount);

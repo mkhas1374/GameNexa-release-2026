@@ -538,11 +538,14 @@ fun PayerAllocationDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 200.dp),
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 200.dp)
+                        .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    items(customers, key = { it.id }) { cust ->
+                    customers.distinctBy { it.id }.forEach { cust ->
                         val isSelected = selectedPayerId == cust.id
                         Surface(
                             onClick = {
@@ -1121,7 +1124,8 @@ fun MultiCustomerPrepaymentDialog(
     onDismiss: () -> Unit,
     onConfirm: (Map<Long, Long>, Long) -> Unit
 ) {
-    val prepayMap = remember(selectedCustomers, initialPrepayments, totalPrepayment) {
+    val selectedCustomerIdsKey = selectedCustomers.map { it.id }
+    val prepayMap = remember(selectedCustomerIdsKey, initialPrepayments, totalPrepayment) {
         mutableStateMapOf<Long, String>().apply {
             val hasExplicitAllocation = initialPrepayments.values.any { it > 0L }
             val base = if (!hasExplicitAllocation && totalPrepayment > 0L && selectedCustomers.isNotEmpty()) totalPrepayment / selectedCustomers.size else 0L
