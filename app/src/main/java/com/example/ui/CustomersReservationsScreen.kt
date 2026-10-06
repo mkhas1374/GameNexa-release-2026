@@ -1165,7 +1165,8 @@ fun CustomerTransactionCard(
     // directly beside «تعیین تکلیف فاکتور نشست» on UNREVIEWED invoices.
     val context = LocalContext.current
     val shareAction = {
-        val shareRemainingDebt = (activeTotal - transaction.paidAmount.toDouble()).coerceAtLeast(0.0)
+        val shareInvoiceTotal = if (hasDiscount) finalAmount else origTotal
+        val shareRemainingDebt = (shareInvoiceTotal - transaction.paidAmount.toDouble()).coerceAtLeast(0.0)
         val receipt = buildString {
             appendLine("================================")
             appendLine("         گیم‌نکسا - فاکتور مشتری         ")
