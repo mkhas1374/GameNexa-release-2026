@@ -3349,7 +3349,8 @@ loadSettings()
 
     fun pauseStation(stationId: Int) {
         viewModelScope.launch(Dispatchers.IO) {
-            val station = repository.getStationStateByIdLocal(stationId)
+            try {
+                val station = repository.getStationStateByIdLocal(stationId)
                 ?: stationStates.value.find { it.id == stationId }
                 ?: return@launch
             if (station.status != "RUNNING") return@launch
@@ -3369,7 +3370,13 @@ loadSettings()
                 queueOrSendSessionEvent(sessionId, "PAUSE", now, org.json.JSONObject())
             }
             cancelAlarm(stationId)
-            logOperatorActivity("توقف موقت ایستگاه", "ایستگاه $stationId متوقف شد.")
+                logOperatorActivity("توقف موقت ایستگاه", "ایستگاه $stationId متوقف شد.")
+            } catch (e: Exception) {
+                android.util.Log.e("GameNetViewModel", "Stop(simple) failed for station $stationId", e)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "توقف ایستگاه انجام نشد؛ وضعیت بازی حفظ شد.", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -3379,7 +3386,8 @@ loadSettings()
         payerCustomerNames: List<String>
     ) {
         viewModelScope.launch(Dispatchers.IO) {
-            val station = repository.getStationStateByIdLocal(stationId)
+            try {
+                val station = repository.getStationStateByIdLocal(stationId)
                 ?: stationStates.value.find { it.id == stationId }
                 ?: return@launch
             if (station.status != "RUNNING") return@launch
@@ -3417,8 +3425,14 @@ loadSettings()
                 segmentsJson = existingSegments.toJson()
             )
 
-            saveAndSyncStationState(updated)
-            cancelAlarm(stationId)
+                saveAndSyncStationState(updated)
+                cancelAlarm(stationId)
+            } catch (e: Exception) {
+                android.util.Log.e("GameNetViewModel", "Stop(commit+pause) failed for station $stationId", e)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "ثبت رکورد و توقف انجام نشد؛ وضعیت بازی حفظ شد.", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -3428,7 +3442,8 @@ loadSettings()
         payerCustomerNames: List<String>
     ) {
         viewModelScope.launch(Dispatchers.IO) {
-            val station = repository.getStationStateByIdLocal(stationId)
+            try {
+                val station = repository.getStationStateByIdLocal(stationId)
                 ?: stationStates.value.find { it.id == stationId }
                 ?: return@launch
             if (station.status != "RUNNING") return@launch
@@ -3466,7 +3481,13 @@ loadSettings()
                 segmentsJson = existingSegments.toJson()
             )
 
-            saveAndSyncStationState(updated)
+                saveAndSyncStationState(updated)
+            } catch (e: Exception) {
+                android.util.Log.e("GameNetViewModel", "Stop(commit+continue) failed for station $stationId", e)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "ثبت رکورد و ادامه انجام نشد؛ وضعیت بازی حفظ شد.", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 

@@ -750,7 +750,7 @@ fun StationPauseDialog(
     onCommitSegmentAndPause: (List<Long>, List<String>) -> Unit,
     onCommitSegmentAndContinue: (List<Long>, List<String>) -> Unit = { _, _ -> }
 ) {
-    var selectedOption by remember { mutableStateOf(2) } // 1: Simple Pause, 2: Commit & Pause, 3: Commit & Continue
+    var selectedOption by remember { mutableStateOf(1) } // 1: Simple Pause, 2: Commit & Pause, 3: Commit & Continue
     val selectedPayerIds = remember { mutableStateListOf<Long>() }
     val selectedPayerNamesMap = remember { mutableStateMapOf<Long, String>() }
 
