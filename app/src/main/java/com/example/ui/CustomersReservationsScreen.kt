@@ -1091,16 +1091,30 @@ fun CustomerTransactionCard(
                 var invalid = false
                 review.payers.forEach { payer ->
                     val refund = prepaymentAllocations[payer.customerId].orEmpty().filter { it.isDigit() }.toLongOrNull() ?: 0L
-                    val method = refundMethods[payer.customerId].orEmpty().ifBlank { if (refund > 0L) { if (payer.customerId == 0L) "CASH" else "WALLET" } else "NONE" }
-                    val status = reviewStatuses[payer.customerId].orEmpty().ifBlank { "REVIEWED" }
+                    val selectedRefundMethod = refundMethods[payer.customerId].orEmpty()
+                    val method = when (selectedRefundMethod) {
+                        "PARTIAL_CASH" -> "CASH"
+                        "WALLET", "CASH" -> selectedRefundMethod
+                        else -> if (refund > 0L) { if (payer.customerId == 0L) "CASH" else "WALLET" } else "NONE"
+                    }
+                    val status = reviewStatuses[payer.customerId].orEmpty().ifBlank { if (payer.invoiceTotal - payer.prepaymentAmount > 0L) "DEBTOR" else "REVIEWED" }
+                    val partialPaid = if (status == "PARTIAL") prepaymentAllocations[-payer.customerId].orEmpty().filter { it.isDigit() }.toLongOrNull() ?: 0L else 0L
+                    val payable = (payer.invoiceTotal - payer.prepaymentAmount).coerceAtLeast(0L)
+                    val paidAmount = when (status) {
+                        "REVIEWED" -> payer.invoiceTotal
+                        "DEBTOR" -> payer.prepaymentAmount.coerceAtMost(payer.invoiceTotal)
+                        "PARTIAL" -> (payer.prepaymentAmount + partialPaid).coerceAtMost(payer.invoiceTotal)
+                        else -> payer.prepaymentAmount.coerceAtMost(payer.invoiceTotal)
+                    }
                     if (refund > payer.unusedPrepayment) invalid = true
                     if (refund > 0L && method !in setOf("WALLET", "CASH")) invalid = true
+                    if (partialPaid < 0L || partialPaid > payable) invalid = true
                     decisions.put(org.json.JSONObject().apply {
                         put("customerId", payer.customerId)
                         put("refundAmount", refund)
                         put("refundMethod", method)
                         put("status", status)
-                        put("paidAmount", if (status == "REVIEWED") payer.invoiceTotal else 0L)
+                        put("paidAmount", paidAmount)
                     })
                 }
                 if (invalid) {
@@ -1129,8 +1143,8 @@ fun CustomerTransactionCard(
     val origGameCost: Double = if (transaction.gameCost > 0L) transaction.gameCost.toDouble() else (transaction.amount - transaction.foodCost).toDouble()
     val origFoodCost: Double = transaction.foodCost.toDouble()
     val origTotal: Double = if (transaction.amount > 0L) transaction.amount.toDouble() else (origGameCost + origFoodCost)
-    val previewGn = ((origGameCost.toLong() / 100_000L) * gameRewardRate + (origFoodCost.toLong() / 100_000L) * buffetRewardRate).coerceAtLeast(0L)
-    val previewLp = if (lpTomanRate > 0L) (origTotal.toLong() / lpTomanRate).coerceAtLeast(0L) else 0L
+    val previewGn = ((origGameCost.toLong() / 10_000L) * gameRewardRate + (origFoodCost.toLong() / 10_000L) * buffetRewardRate).coerceAtLeast(0L)
+    val previewLp = (if (lpTomanRate > 0L) origGameCost.toLong() / lpTomanRate else 0L) + ((origFoodCost.toLong() / 10_000L) * 5L)
 
     val gameDiscount: Double = origGameCost * (gameDiscPct / 100.0)
     val discountedGameCost: Double = (origGameCost - gameDiscount).coerceAtLeast(0.0)
@@ -1471,80 +1485,101 @@ fun CustomerTransactionCard(
                             onClick = { showPrepaymentDialog = true },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("💳 تعیین تکلیف و بازگشت مانده پرداخت اولیه")
+                            Text("💳 تعیین تکلیف فاکتور نشست")
                         }
                     }
 
                     if (showPrepaymentDialog) {
                         AlertDialog(
                             onDismissRequest = { showPrepaymentDialog = false },
-                            title = { Text("تعیین تکلیف فاکتور و پرداخت اولیه نشست") },
+                            title = { Text("فاکتور نشست") },
                             text = {
                                 Column(
-                                    modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    modifier = Modifier.fillMaxWidth().heightIn(max = 620.dp).verticalScroll(rememberScrollState()),
+                                    verticalArrangement = Arrangement.spacedBy(9.dp)
                                 ) {
                                     val review = settlementReview
                                     if (review == null) {
-                                        Text("در حال دریافت اطلاعات نشست از سرور...")
+                                        Text("در حال دریافت اطلاعات فاکتور از سرور...")
                                     } else {
-                                        Text("پرداخت اولیه کل: ${String.format(Locale.US, "%,d", review.totalPrepayment)} تومان", fontWeight = FontWeight.Bold)
-                                        Text("هزینه بازی این نشست: ${String.format(Locale.US, "%,d", review.gameCost)} تومان")
-                                        Text("هزینه بوفه این نشست: ${String.format(Locale.US, "%,d", review.buffetCost)} تومان")
+                                        val grandTotal = review.gameCost + review.buffetCost
+                                        val totalUnused = review.payers.sumOf { it.unusedPrepayment }
+                                        val totalPayable = (grandTotal - review.totalPrepayment).coerceAtLeast(0L)
+                                        Text("مشتریان موجود در این نشست:", fontWeight = FontWeight.Bold)
+                                        review.payers.forEach { Text(it.name.ifBlank { "مشتری ${it.customerId}" }, fontWeight = FontWeight.Bold) }
                                         HorizontalDivider()
+                                        Text("پرداخت اولیه کل: ${String.format(Locale.US, "%,d", review.totalPrepayment)} تومان")
+                                        Text("هزینه کل بازی در این نشست: ${String.format(Locale.US, "%,d", review.gameCost)} تومان")
+                                        Text("هزینه کل بوفه در این نشست: ${String.format(Locale.US, "%,d", review.buffetCost)} تومان")
+                                        Text("جمع کل فاکتور این نشست: ${String.format(Locale.US, "%,d", grandTotal)} تومان", fontWeight = FontWeight.Bold)
+                                        Text("مانده قابل بازگشت در این نشست: ${String.format(Locale.US, "%,d", totalUnused)} تومان")
+                                        Text("مانده قابل پرداخت این نشست: ${String.format(Locale.US, "%,d", totalPayable)} تومان", fontWeight = FontWeight.Bold)
+
                                         review.payers.forEach { payer ->
+                                            val payable = (payer.invoiceTotal - payer.prepaymentAmount).coerceAtLeast(0L)
+                                            val refundable = payer.unusedPrepayment
+                                            val payText = prepaymentAllocations[(-payer.customerId)] ?: ""
+                                            val refundText = prepaymentAllocations[payer.customerId].orEmpty()
+                                            val status = reviewStatuses[payer.customerId].orEmpty()
                                             Surface(
                                                 shape = RoundedCornerShape(10.dp),
                                                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                                                 modifier = Modifier.fillMaxWidth()
                                             ) {
-                                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                    Text(payer.name.ifBlank { "مشتری ${payer.customerId}" }, fontWeight = FontWeight.Bold)
+                                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                                    Text("سهم ${payer.name.ifBlank { "مشتری ${payer.customerId}" }} :", fontWeight = FontWeight.Bold)
                                                     Text("پرداخت اولیه: ${String.format(Locale.US, "%,d", payer.prepaymentAmount)} تومان")
                                                     Text("هزینه بازی: ${String.format(Locale.US, "%,d", payer.gameCost)} تومان")
                                                     Text("هزینه بوفه: ${String.format(Locale.US, "%,d", payer.buffetCost)} تومان")
-                                                    Text("جمع فاکتور: ${String.format(Locale.US, "%,d", payer.invoiceTotal)} تومان", fontWeight = FontWeight.Bold)
-                                                    Text("مانده قابل بازگشت: ${String.format(Locale.US, "%,d", payer.unusedPrepayment)} تومان", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                                                    OutlinedTextField(
-                                                        value = prepaymentAllocations[payer.customerId].orEmpty(),
-                                                        onValueChange = { value -> prepaymentAllocations = prepaymentAllocations.toMutableMap().apply { put(payer.customerId, value.filter { it.isDigit() }) } },
-                                                        label = { Text("مقدار بازگشت") },
-                                                        singleLine = true,
-                                                        supportingText = { Text("حداکثر: ${String.format(Locale.US, "%,d", payer.unusedPrepayment)} تومان") },
+                                                    Text("بدهکاری: ${String.format(Locale.US, "%,d", payable)} تومان", fontWeight = FontWeight.Bold, color = if (payable > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
+
+                                                    Text("مبلغ قابل پرداخت ${payer.name}", fontWeight = FontWeight.Bold)
+                                                    Surface(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        color = if (payable > 0) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant,
                                                         modifier = Modifier.fillMaxWidth()
-                                                    )
-                                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                                                        if (payer.customerId > 0L) FilterChip(
-                                                            selected = refundMethods[payer.customerId] == "WALLET",
-                                                            onClick = { refundMethods = refundMethods.toMutableMap().apply { put(payer.customerId, "WALLET") } },
-                                                            label = { Text("ذخیره در کیف پول") },
-                                                            modifier = Modifier.weight(1f)
-                                                        )
-                                                        FilterChip(
-                                                            selected = refundMethods[payer.customerId] == "CASH",
-                                                            onClick = { refundMethods = refundMethods.toMutableMap().apply { put(payer.customerId, "CASH") } },
-                                                            label = { Text("پرداخت نقدی به مشتری") },
-                                                            modifier = Modifier.weight(1f)
+                                                    ) { Text("${String.format(Locale.US, "%,d", payable)} تومان", modifier = Modifier.padding(10.dp), fontWeight = FontWeight.Bold) }
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                                                        FilterChip(selected = status == "REVIEWED", onClick = { reviewStatuses = reviewStatuses.toMutableMap().apply { put(payer.customerId, "REVIEWED") } }, label = { Text("تسویه کامل") }, modifier = Modifier.weight(1f), enabled = payable > 0)
+                                                        FilterChip(selected = status == "DEBTOR", onClick = { reviewStatuses = reviewStatuses.toMutableMap().apply { put(payer.customerId, "DEBTOR") } }, label = { Text("بدهکار") }, modifier = Modifier.weight(1f), enabled = payable > 0)
+                                                        FilterChip(selected = status == "PARTIAL", onClick = { reviewStatuses = reviewStatuses.toMutableMap().apply { put(payer.customerId, "PARTIAL") } }, label = { Text("پرداخت بخشی") }, modifier = Modifier.weight(1f), enabled = payable > 0)
+                                                    }
+                                                    if (status == "PARTIAL") {
+                                                        OutlinedTextField(
+                                                            value = payText,
+                                                            onValueChange = { v -> prepaymentAllocations = prepaymentAllocations.toMutableMap().apply { put(-payer.customerId, v.filter { it.isDigit() }) } },
+                                                            label = { Text("مبلغ پرداخت بخشی") },
+                                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                            singleLine = true,
+                                                            modifier = Modifier.fillMaxWidth()
                                                         )
                                                     }
-                                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                                                        FilterChip(
-                                                            selected = reviewStatuses[payer.customerId] != "DEBTOR",
-                                                            onClick = { reviewStatuses = reviewStatuses.toMutableMap().apply { put(payer.customerId, "REVIEWED") } },
-                                                            label = { Text("تسویه کامل") },
-                                                            modifier = Modifier.weight(1f)
-                                                        )
-                                                        FilterChip(
-                                                            selected = reviewStatuses[payer.customerId] == "DEBTOR",
-                                                            onClick = { reviewStatuses = reviewStatuses.toMutableMap().apply { put(payer.customerId, "DEBTOR") } },
-                                                            label = { Text("بدهکار") },
-                                                            modifier = Modifier.weight(1f)
+
+                                                    Text("مبلغ قابل بازگشت به ${payer.name}", fontWeight = FontWeight.Bold)
+                                                    Surface(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        color = if (refundable > 0) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    ) { Text("${String.format(Locale.US, "%,d", refundable)} تومان", modifier = Modifier.padding(10.dp), fontWeight = FontWeight.Bold) }
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                                                        FilterChip(selected = refundMethods[payer.customerId] == "WALLET", onClick = { refundMethods = refundMethods.toMutableMap().apply { put(payer.customerId, "WALLET") } }, label = { Text("بازگشت به کیف پول") }, modifier = Modifier.weight(1f), enabled = refundable > 0 && payer.customerId > 0)
+                                                        FilterChip(selected = refundMethods[payer.customerId] == "CASH", onClick = { refundMethods = refundMethods.toMutableMap().apply { put(payer.customerId, "CASH") } }, label = { Text("پرداخت نقدی") }, modifier = Modifier.weight(1f), enabled = refundable > 0)
+                                                        FilterChip(selected = refundMethods[payer.customerId] == "PARTIAL_CASH", onClick = { refundMethods = refundMethods.toMutableMap().apply { put(payer.customerId, "PARTIAL_CASH") } }, label = { Text("پرداخت بخشی نقدی") }, modifier = Modifier.weight(1f), enabled = refundable > 0)
+                                                    }
+                                                    if (refundMethods[payer.customerId] == "PARTIAL_CASH") {
+                                                        OutlinedTextField(
+                                                            value = refundText,
+                                                            onValueChange = { v -> prepaymentAllocations = prepaymentAllocations.toMutableMap().apply { put(payer.customerId, v.filter { it.isDigit() }) } },
+                                                            label = { Text("مبلغ بازگشت نقدی") },
+                                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                            singleLine = true,
+                                                            modifier = Modifier.fillMaxWidth()
                                                         )
                                                     }
                                                 }
                                             }
                                         }
-                                        Text("پس از انجام، فاکتور تعیین‌تکلیف می‌شود و GN/LP فقط همین مرحله قطعی خواهد شد.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text("تا زمان «انجام شد» هیچ GN یا LP قطعی نمی‌شود.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 }
                             },

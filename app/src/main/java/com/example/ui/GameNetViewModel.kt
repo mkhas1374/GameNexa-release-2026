@@ -1010,6 +1010,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 encryptSetting("enc_user_phone", cleanUser)
                 encryptSetting("enc_auth_token", serverToken)
                 NetworkClient.authToken = serverToken
+                NetworkClient.managerAuthToken = serverToken
                 SelfHostedManager.setManagerId(finalManagerId)
                 _isServerConnected.value = true
                 _isGracePeriodExpired.value = false
@@ -1052,7 +1053,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                             encryptSetting("enc_license_status", "ACTIVE")
                             encryptSetting("enc_plan_type", if (isSuper) "SUPER_MANAGER" else "ACTIVE")
                             encryptSetting("enc_expire_time", if (isSuper) Long.MAX_VALUE.toString() else "0")
-                            try { verifyLicenseStatus() } catch (_: Exception) { /* login already succeeded */ }
+                            // The login endpoint already authorizes entitlement/device atomically.
+                            // Do not run a second gate here: a transient verification failure must not
+                            // flip a freshly authenticated Manager back to the entry screen.
                             if (serverFullName.isNotBlank()) encryptSetting("enc_manager_fullname", serverFullName)
                             if (serverGameNetName.isNotBlank()) encryptSetting("enc_gamenet_name", serverGameNetName)
 
