@@ -55,7 +55,7 @@ jobs:
       - name: Run JVM tests
         run: |
           set -o pipefail
-          ./gradlew testDebugUnitTest --stacktrace --console=plain 2>&1 | tee jvm-test.log
+          ./gradlew testDebugUnitTest --stacktrace --console=plain --no-configuration-cache 2>&1 | tee jvm-test.log
 
       - name: Upload JVM failure diagnostics
         if: failure()
