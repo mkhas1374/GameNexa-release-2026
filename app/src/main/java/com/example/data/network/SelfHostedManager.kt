@@ -1579,7 +1579,12 @@ object SelfHostedManager {
                 .headers(getBaseHeaders())
                 .patch(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            client.newCall(req).execute().use { it.isSuccessful }
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    Log.w(TAG, "updateManagerCustomerTransaction HTTP ${resp.code}: ${resp.body?.string().orEmpty()}")
+                }
+                resp.isSuccessful
+            }
         } catch (e: Exception) {
             Log.e(TAG, "updateManagerCustomerTransaction error: ${e.message}", e)
             false

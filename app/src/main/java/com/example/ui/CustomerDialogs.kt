@@ -755,16 +755,16 @@ fun StationPauseDialog(
     val selectedPayerNamesMap = remember { mutableStateMapOf<Long, String>() }
 
     val availableCustomers = remember(stationCustomers, allCustomers) {
-        if (stationCustomers.isNotEmpty()) {
-            stationCustomers
-        } else if (allCustomers.isNotEmpty()) {
-            allCustomers
-        } else {
-            // Fallback guest options so operator is never blocked
-            (1..4).map { num ->
+        val source = when {
+            stationCustomers.isNotEmpty() -> stationCustomers
+            allCustomers.isNotEmpty() -> allCustomers
+            else -> (1..4).map { num ->
                 Customer(id = -num.toLong(), fullName = "مهمان $num", phoneNumber = "")
             }
         }
+        // A malformed/legacy local customer list may contain the same ID more than once.
+        // Compose LazyColumn keys must be unique; deduplicate before rendering the Stop dialog.
+        source.distinctBy { it.id }
     }
 
     LaunchedEffect(availableCustomers) {

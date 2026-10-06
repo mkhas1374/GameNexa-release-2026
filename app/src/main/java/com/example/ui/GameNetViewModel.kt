@@ -4317,10 +4317,14 @@ loadSettings()
                     earnedLp = earnedLp
                 )
                 repository.updateCustomerTransaction(updated)
-                if (!SelfHostedManager.updateManagerCustomerTransaction(updated)) {
-                    queueOrSyncCustomerTransaction(updated)
-                } else {
+                val serverUpdated = SelfHostedManager.updateManagerCustomerTransaction(updated)
+                if (serverUpdated) {
+                    repository.saveSetting("customer_transaction_outbox_${transaction.id}", "")
+                    // Keep the just-updated Room row visible immediately. The subsequent server
+                    // refresh replaces it with the canonical row when available.
                     repository.syncCustomerTransactionsFromServer()
+                } else {
+                    queueOrSyncCustomerTransaction(updated)
                 }
                 repository.insertCustomer(updatedCust)
             } else {
@@ -4330,10 +4334,14 @@ loadSettings()
                     amount = finalTxAmount
                 )
                 repository.updateCustomerTransaction(updated)
-                if (!SelfHostedManager.updateManagerCustomerTransaction(updated)) {
-                    queueOrSyncCustomerTransaction(updated)
-                } else {
+                val serverUpdated = SelfHostedManager.updateManagerCustomerTransaction(updated)
+                if (serverUpdated) {
+                    repository.saveSetting("customer_transaction_outbox_${transaction.id}", "")
+                    // Keep the just-updated Room row visible immediately. The subsequent server
+                    // refresh replaces it with the canonical row when available.
                     repository.syncCustomerTransactionsFromServer()
+                } else {
+                    queueOrSyncCustomerTransaction(updated)
                 }
             }
             } catch (e: Exception) {

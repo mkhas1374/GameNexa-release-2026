@@ -1132,9 +1132,10 @@ fun CustomerTransactionCard(
                 } else {
                     val ok = viewModel.finalizeSettlementReview(transaction.sessionId, (0 until decisions.length()).map { decisions.getJSONObject(it) })
                     if (ok) {
-                        // Finalize is authoritative on the server. Update the visible queue
-                        // immediately instead of waiting for a later cold-start/sync to move it.
-                        onUpdateStatus(resultingStatus)
+                        // finalizeSettlementReview already applies the exact server result to Room
+                        // and performs an authoritative server refresh. Do NOT call the legacy
+                        // status updater here: it can re-submit the pre-finalization paidAmount and
+                        // resurrect a just-finalized invoice as DEBTOR/UNREVIEWED.
                         isSubmitting = false
                         settlementReview = viewModel.fetchSettlementReview(
                             transaction.sessionId,
