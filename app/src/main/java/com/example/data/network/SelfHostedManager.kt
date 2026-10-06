@@ -1567,6 +1567,25 @@ object SelfHostedManager {
         }
     }
 
+    suspend fun updateManagerCustomerTransaction(transaction: CustomerTransaction): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("amount", transaction.amount)
+                put("paidAmount", transaction.paidAmount)
+                put("status", transaction.status)
+            }
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/customer-transactions/${transaction.id}")
+                .headers(getBaseHeaders())
+                .patch(json.toString().toRequestBody(JSON_MEDIA))
+                .build()
+            client.newCall(req).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.e(TAG, "updateManagerCustomerTransaction error: ${e.message}", e)
+            false
+        }
+    }
+
     suspend fun deleteManagerCustomerTransaction(transactionId: Long): Boolean = withContext(Dispatchers.IO) {
         lastTransactionDeleteHttpCode = 0
         try {

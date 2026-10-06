@@ -696,6 +696,31 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
 
   app.post('/api/v1/manager/customer-transactions', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const b=req.body||{},mid=manager(req),customerId=Number(b.customerId||0),localId=Number(b.localId||0)||null;const customerOrNull=customerId>0?customerId:null;if(customerOrNull!==null){const customer=await pool.query('SELECT id FROM customers WHERE id=$1 AND manager_id=$2',[customerOrNull,mid]);if(!customer.rows[0])return res.status(404).json({error:'Customer not found'});}const amount=Math.max(0,Math.trunc(Number(b.amount||0)));const paidAmount=Math.max(0,Math.trunc(Number(b.paidAmount||0)));const gameCost=Math.max(0,Math.trunc(Number(b.gameCost||b.game_cost||0)));const foodCost=Math.max(0,Math.trunc(Number(b.foodCost||b.food_cost||0)));const sessionId=String(b.sessionId||b.session_id||'').trim()||null;const q=await pool.query(`INSERT INTO customer_transactions(manager_id,customer_id,customer_name,station_name,title,amount,paid_amount,status,date_str,time_str,segment_details,buffet_details,event_timestamp,play_minutes,game_cost,food_cost,local_id,session_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT (manager_id,local_id) WHERE local_id IS NOT NULL DO UPDATE SET customer_id=EXCLUDED.customer_id,customer_name=EXCLUDED.customer_name,station_name=EXCLUDED.station_name,title=EXCLUDED.title,amount=EXCLUDED.amount,paid_amount=EXCLUDED.paid_amount,status=EXCLUDED.status,date_str=EXCLUDED.date_str,time_str=EXCLUDED.time_str,segment_details=EXCLUDED.segment_details,buffet_details=EXCLUDED.buffet_details,event_timestamp=EXCLUDED.event_timestamp,play_minutes=EXCLUDED.play_minutes,game_cost=EXCLUDED.game_cost,food_cost=EXCLUDED.food_cost,session_id=COALESCE(EXCLUDED.session_id,customer_transactions.session_id),updated_at=NOW() RETURNING *`,[mid,customerOrNull,b.customerName||'',b.stationName||'',b.title||'',amount,paidAmount,b.status||'UNREVIEWED',b.dateStr||'',b.timeStr||'',b.segmentDetails||'',b.buffetDetails||'',Number(b.timestamp||0),Number(b.playMinutes||b.play_minutes||0),gameCost,foodCost,localId,sessionId]);res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]',e?.message||e);res.status(500).json({error:'Internal server error'});} });
   app.get('/api/v1/manager/customer-transactions', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const q=await pool.query(`SELECT ct.*, COALESCE((SELECT gs.id FROM game_sessions gs WHERE ct.session_id IS NULL AND ct.customer_id IS NULL AND gs.manager_id=ct.manager_id AND gs.station_id=CAST(NULLIF(regexp_replace(ct.station_name,'[^0-9]','','g'),'') AS integer) AND gs.status='SETTLED' AND gs.ended_at BETWEEN ct.created_at-INTERVAL '5 seconds' AND ct.created_at+INTERVAL '5 seconds' ORDER BY ABS(EXTRACT(EPOCH FROM (gs.ended_at-ct.created_at))) LIMIT 1),ct.session_id) AS session_id, COALESCE((SELECT SUM(g.amount) FROM gn_ledger g WHERE g.manager_id=ct.manager_id AND g.customer_id=ct.customer_id AND g.type='CREDIT' AND ((g.reference_type='SESSION_REVIEW' AND g.reference_id=ct.session_id::text) OR g.reference_id LIKE ('SESSION_REVIEW_'||ct.session_id::text||'_CUST_'||ct.customer_id::text||'%') OR g.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=ct.manager_id AND i.session_id=ct.session_id AND i.customer_id=ct.customer_id))),0)::bigint AS earned_gn, COALESCE((SELECT SUM(l.amount) FROM lp_ledger l WHERE l.manager_id=ct.manager_id AND l.customer_id=ct.customer_id AND l.type='CREDIT' AND ((l.reference_type='SESSION_REVIEW' AND l.reference_id=ct.session_id::text) OR l.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=ct.manager_id AND i.session_id=ct.session_id AND i.customer_id=ct.customer_id))),0)::bigint AS earned_lp FROM customer_transactions ct WHERE ct.manager_id=$1 AND ct.status <> 'DELETED' ORDER BY ct.created_at DESC LIMIT 1000`,[manager(req)]);res.json(q.rows);}catch(e){console.error('[customer-transactions/list]',e?.message||e);res.status(500).json({error:'Internal server error'});} });
+  app.patch('/api/v1/manager/customer-transactions/:id', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{
+    const c=await pool.connect();
+    try{
+      const id=Number(req.params.id), mid=manager(req), b=req.body||{};
+      if(!Number.isSafeInteger(id)||id<=0)return res.status(422).json({error:'Invalid transaction id'});
+      await c.query('BEGIN');
+      const before=(await c.query("SELECT * FROM customer_transactions WHERE id=$1 AND manager_id=$2 AND status<>'DELETED' FOR UPDATE",[id,mid])).rows[0];
+      if(!before){await c.query('ROLLBACK');return res.status(404).json({error:'Transaction not found'});}
+      const amount=Math.max(0,Math.trunc(Number(b.amount ?? before.amount ?? 0)));
+      const paid=Math.max(0,Math.min(amount,Math.trunc(Number(b.paidAmount ?? before.paid_amount ?? 0))));
+      const requested=String(b.status||before.status||'UNREVIEWED').toUpperCase();
+      const status=amount<=0||paid>=amount?'REVIEWED':(requested==='UNREVIEWED'?'UNREVIEWED':'DEBTOR');
+      const oldOutstanding=Math.max(0,Number(before.amount||0)-Number(before.paid_amount||0));
+      const newOutstanding=Math.max(0,amount-paid);
+      await c.query('UPDATE customer_transactions SET amount=$1,paid_amount=$2,status=$3,updated_at=NOW() WHERE id=$4 AND manager_id=$5',[amount,paid,status,id,mid]);
+      if(Number(before.customer_id||0)>0){
+        const delta=newOutstanding-oldOutstanding;
+        if(delta!==0) await c.query('UPDATE customers SET debt=GREATEST(0,COALESCE(debt,0)+$1),updated_at=NOW() WHERE id=$2 AND manager_id=$3',[delta,Number(before.customer_id),mid]);
+      }
+      const after=(await c.query('SELECT * FROM customer_transactions WHERE id=$1 AND manager_id=$2',[id,mid])).rows[0];
+      await c.query('COMMIT');
+      return res.json({success:true,transaction:after});
+    }catch(e){try{await c.query('ROLLBACK')}catch(_){}console.error('[customer-transactions/patch]',e?.message||e);return res.status(500).json({error:'Internal server error'});}finally{c.release();}
+  });
+
   app.delete('/api/v1/manager/customer-transactions/:id', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const id=Number(req.params.id);if(!Number.isSafeInteger(id)||id<=0)return res.status(422).json({error:'Invalid transaction id'});const mid=manager(req);let q=await pool.query("UPDATE customer_transactions SET status='DELETED',updated_at=NOW() WHERE id=$1 AND manager_id=$2 AND status <> 'DELETED' RETURNING id,local_id",[id,mid]);if(!q.rows[0]) q=await pool.query("UPDATE customer_transactions SET status='DELETED',updated_at=NOW() WHERE local_id=$1 AND manager_id=$2 AND status <> 'DELETED' RETURNING id,local_id",[id,mid]);if(!q.rows[0]){const existing=await pool.query("SELECT id,local_id,status FROM customer_transactions WHERE manager_id=$1 AND (id=$2 OR local_id=$2) LIMIT 1",[mid,id]);if(existing.rows[0] && existing.rows[0].status==='DELETED')return res.json({success:true,id:existing.rows[0].id,localId:existing.rows[0].local_id||null,idempotent:true});return res.status(404).json({error:'Transaction not found'});}res.json({success:true,id:q.rows[0].id,localId:q.rows[0].local_id||null});}catch(e){console.error('[customer-transactions/delete]',e?.message||e);res.status(500).json({error:'Internal server error'});} });
   app.get('/api/v1/customer/transactions', requireCustomerAuth, async(req,res)=>{try{const q=await pool.query('SELECT * FROM customer_transactions WHERE manager_id=$1 AND customer_id=$2 ORDER BY created_at DESC LIMIT 500',[req.user.managerId,req.user.id]);res.json(q.rows);}catch(e){res.status(500).json({error:'Internal server error'});} });
   app.get('/api/v1/manager/payment-methods', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const q=await pool.query('SELECT * FROM manager_payment_methods WHERE manager_id=$1 ORDER BY id',[manager(req)]);res.json({success:true,methods:q.rows});}catch(e){res.status(500).json({error:'Internal server error'});} });
@@ -1021,7 +1046,10 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         // The invoice ledger is not enough: customer_transactions is the Manager queue's
         // authoritative status row. Persist the decision here so the next Android sync
         // cannot resurrect an already finalized invoice as UNREVIEWED.
-        if (isGuestDecision) {
+        const exactTransactionId=Number(d.transactionId||0);
+        if(exactTransactionId>0){
+          await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,session_id=COALESCE(session_id,$4),updated_at=NOW() WHERE id=$5 AND manager_id=$3 AND status<>'DELETED'",[finalStatus,paidAmount,mid,sid,exactTransactionId]);
+        } else if (isGuestDecision) {
           await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,updated_at=NOW() WHERE manager_id=$3 AND session_id=$4 AND customer_id IS NULL AND customer_name=$5 AND status <> 'DELETED'",[finalStatus,paidAmount,mid,sid,participant.participant_name]);
         } else {
           await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,updated_at=NOW() WHERE manager_id=$3 AND session_id=$4 AND customer_id=$5 AND status <> 'DELETED'",[finalStatus,paidAmount,mid,sid,cid]);
@@ -1029,10 +1057,12 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         if(!isGuestDecision && earnedGn>0){const g=await c.query("INSERT INTO gn_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_REVIEW',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",[mid,cid,earnedGn,sid,reviewKey+':GN']);if(g.rowCount>0) await c.query('UPDATE customers SET gn_balance=gn_balance+$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3',[earnedGn,cid,mid]);}
         if(!isGuestDecision && earnedLp>0){const l=await c.query("INSERT INTO lp_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_REVIEW',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",[mid,cid,earnedLp,sid,reviewKey+':LP']);if(l.rowCount>0) await c.query('UPDATE customers SET lp_balance=lp_balance+$1 WHERE id=$2 AND manager_id=$3',[earnedLp,cid,mid]);}
         await c.query("UPDATE invoices SET status=$1,paid_amount=$2,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[finalStatus,paidAmount,inv.id,mid]);
-        if (isGuestDecision) {
-          await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,session_id=COALESCE(session_id,$4),updated_at=NOW() WHERE manager_id=$3 AND session_id IS NOT DISTINCT FROM $4 AND customer_id IS NULL AND customer_name=$5 AND status<>'DELETED'",[finalStatus,paidAmount,mid,sid,participant.participant_name]);
-        } else {
-          await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,session_id=COALESCE(session_id,$4),updated_at=NOW() WHERE manager_id=$3 AND session_id IS NOT DISTINCT FROM $4 AND customer_id=$5 AND status<>'DELETED'",[finalStatus,paidAmount,mid,sid,cid]);
+        if(exactTransactionId<=0){
+          if (isGuestDecision) {
+            await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,session_id=COALESCE(session_id,$4),updated_at=NOW() WHERE manager_id=$3 AND session_id IS NOT DISTINCT FROM $4 AND customer_id IS NULL AND customer_name=$5 AND status<>'DELETED'",[finalStatus,paidAmount,mid,sid,participant.participant_name]);
+          } else {
+            await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,session_id=COALESCE(session_id,$4),updated_at=NOW() WHERE manager_id=$3 AND session_id IS NOT DISTINCT FROM $4 AND customer_id=$5 AND status<>'DELETED'",[finalStatus,paidAmount,mid,sid,cid]);
+          }
         }
         if(finalStatus==='DEBTOR' && !isGuestDecision){
           const outstanding=Math.max(0,total-paidAmount);

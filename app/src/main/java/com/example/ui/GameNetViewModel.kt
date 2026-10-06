@@ -4317,7 +4317,11 @@ loadSettings()
                     earnedLp = earnedLp
                 )
                 repository.updateCustomerTransaction(updated)
-                queueOrSyncCustomerTransaction(updated)
+                if (!SelfHostedManager.updateManagerCustomerTransaction(updated)) {
+                    queueOrSyncCustomerTransaction(updated)
+                } else {
+                    repository.syncCustomerTransactionsFromServer()
+                }
                 repository.insertCustomer(updatedCust)
             } else {
                 val updated = transaction.copy(
@@ -4326,7 +4330,11 @@ loadSettings()
                     amount = finalTxAmount
                 )
                 repository.updateCustomerTransaction(updated)
-                queueOrSyncCustomerTransaction(updated)
+                if (!SelfHostedManager.updateManagerCustomerTransaction(updated)) {
+                    queueOrSyncCustomerTransaction(updated)
+                } else {
+                    repository.syncCustomerTransactionsFromServer()
+                }
             }
             } catch (e: Exception) {
                 android.util.Log.e("GameNexa", "Customer transaction settlement failed", e)
