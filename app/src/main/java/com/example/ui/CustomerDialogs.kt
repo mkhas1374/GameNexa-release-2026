@@ -20,6 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.example.data.Customer
 import java.util.Locale
 
@@ -1125,29 +1126,45 @@ fun MultiCustomerPrepaymentDialog(
     onConfirm: (Map<Long, Long>, Long) -> Unit
 ) {
     val selectedCustomerIdsKey = selectedCustomers.map { it.id }
-    val prepayMap = remember(selectedCustomerIdsKey, initialPrepayments, totalPrepayment) {
-        mutableStateMapOf<Long, String>().apply {
-            val hasExplicitAllocation = initialPrepayments.values.any { it > 0L }
-            val base = if (!hasExplicitAllocation && totalPrepayment > 0L && selectedCustomers.isNotEmpty()) totalPrepayment / selectedCustomers.size else 0L
-            val remainder = if (!hasExplicitAllocation && totalPrepayment > 0L && selectedCustomers.isNotEmpty()) totalPrepayment % selectedCustomers.size else 0L
-            selectedCustomers.forEachIndexed { index, cust ->
-                val initVal = initialPrepayments[cust.id]?.takeIf { it > 0L }?.toString()
-                    ?: if (!hasExplicitAllocation && totalPrepayment > 0L) (base + if (index == selectedCustomers.lastIndex) remainder else 0L).toString() else ""
-                put(cust.id, initVal)
+    var prepayMap by remember(selectedCustomerIdsKey, initialPrepayments, totalPrepayment) {
+        mutableStateOf(
+            buildMap<Long, String> {
+                val uniqueCustomers = selectedCustomers.distinctBy { it.id }
+                val hasExplicitAllocation = initialPrepayments.values.any { it > 0L }
+                val base = if (!hasExplicitAllocation && totalPrepayment > 0L && uniqueCustomers.isNotEmpty()) totalPrepayment / uniqueCustomers.size else 0L
+                val remainder = if (!hasExplicitAllocation && totalPrepayment > 0L && uniqueCustomers.isNotEmpty()) totalPrepayment % uniqueCustomers.size else 0L
+                uniqueCustomers.forEachIndexed { index, cust ->
+                    val initVal = initialPrepayments[cust.id]?.takeIf { it > 0L }?.toString()
+                        ?: if (!hasExplicitAllocation && totalPrepayment > 0L) {
+                            (base + if (index == uniqueCustomers.lastIndex) remainder else 0L).toString()
+                        } else ""
+                    put(cust.id, initVal)
+                }
             }
-        }
+        )
+    }
+    val totalSum = prepayMap.values.sumOf { it.toLongOrNull() ?: 0L }
+    fun updatePrepayment(customerId: Long, value: String) {
+        prepayMap = prepayMap.toMutableMap().apply { put(customerId, value.filter(Char::isDigit)) }
     }
 
-    val totalSum = remember {
-        derivedStateOf {
-            prepayMap.values.sumOf { it.toLongOrNull() ?: 0L }
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Column {
+    // Do not put a scrollable Column/LazyColumn inside Material3 AlertDialog. Compose's
+    // intrinsic measurement path for dialog content has historically produced runtime
+    // measurement crashes for scrollable children. A platform Dialog + bounded LazyColumn
+    // gives the same Manager UX without that measurement contract.
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 520.dp)
+                .padding(horizontal = 16.dp, vertical = 24.dp),
+            shape = RoundedCornerShape(20.dp),
+            tonalElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 Text(
                     text = "تخصیص پیش‌پرداخت مخاطبان",
                     style = MaterialTheme.typography.titleMedium,
@@ -1159,27 +1176,18 @@ fun MultiCustomerPrepaymentDialog(
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-            }
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 320.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Column(
+
+                LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 80.dp, max = 320.dp)
-                        .verticalScroll(rememberScrollState()),
+                        .heightIn(min = 80.dp, max = 300.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    selectedCustomers.distinctBy { it.id }.forEach { cust ->
+                    items(selectedCustomers.distinctBy { it.id }, key = { it.id }) { cust ->
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                         ) {
                             Row(
                                 modifier = Modifier
@@ -1194,14 +1202,13 @@ fun MultiCustomerPrepaymentDialog(
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.weight(1f)
                                 )
-
                                 OutlinedTextField(
                                     value = prepayMap[cust.id] ?: "",
-                                    onValueChange = { prepayMap[cust.id] = it.filter(Char::isDigit) },
+                                    onValueChange = { updatePrepayment(cust.id, it) },
                                     placeholder = { Text("مبلغ (تومان)", fontSize = 10.sp) },
                                     singleLine = true,
-                                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
-                                    modifier = Modifier.width(130.dp).height(48.dp),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier.width(130.dp).height(52.dp),
                                     shape = RoundedCornerShape(8.dp)
                                 )
                             }
@@ -1210,7 +1217,6 @@ fun MultiCustomerPrepaymentDialog(
                 }
 
                 HorizontalDivider()
-
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1218,29 +1224,28 @@ fun MultiCustomerPrepaymentDialog(
                 ) {
                     Text(text = "مجموع کل پیش‌پرداخت:", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Text(
-                        text = "%,.0f تومان".format(java.util.Locale.US, totalSum.value),
+                        text = "%,d تومان".format(Locale.US, totalSum),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Black,
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val resultMap = prepayMap.mapValues { it.value.toLongOrNull() ?: 0L }
-                    onConfirm(resultMap, totalSum.value)
-                },
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                Text("ثبت پیش‌پرداخت", fontWeight = FontWeight.Bold)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("انصراف")
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onDismiss) { Text("انصراف") }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            val resultMap = prepayMap.mapValues { it.value.toLongOrNull() ?: 0L }
+                            onConfirm(resultMap, totalSum)
+                        }
+                    ) { Text("ثبت پیش‌پرداخت", fontWeight = FontWeight.Bold) }
+                }
             }
         }
-    )
+    }
 }

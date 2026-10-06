@@ -1093,6 +1093,7 @@ fun CustomerTransactionCard(
             if (review != null) {
                 val decisions = org.json.JSONArray()
                 var invalid = false
+                var resultingStatus = "REVIEWED"
                 review.payers.forEach { payer ->
                     val refund = prepaymentAllocations[payer.customerId].orEmpty().filter { it.isDigit() }.toLongOrNull() ?: 0L
                     val selectedRefundMethod = refundMethods[payer.customerId].orEmpty()
@@ -1102,6 +1103,7 @@ fun CustomerTransactionCard(
                         else -> if (refund > 0L) { if (payer.customerId <= 0L) "CASH" else "WALLET" } else "NONE"
                     }
                     val status = reviewStatuses[payer.customerId].orEmpty().ifBlank { if (payer.invoiceTotal - payer.prepaymentAmount > 0L) "DEBTOR" else "REVIEWED" }
+                    if (status == "DEBTOR" || status == "PARTIAL") resultingStatus = "DEBTOR"
                     val partialPaid = if (status == "PARTIAL") prepaymentAllocations[partialPaymentKey(payer.customerId)].orEmpty().filter { it.isDigit() }.toLongOrNull() ?: 0L else 0L
                     val payable = (payer.invoiceTotal - payer.prepaymentAmount).coerceAtLeast(0L)
                     val paidAmount = when (status) {
@@ -1122,10 +1124,15 @@ fun CustomerTransactionCard(
                     })
                 }
                 if (invalid) {
+                    isSubmitting = false
                     android.widget.Toast.makeText(viewModel.getApplication(), "مقدار بازگشت یا روش پرداخت برای یکی از مشتریان معتبر نیست.", android.widget.Toast.LENGTH_LONG).show()
                 } else {
                     val ok = viewModel.finalizeSettlementReview(transaction.sessionId, (0 until decisions.length()).map { decisions.getJSONObject(it) })
                     if (ok) {
+                        // Finalize is authoritative on the server. Update the visible queue
+                        // immediately instead of waiting for a later cold-start/sync to move it.
+                        onUpdateStatus(resultingStatus)
+                        isSubmitting = false
                         settlementReview = viewModel.fetchSettlementReview(
                             transaction.sessionId,
                             transaction.customerId,
@@ -1137,6 +1144,7 @@ fun CustomerTransactionCard(
                         showPrepaymentDialog = false
                         android.widget.Toast.makeText(viewModel.getApplication(), "تعیین تکلیف نشست با موفقیت ثبت شد؛ GN و LP قطعی شدند.", android.widget.Toast.LENGTH_SHORT).show()
                     } else {
+                        isSubmitting = false
                         android.widget.Toast.makeText(viewModel.getApplication(), "تعیین تکلیف با سرور ثبت نشد؛ اتصال را بررسی و دوباره تلاش کنید.", android.widget.Toast.LENGTH_LONG).show()
                     }
                 }
@@ -1151,9 +1159,9 @@ fun CustomerTransactionCard(
     val origGameCost: Double = if (transaction.gameCost > 0L) transaction.gameCost.toDouble() else (transaction.amount - transaction.foodCost).toDouble()
     val origFoodCost: Double = transaction.foodCost.toDouble()
     val origTotal: Double = if (transaction.amount > 0L) transaction.amount.toDouble() else (origGameCost + origFoodCost)
-    val previewGn = ((origGameCost.toLong() / 10_000L) * gameRewardRate + (origFoodCost.toLong() / 10_000L) * buffetRewardRate).coerceAtLeast(0L)
+    val previewGn = ((origGameCost.toLong() * gameRewardRate) / 10_000L + (origFoodCost.toLong() * buffetRewardRate) / 10_000L).coerceAtLeast(0L)
     // Normal session preview uses the same authoritative rates for GN and LP.
-    val previewLp = ((origGameCost.toLong() / 10_000L) * gameRewardRate + (origFoodCost.toLong() / 10_000L) * buffetRewardRate).coerceAtLeast(0L)
+    val previewLp = ((origGameCost.toLong() * gameRewardRate) / 10_000L + (origFoodCost.toLong() * buffetRewardRate) / 10_000L).coerceAtLeast(0L)
 
     val gameDiscount: Double = origGameCost * (gameDiscPct / 100.0)
     val discountedGameCost: Double = (origGameCost - gameDiscount).coerceAtLeast(0.0)
@@ -1708,7 +1716,10 @@ fun CustomerTransactionCard(
                                 }
                             },
                             confirmButton = {
-                                TextButton(onClick = { refundRequested = true }, enabled = settlementReview != null && !isSubmitting) { Text("انجام شد") }
+                                Button(onClick = { isSubmitting = true; refundRequested = true }, enabled = settlementReview != null && !isSubmitting) {
+                                    if (isSubmitting) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                    else Text("انجام شد")
+                                }
                             },
                             dismissButton = { TextButton(onClick = { showPrepaymentDialog = false }) { Text("لغو") } }
                         )

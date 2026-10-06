@@ -2356,11 +2356,32 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     if (reachable) {
                         _lastSuccessfulServerCheckElapsed.value = elapsed
                         if (!wasConnected && _currentAdminRole.value != "TRIAL_USER" && _currentAdminRole.value.isNotBlank()) {
-                            flushPendingSessionStarts()
-                            flushSessionOutbox()
-                            flushPendingBuffetOrders()
-                            flushPendingCustomerTransactions()
-                            flushPendingSettlements()
+                            // A health probe only proves transport reachability; it does not hydrate
+                            // Room or re-run subscription validation. After force-close/reopen, a
+                            // transient verification failure used to leave the Manager stuck behind
+                            // the Offline banner until the user tapped "بررسی مجدد". Reconnect is now
+                            // a real synchronization event: revalidate entitlement, then hydrate
+                            // financial history/configuration/stations automatically.
+                            try {
+                                verifyLicenseStatus()
+                            } catch (e: Exception) {
+                                android.util.Log.w("GameNetViewModel", "Reconnect entitlement validation failed: ${e.message}")
+                            }
+                            try {
+                                SelfHostedManager.fetchAllFromCloud()
+                                SelfHostedManager.fetchArchivedCustomersFromCloud()
+                                repository.syncCustomerTransactionsFromServer()
+                                flushPendingSessionStarts()
+                                flushSessionOutbox()
+                                flushPendingBuffetOrders()
+                                flushPendingCustomerTransactions()
+                                flushPendingSettlements()
+                                repository.syncCustomerTransactionsFromServer()
+                                repository.syncAllWithServer()
+                                reconcileActiveStationsFromServer()
+                            } catch (e: Exception) {
+                                android.util.Log.w("GameNetViewModel", "Reconnect data synchronization failed: ${e.message}")
+                            }
                         }
                     }
                 }

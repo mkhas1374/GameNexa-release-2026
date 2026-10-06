@@ -815,7 +815,7 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         const guestBillingId=String(-(pIndex+1));
         const snapshotPre=cid>0
           ? Number(snapshotPrepayments[String(cid)]||0)
-          : Number(snapshotPrepayments[guestBillingId]||snapshotPrepayments[String(p.participant_key)]||0);
+          : Number(snapshotPrepayments[String(p.participant_key)]||snapshotPrepayments[guestBillingId]||0);
         const sessionInitial=Number(snapshot.initialPrepaymentAmount||0);
         const solePayerFallback=(participants.filter(x=>x.is_payer).length===1 && p.is_payer && sessionInitial>0)?sessionInitial:0;
         const prepayment=Math.max(0,Number(p.prepayment_amount||0)||snapshotPre||solePayerFallback);
@@ -829,6 +829,27 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         const unusedPrepayment=Math.max(0,prepayment-invoiceTotal);
         return {...p,prepayment_amount:String(prepayment),game_cost:String(gameCost),buffet_cost:String(buffetCost),invoice_total:String(invoiceTotal),unused_prepayment:String(unusedPrepayment)};
       });
+      // Legacy repair: older sessions could snapshot the session-level initial payment
+      // without persisting per-payer allocations. If every payer row is zero and there is no
+      // allocation map, derive the same deterministic equal split used by Start. This keeps
+      // historical invoices reviewable instead of displaying a false refundable balance of 0.
+      const legacyPayers=enriched.filter(p=>p.is_payer);
+      const legacyInitial=Number(snapshot.initialPrepaymentAmount||0);
+      const legacyMap=new Map();
+      if(legacyInitial>0 && legacyPayers.length>0 && legacyPayers.every(p=>Number(p.prepayment_amount||0)===0) && Object.keys(snapshotPrepayments).length===0){
+        const base=Math.floor(legacyInitial/legacyPayers.length), rem=legacyInitial%legacyPayers.length;
+        legacyPayers.forEach((p,i)=>{
+          const key=p.customer_id!==null?String(p.customer_id):String(p.participant_key||('guest:'+String(i+1)));
+          legacyMap.set(key,base+(i===legacyPayers.length-1?rem:0));
+        });
+      }
+      if(legacyMap.size){
+        enriched.forEach(p=>{
+          const key=p.customer_id!==null?String(p.customer_id):String(p.participant_key||'');
+          const repaired=legacyMap.get(key);
+          if(repaired!==undefined) p.prepayment_amount=String(repaired);
+        });
+      }
       const guestParticipants=enriched.filter(p=>Boolean(p.is_guest) && p.customer_id===null);
       const selectedParticipants = requestedCustomerId === null
         ? enriched
@@ -908,6 +929,15 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       const guestPayers=participants.filter(p=>!p.customer_id && p.is_guest && p.is_payer);
       const snapshot=session.pricing_snapshot && typeof session.pricing_snapshot==='object'?session.pricing_snapshot:{};
       const snapPre=snapshot.customerPrepayments && typeof snapshot.customerPrepayments==='object'?snapshot.customerPrepayments:{};
+      const legacyPrepaymentMap=new Map();
+      if(Number(snapshot.initialPrepaymentAmount||0)>0 && participants.length>0 && participants.every(p=>Number(p.prepayment_amount||0)===0) && Object.keys(snapPre).length===0){
+        const base=Math.floor(Number(snapshot.initialPrepaymentAmount||0)/participants.length);
+        const rem=Number(snapshot.initialPrepaymentAmount||0)%participants.length;
+        participants.forEach((p,i)=>{
+          const key=p.customer_id!==null?String(p.customer_id):String(p.participant_key||('guest:'+String(i+1)));
+          legacyPrepaymentMap.set(key,base+(i===participants.length-1?rem:0));
+        });
+      }
       const invoiceRowsForSession=(await c.query("SELECT id,invoice_number,customer_id,game_cost,buffet_cost,total_amount,paid_amount,status,customer_snapshot FROM invoices WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sid,mid])).rows;
       const guestInvoiceByKey=new Map();
       invoiceRowsForSession.filter(r=>r.customer_id===null).forEach(r=>{
@@ -937,7 +967,11 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
           continue;
         }
         const solePayerFallback=(participants.length===1 && participant.is_payer)?Number(snapshot.initialPrepaymentAmount||0):0;
-        const prepayment=Math.max(0,Number(participant.prepayment_amount||0)||(isGuestDecision?Number(snapPre[String(participant.participant_key)]||0):Number(snapPre[String(cid)]||0))||solePayerFallback);
+        const participantKeyForPrepayment=participant.customer_id!==null?String(participant.customer_id):String(participant.participant_key||'');
+        const prepayment=Math.max(0,Number(participant.prepayment_amount||0)||(legacyPrepaymentMap.get(participantKeyForPrepayment)||0)||(isGuestDecision?Number(snapPre[String(participant.participant_key)]||0):Number(snapPre[String(cid)]||0))||solePayerFallback);
+        if(prepayment>0 && Number(participant.prepayment_amount||0)===0){
+          await c.query("UPDATE session_participants SET prepayment_amount=$1::numeric WHERE session_id=$2 AND manager_id=$3 AND participant_key=$4",[prepayment,sid,mid,participant.participant_key]);
+        }
         let inv;
         if (isGuestDecision) {
           inv=guestInvoiceByKey.get(String(participant.participant_key||'')) || (await c.query("SELECT id,game_cost,buffet_cost,total_amount,paid_amount,status FROM invoices WHERE session_id=$1 AND manager_id=$2 AND customer_id IS NULL AND customer_snapshot->>'name'=$3 ORDER BY id DESC LIMIT 1 FOR UPDATE",[sid,mid,participant.participant_name])).rows[0];

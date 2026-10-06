@@ -567,6 +567,7 @@ fun StationCard(
             }
 
             var showCustomerSelectionDialog by remember { mutableStateOf(false) }
+            var showStationPauseDialog by remember { mutableStateOf(false) }
             var showPayerAllocationDialog by remember { mutableStateOf(false) }
             var showBehaviorDialog by remember { mutableStateOf(false) }
             var showMultiPrepaymentDialog by remember { mutableStateOf(false) }
@@ -618,6 +619,31 @@ fun StationCard(
                         pendingCustomerPrepayments = prepayMap
                         payInput = totalSum.toInt().toString()
                         viewModel.updateStationCustomerPrepayments(station.id, prepayMap, totalSum)
+                    }
+                )
+            }
+
+            if (showStationPauseDialog) {
+                val stationCustomers = station.getStationCustomers(allCustomers)
+                StationPauseDialog(
+                    stationId = station.id,
+                    stationCustomers = stationCustomers,
+                    allCustomers = allCustomers,
+                    gameCost = gameCost,
+                    prepaymentTotal = station.prepaymentAmount,
+                    customerPrepaymentsMap = station.getEffectiveCustomerPrepaymentsMap(),
+                    onDismiss = { showStationPauseDialog = false },
+                    onSimplePause = {
+                        showStationPauseDialog = false
+                        onPause()
+                    },
+                    onCommitSegmentAndPause = { payerIds, payerNames ->
+                        showStationPauseDialog = false
+                        viewModel.commitSegmentAndPause(station.id, payerIds, payerNames)
+                    },
+                    onCommitSegmentAndContinue = { payerIds, payerNames ->
+                        showStationPauseDialog = false
+                        viewModel.commitSegmentAndContinue(station.id, payerIds, payerNames)
                     }
                 )
             }
@@ -1372,7 +1398,16 @@ fun StationCard(
                     }
                     isRunning -> {
                         Button(
-                            onClick = { onPause() },
+                            onClick = {
+                                // A configured prepayment or fixed duration is a single
+                                // continuous billing session: Stop means pause the clock/cost only.
+                                // Without either, preserve the legacy three-option Stop workflow.
+                                if (station.prepaymentAmount > 0L || station.durationLimitMinutes > 0) {
+                                    onPause()
+                                } else {
+                                    showStationPauseDialog = true
+                                }
+                            },
                             modifier = Modifier.weight(1.2f).height(30.dp),
                             shape = RoundedCornerShape(6.dp),
                             contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
