@@ -66,6 +66,7 @@ data class SettlementPayer(
 data class SettlementReview(
     val sessionId: String,
     val totalPrepayment: Long,
+    val sessionTotalPrepayment: Long = 0L,
     val refundedPrepayment: Long,
     val remainingRefundable: Long,
     val gameCost: Long = 0L,
@@ -1296,9 +1297,11 @@ object SelfHostedManager {
         }
     }
 
-    suspend fun fetchSettlementReview(sessionId: String): SettlementReview? = withContext(Dispatchers.IO) {
+    suspend fun fetchSettlementReview(sessionId: String, customerId: Long? = null): SettlementReview? = withContext(Dispatchers.IO) {
         try {
-            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/sessions/$sessionId/settlement-review").headers(getBaseHeaders()).get().build()
+            val selectedCustomerId = customerId?.let { if (it > 0L) it else 0L }
+            val query = selectedCustomerId?.let { "?customerId=$it" } ?: ""
+            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/sessions/$sessionId/settlement-review$query").headers(getBaseHeaders()).get().build()
             client.newCall(req).execute().use { resp ->
                 if(!resp.isSuccessful) return@withContext null
                 val root=JSONObject(resp.body?.string().orEmpty())
@@ -1322,6 +1325,7 @@ object SelfHostedManager {
                 SettlementReview(
                     sessionId=sessionId,
                     totalPrepayment=root.optString("totalPrepayment","0").toLongOrNull() ?: root.optLong("totalPrepayment",0L),
+                    sessionTotalPrepayment=root.optString("sessionTotalPrepayment","0").toLongOrNull() ?: root.optLong("sessionTotalPrepayment",0L),
                     refundedPrepayment=root.optString("refundedPrepayment","0").toLongOrNull() ?: root.optLong("refundedPrepayment",0L),
                     remainingRefundable=root.optString("remainingRefundable","0").toLongOrNull() ?: root.optLong("remainingRefundable",0L),
                     gameCost=root.optString("gameCost","0").toLongOrNull() ?: root.optLong("gameCost",0L),

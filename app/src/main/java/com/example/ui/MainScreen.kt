@@ -109,13 +109,14 @@ fun MainScreen(
             }
         } else {
             Column(modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
-            val licenseState by viewModel.licenseState.collectAsState()
             val isServerConnected by viewModel.isServerConnected.collectAsState()
             val coroutineScope = rememberCoroutineScope()
 
             var selectedFilter by remember { mutableStateOf("ALL") } // "ALL", "READY", "ACTIVE"
 
             val accessState by viewModel.accessState.collectAsState()
+            val licenseState by viewModel.licenseState.collectAsState()
+            val isAdminAuthenticated by viewModel.isAdminAuthenticated.collectAsState()
             val isTrialActive by viewModel.isTrialModeFlow.collectAsState()
             val currentRole by viewModel.currentAdminRole.collectAsState()
             val isTrialMode = isTrialActive || currentRole == "TRIAL_USER" || viewModel.isTrialUser
@@ -171,9 +172,14 @@ fun MainScreen(
                     }
                 }
                 is AppAccessState.Denied -> {
-                    LaunchedEffect(state) {
-                        viewModel.setLicenseExpired(state.message)
-                        viewModel.handleAccessDenied()
+                    LaunchedEffect(state, licenseState, isAdminAuthenticated) {
+                        // A freshly authenticated Manager can briefly carry a stale Denied
+                        // access snapshot while the authoritative login state is being published.
+                        // Never turn that transient UI race into an automatic logout.
+                        if (!isAdminAuthenticated || licenseState !is LicenseState.Active) {
+                            viewModel.setLicenseExpired(state.message)
+                            viewModel.handleAccessDenied()
+                        }
                     }
                 }
                                 is AppAccessState.Allowed -> {

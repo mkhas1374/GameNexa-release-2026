@@ -780,6 +780,12 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
   app.get('/api/v1/manager/sessions/:sessionId/settlement-review', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{
     try{
       const mid=manager(req), sid=String(req.params.sessionId||'');
+      const requestedCustomerId = req.query?.customerId !== undefined && req.query?.customerId !== ''
+        ? Number(req.query.customerId)
+        : null;
+      if (requestedCustomerId !== null && (!Number.isSafeInteger(requestedCustomerId) || requestedCustomerId < 0)) {
+        return res.status(400).json({error:'Invalid customerId'});
+      }
       const session=(await pool.query("SELECT id,station_id,status,started_at,ended_at,game_cost,buffet_cost,total_cost,pricing_snapshot FROM game_sessions WHERE id=$1 AND manager_id=$2",[sid,mid])).rows[0];
       if(!session) return res.status(404).json({error:'Session not found'});
       const participants=(await pool.query("SELECT customer_id,participant_key,participant_name,is_guest,is_payer,prepayment_amount FROM session_participants WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sid,mid])).rows;
@@ -807,11 +813,34 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         const unusedPrepayment=Math.max(0,prepayment-invoiceTotal);
         return {...p,prepayment_amount:String(prepayment),game_cost:String(gameCost),buffet_cost:String(buffetCost),invoice_total:String(invoiceTotal),unused_prepayment:String(unusedPrepayment)};
       });
-      const poolAmount=enriched.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.prepayment_amount||0),0);
-      const gameCost=Number(session.game_cost||0), buffetCost=orderBuffet;
-      const refunded=(await pool.query("SELECT COALESCE(SUM(refund_amount),0) amount FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 AND method='WALLET'",[mid,sid])).rows[0].amount;
-      const finalized=(await pool.query("SELECT customer_id,refund_amount,method,status FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 ORDER BY customer_id",[mid,sid])).rows;
-      return res.json({success:true,session:{...session,game_cost:String(gameCost),buffet_cost:String(buffetCost),total_cost:String(session.total_cost||0)},participants:enriched,totalPrepayment:String(poolAmount),gameCost:String(gameCost),buffetCost:String(buffetCost),unusedPool:String(enriched.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.unused_prepayment||0),0)),refundedPrepayment:String(refunded),remainingRefundable:String(Math.max(0,enriched.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.unused_prepayment||0),0)-Number(refunded||0))),finalized});
+      const selectedParticipants = requestedCustomerId === null
+        ? enriched
+        : enriched.filter(p => requestedCustomerId === 0
+          ? Boolean(p.is_guest) && p.customer_id === null
+          : Number(p.customer_id || 0) === requestedCustomerId);
+      if (requestedCustomerId !== null && selectedParticipants.length === 0) {
+        return res.status(404).json({error:'Customer is not a payer in this session',customerId:requestedCustomerId});
+      }
+      const allocatedPrepaymentTotal=enriched.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.prepayment_amount||0),0);
+      const sessionTotalPrepayment=Math.max(allocatedPrepaymentTotal, Number(snapshot.initialPrepaymentAmount||0));
+      const poolAmount=selectedParticipants.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.prepayment_amount||0),0);
+      const gameCost=selectedParticipants.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.game_cost||0),0);
+      const buffetCost=selectedParticipants.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.buffet_cost||0),0);
+      const refundParams = requestedCustomerId === null ? [mid,sid] : [mid,sid,requestedCustomerId];
+      const refunded=(await pool.query(
+        requestedCustomerId === null
+          ? "SELECT COALESCE(SUM(refund_amount),0) amount FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 AND method='WALLET'"
+          : "SELECT COALESCE(SUM(refund_amount),0) amount FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 AND customer_id=$3 AND method='WALLET'",
+        refundParams
+      )).rows[0].amount;
+      const finalized=(await pool.query(
+        requestedCustomerId === null
+          ? "SELECT customer_id,refund_amount,method,status FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 ORDER BY customer_id"
+          : "SELECT customer_id,refund_amount,method,status FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 AND customer_id=$3 ORDER BY customer_id",
+        refundParams
+      )).rows;
+      const unusedPool=selectedParticipants.filter(p=>p.is_payer).reduce((n,p)=>n+Number(p.unused_prepayment||0),0);
+      return res.json({success:true,session:{...session,game_cost:String(gameCost),buffet_cost:String(buffetCost),total_cost:String(gameCost+buffetCost)},participants:selectedParticipants,totalPrepayment:String(poolAmount),sessionTotalPrepayment:String(sessionTotalPrepayment),gameCost:String(gameCost),buffetCost:String(buffetCost),unusedPool:String(unusedPool),refundedPrepayment:String(refunded),remainingRefundable:String(Math.max(0,unusedPool-Number(refunded||0))),finalized});
     }catch(e){console.error('[settlement-review]',e?.message||e);return res.status(500).json({error:'Settlement review lookup failed'});}
   });
 

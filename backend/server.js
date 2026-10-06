@@ -1004,6 +1004,13 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
             normalizedCustomerPrepayments[String(customerId)] = amount;
         }
     }
+    const allocatedPrepaymentTotal = Object.values(normalizedCustomerPrepayments).reduce((sum, amount) => sum + Number(amount || 0), 0);
+    if (allocatedPrepaymentTotal > 0 && allocatedPrepaymentTotal !== requestedPrepayment) {
+        return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_ALLOCATION_MISMATCH',error:'Customer initial-payment allocation must equal the session initial payment',initialPrepaymentAmount:requestedPrepayment,allocatedPrepaymentAmount:allocatedPrepaymentTotal});
+    }
+    if (requestedPrepayment > 0 && participants.length > 1 && allocatedPrepaymentTotal !== requestedPrepayment) {
+        return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_ALLOCATION_REQUIRED',error:'For a multi-customer session, the initial payment must be allocated to customers before the session starts',initialPrepaymentAmount:requestedPrepayment});
+    }
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
@@ -1140,6 +1147,13 @@ app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlem
         if (Number.isSafeInteger(customerId) && customerId > 0 && Number.isSafeInteger(amount) && amount > 0) normalizedCustomerPrepayments[String(customerId)] = amount;
     }
     const participants = Array.isArray(req.body?.participants) ? req.body.participants : [];
+    const allocatedPrepaymentTotal = Object.values(normalizedCustomerPrepayments).reduce((sum, amount) => sum + Number(amount || 0), 0);
+    if (allocatedPrepaymentTotal > 0 && allocatedPrepaymentTotal !== requestedPrepayment) {
+        return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_ALLOCATION_MISMATCH',error:'Customer initial-payment allocation must equal the session initial payment',initialPrepaymentAmount:requestedPrepayment,allocatedPrepaymentAmount:allocatedPrepaymentTotal});
+    }
+    if (requestedPrepayment > 0 && participants.length > 1 && allocatedPrepaymentTotal !== requestedPrepayment) {
+        return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_ALLOCATION_REQUIRED',error:'For a multi-customer session, the initial payment must be allocated to customers before the session starts',initialPrepaymentAmount:requestedPrepayment});
+    }
     const key = String(req.headers["idempotency-key"] || "").trim();
     if (!managerId || !sessionId || !isUuid || !key || !Number.isInteger(stationId) || stationId <= 0 || !Number.isFinite(startTimeMillis) || !consoleType || controllerCount < 1 || controllerCount > 4 || !Number.isSafeInteger(requestedPrepayment) || requestedPrepayment < 0 || !Number.isSafeInteger(durationLimitMinutes) || durationLimitMinutes < 0) return res.status(400).json({success:false,error:"Invalid offline session start payload"});
     const client = await pool.connect();
@@ -1502,7 +1516,7 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
         );
         const totalCost = totalResult.rows[0].total_cost;
         await client.query("UPDATE game_sessions SET status='SETTLED',ended_at=$1,duration_seconds=$2::bigint,duration_minutes=FLOOR($2::numeric/60)::integer,game_cost=$3,buffet_cost=$4,total_cost=$5,updated_at=NOW() WHERE id=$6 AND manager_id=$7",[endedAt.toISOString(),activeSeconds,gameCost,buffetCost,totalCost,sessionId,managerId]);
-        const participants = await client.query("SELECT customer_id,participant_key,participant_name,is_guest,is_payer FROM session_participants WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sessionId,managerId]);
+        const participants = await client.query("SELECT customer_id,participant_key,participant_name,is_guest,is_payer,prepayment_amount FROM session_participants WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sessionId,managerId]);
         const payers = participants.rows.filter(p => p.is_payer);
         if (payers.length) {
             const shares = await client.query(

@@ -6560,8 +6560,8 @@ loadSettings()
     suspend fun fetchManagerCustomerActivity(customerId: Long): com.example.data.network.ManagerCustomerActivity {
         return com.example.data.network.SelfHostedManager.fetchManagerCustomerActivity(customerId)
     }
-    suspend fun fetchSettlementReview(sessionId: String): com.example.data.network.SettlementReview? {
-        return com.example.data.network.SelfHostedManager.fetchSettlementReview(sessionId)
+    suspend fun fetchSettlementReview(sessionId: String, customerId: Long? = null): com.example.data.network.SettlementReview? {
+        return com.example.data.network.SelfHostedManager.fetchSettlementReview(sessionId, customerId)
     }
 
     suspend fun finalizeSettlementReview(sessionId: String, decisions: List<org.json.JSONObject>): Boolean = withContext(Dispatchers.IO) {

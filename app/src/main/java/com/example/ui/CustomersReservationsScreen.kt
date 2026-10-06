@@ -904,7 +904,7 @@ IconButton(
                             CustomerTransactionCard(
                                 transaction = trans,
                                 lang = lang,
-                                isAlwaysExpanded = true,
+                                isAlwaysExpanded = false,
                                 onUpdateStatus = { st -> onUpdateTransactionStatus(trans, st) },
                                 onUpdatePayment = { pAmount, st -> onUpdateTransactionPayment(trans, pAmount, st) },
                                 onDelete = { onDeleteTransaction(trans) },
@@ -1077,7 +1077,7 @@ fun CustomerTransactionCard(
 
     LaunchedEffect(showPrepaymentDialog, transaction.sessionId) {
         if (showPrepaymentDialog && transaction.sessionId.isNotBlank()) {
-            settlementReview = viewModel.fetchSettlementReview(transaction.sessionId)
+            settlementReview = viewModel.fetchSettlementReview(transaction.sessionId, transaction.customerId)
             prepaymentAllocations = emptyMap()
         }
     }
@@ -1122,7 +1122,7 @@ fun CustomerTransactionCard(
                 } else {
                     val ok = viewModel.finalizeSettlementReview(transaction.sessionId, (0 until decisions.length()).map { decisions.getJSONObject(it) })
                     if (ok) {
-                        settlementReview = viewModel.fetchSettlementReview(transaction.sessionId)
+                        settlementReview = viewModel.fetchSettlementReview(transaction.sessionId, transaction.customerId)
                         prepaymentAllocations = emptyMap()
                         refundMethods = emptyMap()
                         reviewStatuses = emptyMap()
@@ -1620,15 +1620,15 @@ fun CustomerTransactionCard(
                                         val grandTotal = review.gameCost + review.buffetCost
                                         val totalUnused = review.payers.sumOf { it.unusedPrepayment }
                                         val totalPayable = (grandTotal - review.totalPrepayment).coerceAtLeast(0L)
-                                        Text("مشتریان موجود در این نشست:", fontWeight = FontWeight.Bold)
+                                        Text("مشتری این فاکتور:", fontWeight = FontWeight.Bold)
                                         review.payers.forEach { Text(it.name.ifBlank { "مشتری ${it.customerId}" }, fontWeight = FontWeight.Bold) }
                                         HorizontalDivider()
-                                        Text("پرداخت اولیه کل: ${String.format(Locale.US, "%,d", review.totalPrepayment)} تومان")
-                                        Text("هزینه کل بازی در این نشست: ${String.format(Locale.US, "%,d", review.gameCost)} تومان")
-                                        Text("هزینه کل بوفه در این نشست: ${String.format(Locale.US, "%,d", review.buffetCost)} تومان")
-                                        Text("جمع کل فاکتور این نشست: ${String.format(Locale.US, "%,d", grandTotal)} تومان", fontWeight = FontWeight.Bold)
-                                        Text("مانده قابل بازگشت در این نشست: ${String.format(Locale.US, "%,d", totalUnused)} تومان")
-                                        Text("مانده قابل پرداخت این نشست: ${String.format(Locale.US, "%,d", totalPayable)} تومان", fontWeight = FontWeight.Bold)
+                                        Text("پرداخت اولیه کل نشست: ${String.format(Locale.US, "%,d", review.sessionTotalPrepayment)} تومان")
+                                        Text("هزینه بازی این فاکتور: ${String.format(Locale.US, "%,d", review.gameCost)} تومان")
+                                        Text("هزینه بوفه این فاکتور: ${String.format(Locale.US, "%,d", review.buffetCost)} تومان")
+                                        Text("جمع کل فاکتور: ${String.format(Locale.US, "%,d", grandTotal)} تومان", fontWeight = FontWeight.Bold)
+                                        Text("مانده قابل بازگشت این فاکتور: ${String.format(Locale.US, "%,d", totalUnused)} تومان")
+                                        Text("مانده قابل پرداخت این فاکتور: ${String.format(Locale.US, "%,d", totalPayable)} تومان", fontWeight = FontWeight.Bold)
 
                                         review.payers.forEach { payer ->
                                             val payable = (payer.invoiceTotal - payer.prepaymentAmount).coerceAtLeast(0L)
@@ -1791,7 +1791,7 @@ fun CustomerTransactionCard(
                                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
                                 singleLine = true
                             )
-                        } else {
+                        } else if (transaction.status != "UNREVIEWED") {
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                                 horizontalArrangement = Arrangement.End,
