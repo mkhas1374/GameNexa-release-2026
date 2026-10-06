@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.ConsoleType
+import com.example.data.Customer
 import com.example.data.Product
 import com.example.data.StationState
 import java.util.*
