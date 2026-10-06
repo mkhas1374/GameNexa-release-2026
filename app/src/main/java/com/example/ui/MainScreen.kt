@@ -569,7 +569,6 @@ fun StationCard(
             var showCustomerSelectionDialog by remember { mutableStateOf(false) }
             var showPayerAllocationDialog by remember { mutableStateOf(false) }
             var showBehaviorDialog by remember { mutableStateOf(false) }
-            var showStationPauseDialog by remember { mutableStateOf(false) }
             var showMultiPrepaymentDialog by remember { mutableStateOf(false) }
             var pendingFinishAction by remember { mutableStateOf(false) }
             var isFinishingAction by remember(station.status) { mutableStateOf(false) }
@@ -639,31 +638,6 @@ fun StationCard(
                             isFinishingAction = true
                             viewModel.finishStation(station.id, payerIds, payerNames)
                         }
-                    }
-                )
-            }
-
-            if (showStationPauseDialog) {
-                val stationCustomers = station.getStationCustomers(allCustomers)
-                StationPauseDialog(
-                    stationId = station.id,
-                    stationCustomers = stationCustomers,
-                    allCustomers = allCustomers,
-                    gameCost = gameCost,
-                    prepaymentTotal = station.prepaymentAmount,
-                    customerPrepaymentsMap = station.getEffectiveCustomerPrepaymentsMap(),
-                    onDismiss = { showStationPauseDialog = false },
-                    onSimplePause = {
-                        showStationPauseDialog = false
-                        onPause()
-                    },
-                    onCommitSegmentAndPause = { payerIds, payerNames ->
-                        showStationPauseDialog = false
-                        viewModel.commitSegmentAndPause(station.id, payerIds, payerNames)
-                    },
-                    onCommitSegmentAndContinue = { payerIds, payerNames ->
-                        showStationPauseDialog = false
-                        viewModel.commitSegmentAndContinue(station.id, payerIds, payerNames)
                     }
                 )
             }
@@ -1398,9 +1372,7 @@ fun StationCard(
                     }
                     isRunning -> {
                         Button(
-                            onClick = { 
-                                showStationPauseDialog = true 
-                            },
+                            onClick = { onPause() },
                             modifier = Modifier.weight(1.2f).height(30.dp),
                             shape = RoundedCornerShape(6.dp),
                             contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),

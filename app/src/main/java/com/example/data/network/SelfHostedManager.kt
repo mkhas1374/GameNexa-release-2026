@@ -2276,7 +2276,7 @@ object SelfHostedManager {
                 put("durationLimitMinutes", durationLimitMinutes.coerceAtLeast(0))
                 put("customerPrepayments", JSONObject().apply {
                     customerPrepayments.forEach { (id, amount) ->
-                        if (id > 0L && amount > 0L) put(id.toString(), amount)
+                        if (amount > 0L) put(id.toString(), amount)
                     }
                 })
                 put("participants", participants)
@@ -2408,7 +2408,7 @@ object SelfHostedManager {
                 put("durationLimitMinutes", durationLimitMinutes.coerceAtLeast(0))
                 put("customerPrepayments", JSONObject().apply {
                     customerPrepayments.forEach { (id, amount) ->
-                        if (id > 0L && amount > 0L) put(id.toString(), amount)
+                        if (amount > 0L) put(id.toString(), amount)
                     }
                 })
                 put("participants", participants)

@@ -1022,6 +1022,13 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 encryptSetting("enc_offline_used_ms", "0")
                 encryptSetting("enc_super_offline_used_ms", "0")
 
+                // Financial history is part of the first authenticated Manager view.
+                // Hydrate it before publishing login success so Unreviewed/Reviewed/Debtor
+                // counters are correct on the very first launch, not only after reopening.
+                if (!NetworkClient.isTrialMode && SelfHostedManager.currentManagerId.isNotBlank()) {
+                    repository.syncCustomerTransactionsFromServer()
+                }
+
                 withContext(Dispatchers.Main) {
                     _currentAdminRole.value = finalRole
                     // Login endpoint already verifies active entitlement/device limit before HTTP 200.
@@ -4247,11 +4254,11 @@ loadSettings()
                 var earnedLp = 0L
 
                 if (normalizedStatus == "REVIEWED" && transaction.status != "REVIEWED") {
-                    val gameGnReward = ((transaction.gameCost / 10_000L) * _gameRewardRate.value).coerceAtLeast(0L)
-                    val buffetGnReward = ((transaction.foodCost / 10_000L) * _buffetRewardRate.value).coerceAtLeast(0L)
+                    val gameGnReward = (transaction.gameCost * _gameRewardRate.value / 10_000L).coerceAtLeast(0L)
+                    val buffetGnReward = (transaction.foodCost * _buffetRewardRate.value / 10_000L).coerceAtLeast(0L)
                     earnedGn = gameGnReward + buffetGnReward
                     val gameLpReward = if (_lpTomanRate.value > 0L) (transaction.gameCost / _lpTomanRate.value).coerceAtLeast(0L) else 0L
-                    val buffetLpReward = ((transaction.foodCost / 10_000L) * _buffetLpPer10000.value).coerceAtLeast(0L)
+                    val buffetLpReward = (transaction.foodCost * _buffetLpPer10000.value / 10_000L).coerceAtLeast(0L)
                     earnedLp = gameLpReward + buffetLpReward
                     if (earnedGn > 0L) {
                         updatedCust = updatedCust.copy(availableGn = updatedCust.availableGn + earnedGn)
@@ -5970,11 +5977,20 @@ loadSettings()
                 // A paid Manager session may be restored only when the persisted server
                 // credentials are present. Subscription/entitlement validation follows.
                 _currentAdminRole.value = savedRole
-                // Persisted credentials are not sufficient to publish authenticated UI state;
-                // verifyLicenseStatus() must confirm the server entitlement first.
-                _isAdminAuthenticated.value = false
+                // A persisted Manager JWT is itself a server-issued credential. Restore the
+                // authenticated UI immediately; subscription/device validation continues in the
+                // same cold-start coroutine and may revoke this state if the server rejects it.
+                // This removes the artificial "three-option screen -> delayed hall" gate after
+                // force-close/reopen while preserving server authority.
+                _isAdminAuthenticated.value = true
                 _isCustomerAuthenticated.value = false
+                _isSubscribed.value = true
+                _accessState.value = AppAccessState.Allowed(null, savedRole)
+                val cachedExpiry = decryptSetting("enc_expire_time").toLongOrNull() ?: Long.MAX_VALUE
+                val cachedPlan = planType.ifBlank { "ACTIVE" }
+                _licenseState.value = LicenseState.Active(cachedPlan, cachedExpiry, 0L, "CACHED_SESSION", true, decryptSetting("enc_last_server_validation_time").toLongOrNull() ?: 0L)
                 SelfHostedManager.setManagerId(savedManagerId)
+                _isAuthRestoring.value = false
                 // Full cloud synchronization is deliberately not part of auth restoration.
                 // It runs after authentication so a cold start can publish the Manager session quickly.
             } else {
