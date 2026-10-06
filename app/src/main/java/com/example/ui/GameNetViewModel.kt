@@ -1027,7 +1027,19 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     _isCustomerAuthenticated.value = false
                     _isSubscribed.value = true
                     _accessState.value = AppAccessState.Allowed(null, if (isSuper) "SUPER_MANAGER" else "ACTIVE")
-                    _licenseState.value = LicenseState.ConnectionRequired("در حال همگام‌سازی اعتبار اشتراک...")
+                    // A successful /api/auth/manager/login is already an authoritative entitlement check.
+                    // Never publish ConnectionRequired here: the license-state collector maps that state
+                    // to AppAccessState.Denied and MainScreen immediately sends the Manager back to Entry.
+                    // Keep the session temporarily active while the best-effort background sync refreshes
+                    // the real subscription state from the server.
+                    _licenseState.value = LicenseState.Active(
+                        planType = finalRole,
+                        expiresAt = Long.MAX_VALUE,
+                        activatedAt = now,
+                        licenseCode = "SERVER_LOGIN",
+                        hasPassword = true,
+                        lastServerValidationTime = now
+                    )
 
                     _managerAuthInProgress.value = false
                     logOperatorActivity("ورود موفق", "ورود مدیر ($finalRole) به پنل")
@@ -1071,11 +1083,11 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                             }
                             // Login success was already delivered immediately after HTTP 200.
                         } catch (e: Exception) {
-                            android.util.Log.e("GameNetViewModel", "Error syncing on manager login", e)
-                            withContext(Dispatchers.Main) {
-                                _managerAuthInProgress.value = false
-                                onResult(false, "اعتبار اشتراک از سرور تأیید نشد.")
-                            }
+                            // Login itself already succeeded and the authenticated session is valid.
+                            // Background synchronization is deliberately best-effort; it must never
+                            // call the login callback with false after a successful login.
+                            android.util.Log.e("GameNetViewModel", "Best-effort manager post-login sync failed", e)
+                            _managerAuthInProgress.value = false
                         }
                     }
                 }

@@ -1161,6 +1161,57 @@ fun CustomerTransactionCard(
         transaction.customerName.contains("مهمان", ignoreCase = true) || transaction.customerId <= 0
     }
 
+    // Share action is defined before the review controls so it can be placed
+    // directly beside «تعیین تکلیف فاکتور نشست» on UNREVIEWED invoices.
+    val context = LocalContext.current
+    val shareAction = {
+        val shareRemainingDebt = (activeTotal - transaction.paidAmount.toDouble()).coerceAtLeast(0.0)
+        val receipt = buildString {
+            appendLine("================================")
+            appendLine("         گیم‌نکسا - فاکتور مشتری         ")
+            appendLine("================================")
+            appendLine("👤 مشتری: ${transaction.customerName}")
+            appendLine("📅 تاریخ: ${transaction.dateStr} - ${transaction.timeStr}")
+            appendLine("--------------------------------")
+            appendLine("🎮 دستگاه: ${transaction.stationName}")
+            appendLine("⏱ زمان بازی: ${transaction.title}")
+            appendLine("💵 هزینه بازی: %,.0f تومان".format(java.util.Locale.US, origGameCost))
+            appendLine("--------------------------------")
+            if (origFoodCost > 0) {
+                val items = transaction.buffetDetails.split(Regex("(?<=\\))\\s*,\\s*|\\n")).map { it.trim() }.filter { it.isNotBlank() }
+                if (items.isNotEmpty()) {
+                    appendLine("🍔 سفارشات بوفه:")
+                    items.forEach { appendLine("   • $it") }
+                }
+                appendLine("💵 جمع بوفه: %,.0f تومان".format(java.util.Locale.US, origFoodCost))
+                appendLine("--------------------------------")
+            }
+            if (hasDiscount) {
+                appendLine("✨ تخفیف باشگاه: %,.0f تومان".format(java.util.Locale.US, (origTotal - finalAmount)))
+                appendLine("--------------------------------")
+            }
+            appendLine("💰 جمع کل نهایی: %,.0f تومان".format(java.util.Locale.US, if (hasDiscount) finalAmount else origTotal))
+            if (transaction.paidAmount > 0) {
+                appendLine("💳 مبلغ پرداختی: %,d تومان".format(java.util.Locale.US, transaction.paidAmount))
+            }
+            if (shareRemainingDebt > 0) {
+                appendLine("⚠️ مانده بدهی: %,.0f تومان".format(java.util.Locale.US, shareRemainingDebt))
+            } else {
+                appendLine("✅ وضعیت: تسویه کامل")
+            }
+            appendLine("💎 پاداش GN کسب شده: +${transaction.earnedGn} GN")
+            appendLine("🏆 امتیاز LP کسب شده: +${transaction.earnedLp} LP")
+            appendLine("================================")
+            appendLine("    با تشکر از انتخاب و حضور شما!")
+        }
+        val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_SUBJECT, "فاکتور گیم‌نت - ${transaction.customerName}")
+            putExtra(android.content.Intent.EXTRA_TEXT, receipt)
+        }
+        context.startActivity(android.content.Intent.createChooser(shareIntent, "چاپ و اشتراک‌گذاری فاکتور"))
+    }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -1233,27 +1284,40 @@ fun CustomerTransactionCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     if (!isAlwaysExpanded) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            if (hasDiscount) {
+                        Column(
+                            horizontalAlignment = Alignment.End,
+                            verticalArrangement = Arrangement.spacedBy(1.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                if (hasDiscount) {
+                                    Text(
+                                        text = "%,.0f".format(Locale.US, origTotal),
+                                        style = TextStyle(textDecoration = TextDecoration.LineThrough, color = MaterialTheme.colorScheme.onSurfaceVariant),
+                                        fontSize = 11.sp
+                                    )
+                                }
                                 Text(
-                                    text = "%,.0f".format(Locale.US, origTotal),
-                                    style = TextStyle(textDecoration = TextDecoration.LineThrough, color = MaterialTheme.colorScheme.onSurfaceVariant),
-                                    fontSize = 11.sp
+                                    text = "%,.0f تومان".format(Locale.US, if (hasDiscount) finalAmount else origTotal),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = if (transaction.status == "DEBTOR") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                )
+                                Icon(
+                                    imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                             Text(
-                                text = "%,.0f تومان".format(Locale.US, if (hasDiscount) finalAmount else origTotal),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (transaction.status == "DEBTOR") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                text = "${transaction.dateStr} | ${transaction.timeStr}",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Icon(
-                            imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
                     } else {
                         Column(horizontalAlignment = Alignment.End) {
                             Text(
@@ -1481,18 +1545,68 @@ fun CustomerTransactionCard(
                     }
 
                     if (transaction.status == "UNREVIEWED" && transaction.sessionId.isNotBlank()) {
-                        OutlinedButton(
-                            onClick = { showPrepaymentDialog = true },
-                            modifier = Modifier.fillMaxWidth()
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("💳 تعیین تکلیف فاکتور نشست")
+                            // RTL layout: first child is visually on the right, so Share comes first.
+                            FilledIconButton(
+                                onClick = shareAction,
+                                modifier = Modifier.size(46.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                                )
+                            ) {
+                                Icon(
+                                    Icons.Default.Share,
+                                    contentDescription = "اشتراک‌گذاری",
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                            }
+
+                            OutlinedButton(
+                                onClick = { showPrepaymentDialog = true },
+                                modifier = Modifier.weight(1f).height(46.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    "💳 تعیین تکلیف فاکتور نشست",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1
+                                )
+                            }
+
+                            if (canDelete) {
+                                FilledIconButton(
+                                    onClick = { showDeleteConfirm = true },
+                                    modifier = Modifier.size(46.dp),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = IconButtonDefaults.filledIconButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.errorContainer
+                                    )
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "حذف فاکتور",
+                                        modifier = Modifier.size(20.dp),
+                                        tint = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                }
+                            } else {
+                                Spacer(modifier = Modifier.size(46.dp))
+                            }
                         }
                     }
 
                     if (showPrepaymentDialog) {
                         AlertDialog(
                             onDismissRequest = { showPrepaymentDialog = false },
-                            title = { Text("فاکتور نشست") },
+                            title = { Text("تعیین تکلیف فاکتور نشست", fontWeight = FontWeight.Bold) },
                             text = {
                                 Column(
                                     modifier = Modifier.fillMaxWidth().heightIn(max = 620.dp).verticalScroll(rememberScrollState()),
@@ -1590,56 +1704,7 @@ fun CustomerTransactionCard(
                         )
                     }
 
-                    // Share / Print Receipt Action Button
-                    val context = LocalContext.current
-                                            val shareAction = {
-                                val receipt = buildString {
-                                    appendLine("================================")
-                                    appendLine("         گیم‌نکسا - فاکتور مشتری         ")
-                                    appendLine("================================")
-                                    appendLine("👤 مشتری: ${transaction.customerName}")
-                                    appendLine("📅 تاریخ: ${transaction.dateStr} - ${transaction.timeStr}")
-                                    appendLine("--------------------------------")
-                                    appendLine("🎮 دستگاه: ${transaction.stationName}")
-                                    appendLine("⏱ زمان بازی: ${transaction.title}")
-                                    appendLine("💵 هزینه بازی: %,.0f تومان".format(java.util.Locale.US, origGameCost))
-                                    appendLine("--------------------------------")
-                                    if (origFoodCost > 0) {
-                                        val items = transaction.buffetDetails.split(Regex("(?<=\\))\\s*,\\s*|\\n")).map { it.trim() }.filter { it.isNotBlank() }
-                                        if (items.isNotEmpty()) {
-                                            appendLine("🍔 سفارشات بوفه:")
-                                            items.forEach { appendLine("   • $it") }
-                                        }
-                                        appendLine("💵 جمع بوفه: %,.0f تومان".format(java.util.Locale.US, origFoodCost))
-                                        appendLine("--------------------------------")
-                                    }
-                                    if (hasDiscount) {
-                                        appendLine("✨ تخفیف باشگاه: %,.0f تومان".format(java.util.Locale.US, (origTotal - finalAmount)))
-                                        appendLine("--------------------------------")
-                                    }
-                                    appendLine("💰 جمع کل نهایی: %,.0f تومان".format(java.util.Locale.US, if (hasDiscount) finalAmount else origTotal))
-                                    if (transaction.paidAmount > 0) {
-                                        appendLine("💳 مبلغ پرداختی: %,d تومان".format(java.util.Locale.US, transaction.paidAmount))
-                                    }
-                                    if (remainingDebt > 0) {
-                                        appendLine("⚠️ مانده بدهی: %,.0f تومان".format(java.util.Locale.US, remainingDebt))
-                                    } else {
-                                        appendLine("✅ وضعیت: تسویه کامل")
-                                    }
-                                    appendLine("💎 پاداش GN کسب شده: +$earnedGnPoints GN")
-                                    appendLine("🏆 امتیاز LP کسب شده: +$earnedLpPoints LP")
-                                    appendLine("================================")
-                                    appendLine("    با تشکر از انتخاب و حضور شما!")
-                                }
-                                val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(android.content.Intent.EXTRA_SUBJECT, "فاکتور گیم‌نت - ${transaction.customerName}")
-                                    putExtra(android.content.Intent.EXTRA_TEXT, receipt)
-                                }
-                                context.startActivity(android.content.Intent.createChooser(shareIntent, "چاپ و اشتراک‌گذاری فاکتور"))
-                            }
-
-                        if (transaction.status == "UNREVIEWED" || transaction.status == "DEBTOR") {
+                        if (transaction.status == "DEBTOR") {
                             val payableAmount = if (hasDiscount) finalAmount else origTotal
                             val parsedInput = payInput.toDoubleOrNull()
                             val isInputValid = parsedInput != null && parsedInput > 0
