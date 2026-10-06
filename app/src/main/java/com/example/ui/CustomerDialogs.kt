@@ -1164,11 +1164,14 @@ fun MultiCustomerPrepaymentDialog(
                     .heightIn(max = 320.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 80.dp, max = 320.dp)
+                        .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(selectedCustomers, key = { it.id }) { cust ->
+                    selectedCustomers.distinctBy { it.id }.forEach { cust ->
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
@@ -1190,7 +1193,7 @@ fun MultiCustomerPrepaymentDialog(
 
                                 OutlinedTextField(
                                     value = prepayMap[cust.id] ?: "",
-                                    onValueChange = { prepayMap[cust.id] = it },
+                                    onValueChange = { prepayMap[cust.id] = it.filter(Char::isDigit) },
                                     placeholder = { Text("مبلغ (تومان)", fontSize = 10.sp) },
                                     singleLine = true,
                                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),

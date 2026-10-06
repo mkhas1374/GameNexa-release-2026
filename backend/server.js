@@ -1587,10 +1587,10 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
                 [gameCost, payers.length, buffetCost]
             );
             const shareData = shares.rows[0];
-            const baseGame = BigInt(String(shareData.game_share_base || '0'));
-            const gameRemainder = BigInt(String(shareData.game_remainder || '0'));
-            const baseBuffet = BigInt(String(shareData.buffet_share_base || '0'));
-            const buffetRemainder = BigInt(String(shareData.buffet_remainder || '0'));
+            const baseGame = BigInt(normalizeMoneyInteger(shareData.game_share_base) || "0");
+            const gameRemainder = BigInt(normalizeMoneyInteger(shareData.game_remainder) || "0");
+            const baseBuffet = BigInt(normalizeMoneyInteger(shareData.buffet_share_base) || "0");
+            const buffetRemainder = BigInt(normalizeMoneyInteger(shareData.buffet_remainder) || "0");
             const managerConfig = await getManagerConfiguration(client,managerId);
             let clubLevels = managerConfig.settings?.club_levels || [];
             if (typeof clubLevels === 'string') {
@@ -1614,8 +1614,8 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
                     "SELECT FLOOR($1::numeric*(100-$3::numeric)/100::numeric) AS game_cost,FLOOR($2::numeric*(100-$4::numeric)/100::numeric) AS buffet_cost",
                     [shareGame,shareBuffet,gameDiscountPercent,buffetDiscountPercent]
                 );
-                let invoiceGameCost = BigInt(String(discounted.rows[0].game_cost || "0"));
-                let invoiceBuffetCost = BigInt(String(discounted.rows[0].buffet_cost || "0"));
+                let invoiceGameCost = BigInt(normalizeMoneyInteger(discounted.rows[0].game_cost) || "0");
+                let invoiceBuffetCost = BigInt(normalizeMoneyInteger(discounted.rows[0].buffet_cost) || "0");
                 const beforeFixed = invoiceGameCost + invoiceBuffetCost;
                 const fixedDiscount = BigInt(String(fixedDiscountToman));
                 if (fixedDiscount > 0n) {
@@ -1625,7 +1625,7 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
                     remainingFixed -= buffetDeduction;
                     if (remainingFixed > 0n) invoiceGameCost = invoiceGameCost > remainingFixed ? invoiceGameCost - remainingFixed : 0n;
                 }
-                const prepayment = BigInt(String(payer.prepayment_amount || "0"));
+                const prepayment = BigInt(normalizeMoneyInteger(payer.prepayment_amount) || "0");
                 const invoiceTotal = invoiceGameCost + invoiceBuffetCost;
                 // Settlement never auto-determines a financial invoice. The Manager reviews the
                 // invoice in the unreviewed queue and explicitly decides how any initial payment
@@ -1658,7 +1658,7 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
 
 // Canonical Android contract routes are registered before the server starts listening.
 const registerCanonicalRoutes = require('./canonical_routes');
-registerCanonicalRoutes({ app, pool, requireManagerAuth, requireActiveEntitlement, requireCustomerAuth, requireSuperManagerAuth, rateLimit });
+registerCanonicalRoutes({ app, pool, requireManagerAuth, requireActiveEntitlement, requireCustomerAuth, requireSuperManagerAuth, rateLimit, getManagerConfiguration });
 
 const PORT = process.env.PORT || 3000;
 const expireDueReservationPayments = async () => {

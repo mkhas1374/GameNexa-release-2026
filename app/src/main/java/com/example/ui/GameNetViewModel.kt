@@ -562,6 +562,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     private val _isAdminAuthenticated = MutableStateFlow(false)
     val isAdminAuthenticated: StateFlow<Boolean> = _isAdminAuthenticated.asStateFlow()
 
+    private val _isAuthRestoring = MutableStateFlow(true)
+    val isAuthRestoring: StateFlow<Boolean> = _isAuthRestoring.asStateFlow()
+
     // Cold-start restoration must finish before a new Manager login can mutate the same
     // persisted session keys. Without this barrier, a slow startup restore could read the
     // pre-login state and immediately clear a freshly authenticated Manager session.
@@ -2469,6 +2472,7 @@ loadSettings()
                 if (!managerAuthInitializationReady.isCompleted) {
                     managerAuthInitializationReady.complete(Unit)
                 }
+                _isAuthRestoring.value = false
             }
         }
 

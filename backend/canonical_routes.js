@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const { calculatePrice, cancelReservation, getReservationConfiguration, deepMerge } = require('./financialService');
 const { bookReservation, transitionState } = require('./reservationService');
 
-module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAuth, requireActiveEntitlement, requireCustomerAuth, requireSuperManagerAuth, rateLimit }) {
+module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAuth, requireActiveEntitlement, requireCustomerAuth, requireSuperManagerAuth, rateLimit, getManagerConfiguration }) {
   const manager = (req) => String(req.user?.managerId || req.user?.id || '');
   const json = (v, fallback) => v == null ? fallback : v;
   const DEFAULT_SUBSCRIPTION_STORE = {

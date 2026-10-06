@@ -92,6 +92,7 @@ class MainActivity : ComponentActivity() {
                     val notchSafeBarEnabled by viewModel.notchSafeBarEnabled.collectAsState()
 
                     val isAdminAuthenticated by viewModel.isAdminAuthenticated.collectAsState()
+                    val isAuthRestoring by viewModel.isAuthRestoring.collectAsState()
                     val isCustomerAuthenticated by viewModel.isCustomerAuthenticated.collectAsState()
                     val currentCustomer by com.example.data.network.SelfHostedManager.currentLoggedInCustomer.collectAsState()
                     val serverClockMillis by viewModel.serverClockMillis.collectAsState()
@@ -145,7 +146,14 @@ class MainActivity : ComponentActivity() {
                                     IranTehranClock(serverTimeMillis = serverClockMillis!!, modifier = Modifier.fillMaxWidth())
                                 }
                                 Box(modifier = Modifier.weight(1f)) {
-                                    if (isFirstLaunch) {
+                                    if (isAuthRestoring) {
+                                        Box(
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            CircularProgressIndicator()
+                                        }
+                                    } else if (isFirstLaunch) {
                                         FirstLaunchGuide(
                                             lang = lang,
                                             onLanguageChange = { viewModel.saveLanguageSetting(it) },
