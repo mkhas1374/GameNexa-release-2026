@@ -819,7 +819,9 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       const snapshotPrepayments=snapshot.customerPrepayments && typeof snapshot.customerPrepayments==='object' ? snapshot.customerPrepayments : {};
       // A true walk-in session may have no session_participants row. Preserve the session-level
       // initial payment as a single guest payer so settlement review can still account for it.
-      if(participants.length===0 && Number(snapshot.initialPrepaymentAmount||0)>0){
+      if(participants.length===0){
+        // A true walk-in has no customer/session-participant row. It must still be a real
+        // payer in settlement review so an invoice can be created even when prepayment is zero.
         participants.push({customer_id:null,participant_key:'guest:walk-in',participant_name:'مشتری گذری (بدون اشتراک)',is_guest:true,is_payer:true,prepayment_amount:Number(snapshot.initialPrepaymentAmount||0)});
       }
       const invoiceRows=(await pool.query("SELECT invoice_number,customer_id,game_cost,buffet_cost,total_amount,paid_amount,status,customer_snapshot FROM invoices WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sid,mid])).rows;
