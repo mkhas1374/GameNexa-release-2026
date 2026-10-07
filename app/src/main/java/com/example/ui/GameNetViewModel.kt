@@ -4202,9 +4202,16 @@ loadSettings()
                 repository.insertCustomer(customer.copy(debt = newDebt))
             }
 
-            val updated = transaction.copy(status = newStatus, amount = finalAmount)
+            val normalizedStatus = when {
+                finalAmount <= 0L -> "REVIEWED"
+                transaction.paidAmount >= finalAmount -> "REVIEWED"
+                newStatus == "UNREVIEWED" -> "UNREVIEWED"
+                else -> "DEBTOR"
+            }
+            val updated = transaction.copy(status = normalizedStatus, amount = finalAmount)
             repository.updateCustomerTransaction(updated)
-            queueOrSyncCustomerTransaction(updated)
+            val serverUpdated = SelfHostedManager.updateManagerCustomerTransaction(updated)
+            if (!serverUpdated) queueOrSyncCustomerTransaction(updated)
         }
     }
 
@@ -5447,8 +5454,15 @@ loadSettings()
                 if (cachedPlan == "TRIAL" || savedRole == "TRIAL_USER") {
                     _currentAdminRole.value = "TRIAL_USER"
                     encryptSetting("enc_admin_role", "TRIAL_USER")
-                } else if (savedRole.isNotBlank()) {
+                } else if (savedRole in setOf("MANAGER", "GAMENET_MANAGER", "SUPER_MANAGER")) {
                     _currentAdminRole.value = savedRole
+                } else {
+                    // Never restore a local operator/deputy/unknown role as the authenticated
+                    // Manager after a cold start. Role switching is an explicit in-session action.
+                    _currentAdminRole.value = "UNAUTHENTICATED"
+                    _isAdminAuthenticated.value = false
+                    _isCustomerAuthenticated.value = false
+                    encryptSetting("enc_admin_role", "")
                 }
                 _licenseState.value = LicenseState.Active(
                     planType = cachedPlan,

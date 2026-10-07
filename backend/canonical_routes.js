@@ -1070,7 +1070,8 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
           const outstanding=Math.max(0,total-paidAmount);
           if(outstanding>0) await c.query("UPDATE customers SET debt=GREATEST(0,COALESCE(debt,0)+$1),updated_at=NOW() WHERE id=$2 AND manager_id=$3",[outstanding,cid,mid]);
         }
-        results.push({customerId:cid,customerName:participant.participant_name,refundAmount:String(refund),refundMethod:method,earnedGn,earnedLp,status:finalStatus});
+        const resolvedTx=(await c.query("SELECT id FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' AND ((customer_id=$3 AND $3>0) OR (customer_id IS NULL AND $3<=0 AND customer_name=$4)) ORDER BY id DESC LIMIT 1",[mid,sid,cid,participant.participant_name])).rows[0];
+        results.push({customerId:cid,customerName:participant.participant_name,transactionId:Number(resolvedTx?.id||exactTransactionId||0),refundAmount:String(refund),refundMethod:method,earnedGn,earnedLp,status:finalStatus});
       }
       await c.query('COMMIT');
       return res.json({success:true,sessionId:sid,results});
