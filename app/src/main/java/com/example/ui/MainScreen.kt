@@ -574,6 +574,26 @@ fun StationCard(
             var pendingFinishAction by remember { mutableStateOf(false) }
             var isFinishingAction by remember(station.status) { mutableStateOf(false) }
             var selectedProductForBuffetCustomer by remember { mutableStateOf<String?>(null) }
+            // Execute the selected Stop action only after the dialog has fully left the
+            // composition. This prevents the dialog-dismiss/recomposition and station-state
+            // mutation from happening in the same Compose callback.
+            var pendingStopOption by remember { mutableStateOf<Int?>(null) }
+            var pendingStopPayerIds by remember { mutableStateOf<List<Long>>(emptyList()) }
+            var pendingStopPayerNames by remember { mutableStateOf<List<String>>(emptyList()) }
+
+            LaunchedEffect(pendingStopOption) {
+                val option = pendingStopOption ?: return@LaunchedEffect
+                val payerIds = pendingStopPayerIds
+                val payerNames = pendingStopPayerNames
+                pendingStopOption = null
+                pendingStopPayerIds = emptyList()
+                pendingStopPayerNames = emptyList()
+                when (option) {
+                    1 -> viewModel.pauseStation(station.id)
+                    2 -> viewModel.commitSegmentAndPause(station.id, payerIds, payerNames)
+                    3 -> viewModel.commitSegmentAndContinue(station.id, payerIds, payerNames)
+                }
+            }
 
             if (showCustomerSelectionDialog) {
                 CustomerSelectionDialog(
@@ -635,15 +655,21 @@ fun StationCard(
                     onDismiss = { showStationPauseDialog = false },
                     onSimplePause = {
                         showStationPauseDialog = false
-                        onPause()
+                        pendingStopPayerIds = emptyList()
+                        pendingStopPayerNames = emptyList()
+                        pendingStopOption = 1
                     },
                     onCommitSegmentAndPause = { payerIds, payerNames ->
                         showStationPauseDialog = false
-                        viewModel.commitSegmentAndPause(station.id, payerIds, payerNames)
+                        pendingStopPayerIds = payerIds.distinct()
+                        pendingStopPayerNames = payerNames
+                        pendingStopOption = 2
                     },
                     onCommitSegmentAndContinue = { payerIds, payerNames ->
                         showStationPauseDialog = false
-                        viewModel.commitSegmentAndContinue(station.id, payerIds, payerNames)
+                        pendingStopPayerIds = payerIds.distinct()
+                        pendingStopPayerNames = payerNames
+                        pendingStopOption = 3
                     }
                 )
             }

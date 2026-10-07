@@ -3389,13 +3389,18 @@ loadSettings()
                 )
                 // The Stop click is a local state transition. Never wait for HTTP, logging,
                 // alarms, or cloud serialization before the station becomes PAUSED/RUNNING.
-                repository.insertStationState(updated)
+                // Stop is a safety-critical local UI action. Persist locally first and
+                // never invoke the network-backed station writer from the Stop coroutine.
+                // Cloud synchronization is explicitly best-effort afterwards.
+                repository.insertStationStateLocal(updated)
                 runCatching { cancelAlarm(stationId) }
                 runCatching {
                     val sessionId = repository.getSetting("active_session_$stationId")?.takeIf { it.isNotBlank() }
                     if (sessionId != null) queueOrSendSessionEvent(sessionId, if (continueRunning) "SEGMENT_CONTINUE" else "PAUSE", now, org.json.JSONObject())
                 }
-                if (commitSegment) {
+                // Sync after the local state transition; a server/network/serialization
+                // failure must never be able to tear down the Stop UI path.
+                viewModelScope.launch(Dispatchers.IO) {
                     runCatching { saveAndSyncStationState(updated) }
                         .onFailure { android.util.Log.e("GameNetViewModel", "Stop background sync failed for station $stationId", it) }
                 }
