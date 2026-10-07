@@ -976,11 +976,15 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                                 if (extractedId.isNotBlank()) serverManagerId = extractedId
                                 serverFullName = userObj.optString("full_name", userObj.optString("fullName", userObj.optString("name", "")))
                                 serverGameNetName = userObj.optString("gamenet_name", userObj.optString("gameneName", userObj.optString("gameNetName", "")))
-                                val roleFromServer = userObj.optString("role", userObj.optString("userType", ""))
-                                if (roleFromServer.equals("super_manager", ignoreCase = true) || roleFromServer.equals("SUPER_MANAGER", ignoreCase = true)) {
-                                    serverRole = "SUPER_MANAGER"
+                                val roleFromServer = userObj.optString("role", userObj.optString("userType", "")).trim().uppercase(Locale.US)
+                                serverRole = when (roleFromServer) {
+                                    "SUPER_MANAGER" -> "SUPER_MANAGER"
+                                    "MANAGER", "GAMENET_MANAGER" -> "MANAGER"
+                                    else -> ""
                                 }
-                                loginSuccess = true
+                                // A server response without an explicitly authorized Manager role
+                                // is never allowed to fall back to a local/deputy role.
+                                loginSuccess = serverRole.isNotBlank()
                                 return@use
                             }
                         }
@@ -4341,12 +4345,7 @@ loadSettings()
                 val serverUpdated = SelfHostedManager.updateManagerCustomerTransaction(updated)
                 if (serverUpdated) {
                     repository.saveSetting("customer_transaction_outbox_${transaction.id}", "")
-                    // Keep the just-updated Room row authoritative for the current UI frame.
-                    // A delayed refresh must never race the PATCH and resurrect the old status.
-                    viewModelScope.launch {
-                        delay(1500L)
-                        repository.syncCustomerTransactionsFromServer()
-                    }
+                    // PATCH returned the authoritative server result; keep Room stable immediately.
                 } else {
                     queueOrSyncCustomerTransaction(updated)
                 }
@@ -4361,12 +4360,7 @@ loadSettings()
                 val serverUpdated = SelfHostedManager.updateManagerCustomerTransaction(updated)
                 if (serverUpdated) {
                     repository.saveSetting("customer_transaction_outbox_${transaction.id}", "")
-                    // Keep the just-updated Room row authoritative for the current UI frame.
-                    // A delayed refresh must never race the PATCH and resurrect the old status.
-                    viewModelScope.launch {
-                        delay(1500L)
-                        repository.syncCustomerTransactionsFromServer()
-                    }
+                    // PATCH returned the authoritative server result; keep Room stable immediately.
                 } else {
                     queueOrSyncCustomerTransaction(updated)
                 }
@@ -6058,6 +6052,10 @@ loadSettings()
                 // Full cloud synchronization is deliberately not part of auth restoration.
                 // It runs after authentication so a cold start can publish the Manager session quickly.
             } else {
+                // Never treat a partial/corrupt local session — including legacy OPERATOR/DEPUTY
+                // role markers — as an authenticated Manager. A deputy must enter through the
+                // explicit role-switch flow after a valid Manager session exists.
+                _currentAdminRole.value = "UNAUTHENTICATED"
                 // Never treat a partial/corrupt local session as an authenticated Manager.
                 _isAdminAuthenticated.value = false
                 _isCustomerAuthenticated.value = false
@@ -6685,11 +6683,16 @@ loadSettings()
             val r = results.optJSONObject(i) ?: continue
             val cid = r.optLong("customerId", 0L)
             val customerName = r.optString("customerName", "")
-            val tx = all.firstOrNull {
-                it.sessionId == sessionId &&
-                    it.status != "DELETED" &&
-                    if (cid > 0L) it.customerId == cid
-                    else it.customerId <= 0L && customerName.isNotBlank() && it.customerName == customerName
+            val txId = r.optLong("transactionId", 0L)
+            val tx = if (txId > 0L) {
+                all.firstOrNull { it.id == txId && it.status != "DELETED" }
+            } else {
+                all.firstOrNull {
+                    it.sessionId == sessionId &&
+                        it.status != "DELETED" &&
+                        if (cid > 0L) it.customerId == cid
+                        else it.customerId <= 0L && customerName.isNotBlank() && it.customerName == customerName
+                }
             } ?: continue
             val status = r.optString("status", "REVIEWED")
             val earnedGn = r.optLong("earnedGn", 0L)
@@ -6697,12 +6700,10 @@ loadSettings()
             val paid = if (status == "REVIEWED") tx.amount else r.optLong("paidAmount", tx.paidAmount)
             repository.updateCustomerTransaction(tx.copy(status=status, paidAmount=paid, earnedGn=earnedGn, earnedLp=earnedLp))
         }
-        // Refresh only after the local Room state has rendered; immediate replacement can race
-        // the server response and make a successfully completed invoice appear unchanged until restart.
-        viewModelScope.launch {
-            delay(1500L)
-            repository.syncCustomerTransactionsFromServer()
-        }
+        // The server response above is authoritative and the exact result is already written
+        // to Room. Do not immediately replace Room with a second GET: that race was the reason
+        // "انجام شد" appeared ineffective until force-close/reopen. The next normal sync/cold
+        // start reconciles history from the server.
         true
     }
 

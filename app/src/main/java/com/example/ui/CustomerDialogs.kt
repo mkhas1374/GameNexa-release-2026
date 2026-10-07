@@ -769,13 +769,14 @@ fun StationPauseDialog(
         source.distinctBy { it.id }
     }
 
+    // Never auto-select synthetic guest payers. In a no-customer session the Manager
+    // must explicitly choose a payer, or leave it empty so settlement is treated as a
+    // true walk-in. This avoids injecting negative guest IDs into the pause segment.
     LaunchedEffect(availableCustomers) {
-        if (selectedPayerIds.isEmpty() && availableCustomers.isNotEmpty()) {
-            availableCustomers.forEach { cust ->
-                if (!selectedPayerIds.contains(cust.id)) {
-                    selectedPayerIds.add(cust.id)
-                    selectedPayerNamesMap[cust.id] = cust.fullName
-                }
+        if (selectedPayerIds.isEmpty() && stationCustomers.isNotEmpty()) {
+            stationCustomers.distinctBy { it.id }.forEach { cust ->
+                selectedPayerIds.add(cust.id)
+                selectedPayerNamesMap[cust.id] = cust.fullName
             }
         }
     }

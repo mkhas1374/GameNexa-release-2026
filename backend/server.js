@@ -242,8 +242,14 @@ app.post('/api/auth/manager/login', rateLimit({ windowMs: 60_000, max: 10 }), as
             }
         }
 
-        const token = jwt.sign({ id: manager.id, managerId: manager.id, role: manager.role || 'MANAGER', tv: Number(manager.token_version || 1) }, JWT_SECRET, { expiresIn: '24h' });
-        res.json({ token, managerId: manager.id, role: manager.role || 'MANAGER' });
+        const role = String(manager.role || '').toUpperCase();
+        // Only real Manager/Super-Manager accounts may establish the management session.
+        // Never downgrade/upgrade an unknown or deputy/operator record on the client.
+        if (role !== 'MANAGER' && role !== 'SUPER_MANAGER') {
+            return res.status(403).json({ error: 'Management login requires an authorized Manager account', code: 'MANAGER_ROLE_REQUIRED' });
+        }
+        const token = jwt.sign({ id: manager.id, managerId: manager.id, role, tv: Number(manager.token_version || 1) }, JWT_SECRET, { expiresIn: '24h' });
+        res.json({ token, managerId: manager.id, role });
     } catch (e) {
         console.error('Manager login error:', e);
         res.status(500).json({ error: 'Internal server error' });

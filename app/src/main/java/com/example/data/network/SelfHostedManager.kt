@@ -1627,13 +1627,17 @@ object SelfHostedManager {
                 for (i in 0 until data.length()) {
                     val o = data.optJSONObject(i) ?: continue
                     val id = o.optLong("id", o.optLong("localId", 0L))
-                    val customerId = o.optLong("customerId", o.optLong("customer_id", 0L))
+                    val rawCustomerId = o.optLong("customerId", o.optLong("customer_id", 0L))
+                    val customerName = o.optString("customerName", o.optString("customer_name", ""))
+                    // A NULL customer_id is the canonical server representation of a true walk-in.
+                    // Keep a stable negative local ID so it cannot be confused with a real customer.
+                    val customerId = if (rawCustomerId == 0L && customerName == "مشتری گذری (بدون اشتراک)") -1L else rawCustomerId
                     val ts = o.optLong("timestamp", o.optLong("event_timestamp", 0L))
                     if (id <= 0L) continue
                     list += CustomerTransaction(
                         id = id,
                         customerId = customerId,
-                        customerName = o.optString("customerName", o.optString("customer_name", "")),
+                        customerName = customerName,
                         stationName = o.optString("stationName", o.optString("station_name", "")),
                         title = o.optString("title", ""),
                         amount = o.optLong("amount", 0L),
