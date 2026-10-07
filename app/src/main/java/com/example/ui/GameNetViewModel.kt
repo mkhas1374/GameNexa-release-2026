@@ -6730,10 +6730,14 @@ loadSettings()
             val paid = if (status == "REVIEWED") tx.amount else r.optLong("paidAmount", tx.paidAmount)
             repository.updateCustomerTransaction(tx.copy(status=status, paidAmount=paid, earnedGn=earnedGn, earnedLp=earnedLp))
         }
-        // The server response above is authoritative and the exact result is already written
-        // to Room. Do not immediately replace Room with a second GET: that race was the reason
-        // "انجام شد" appeared ineffective until force-close/reopen. The next normal sync/cold
-        // start reconciles history from the server.
+        // The server response above is authoritative and the exact result is written to Room
+        // first, so the dialog can close immediately. Then reconcile once in the background;
+        // this refresh is deliberately after the local writes and cannot resurrect the old status.
+        viewModelScope.launch(Dispatchers.IO) {
+            kotlinx.coroutines.delay(250)
+            runCatching { repository.syncCustomerTransactionsFromServer() }
+                .onFailure { android.util.Log.w("GameNetViewModel", "Post-settlement transaction refresh failed", it) }
+        }
         true
     }
 

@@ -1100,15 +1100,10 @@ fun StationPauseDialog(
                     val names = ids.map { selectedPayerNamesMap[it].orEmpty() }
                     // Dismiss first, then invoke the operation. A malformed legacy station
                     // must never be able to keep the modal in an unstable Compose state.
-                    onDismiss()
-                    runCatching {
-                        when (selectedOption) {
-                            1 -> onSimplePause()
-                            2 -> onCommitSegmentAndPause(ids, names)
-                            3 -> onCommitSegmentAndContinue(ids, names)
-                        }
-                    }.onFailure { error ->
-                        android.util.Log.e("StationPauseDialog", "Stop action failed", error)
+                    when (selectedOption) {
+                        1 -> { onDismiss(); onSimplePause() }
+                        2 -> { onDismiss(); onCommitSegmentAndPause(ids, names) }
+                        3 -> { onDismiss(); onCommitSegmentAndContinue(ids, names) }
                     }
                 },
                 enabled = if (selectedOption == 2 || selectedOption == 3) selectedPayerIds.isNotEmpty() else true,
