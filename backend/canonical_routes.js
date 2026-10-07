@@ -987,15 +987,25 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
       });
       const results=[];
       for(const d of decisions){
-        const cid=Number(d.customerId||0), method=String(d.refundMethod||'NONE').toUpperCase(), refund=Math.max(0,Math.trunc(Number(d.refundAmount||0))), status=String(d.status||'REVIEWED').toUpperCase();
+        const decisionTransactionId=Number(d.transactionId||0);
+        const linkedTx=decisionTransactionId>0
+          ? (await c.query("SELECT id,customer_id,customer_name,session_id FROM customer_transactions WHERE id=$1 AND manager_id=$2 AND status<>'DELETED' LIMIT 1",[decisionTransactionId,mid])).rows[0]
+          : null;
+        // When an invoice was created before participant allocation was repaired, the
+        // Android transaction identity is more authoritative than a stale/synthetic
+        // customerId. Resolve the payer from that exact transaction, but only inside this
+        // exact session to preserve tenant/session isolation.
+        const resolvedCid=linkedTx && String(linkedTx.session_id||sid)===String(sid) ? Number(linkedTx.customer_id||0) : Number(d.customerId||0);
+        const resolvedName=linkedTx?.customer_name || String(d.customerName||'');
+        const cid=resolvedCid, method=String(d.refundMethod||'NONE').toUpperCase(), refund=Math.max(0,Math.trunc(Number(d.refundAmount||0))), status=String(d.status||'REVIEWED').toUpperCase();
         const isGuestDecision=cid<=0;
         const participant=isGuestDecision
           ? (guestPayers.find(p => String(p.participant_key || '') === "guest:" + cid)
               || (cid === -1 ? guestPayers.find(p => String(p.participant_key || '') === 'guest:walk-in') : null)
               || guestPayers[Math.max(0,(-cid)-1)]
               || (cid===0 ? guestPayers[0] : null))
-          : byId.get(cid);
-        if(!participant){await c.query('ROLLBACK');return res.status(422).json({error:'Customer is not a payer in this session',customerId:cid});}
+          : (byId.get(cid) || participants.find(p => Number(p.customer_id||0)===cid && resolvedName && String(p.participant_name||'')===String(resolvedName)));
+        if(!participant){await c.query('ROLLBACK');return res.status(422).json({error:'Customer is not a payer in this session',customerId:cid,transactionId:decisionTransactionId||null});}
         const priorReview=(await c.query("SELECT refund_amount,method,status FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 AND customer_id=$3 LIMIT 1",[mid,sid,cid])).rows[0];
         if(priorReview){
           const rg=Number((await c.query("SELECT COALESCE(SUM(amount),0) amount FROM gn_ledger WHERE manager_id=$1 AND customer_id=$2 AND reference_type='SESSION_REVIEW' AND reference_id=$3 AND type='CREDIT'",[mid,cid,sid])).rows[0].amount||0);

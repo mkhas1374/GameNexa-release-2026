@@ -3351,38 +3351,58 @@ loadSettings()
         }
     }
 
-    fun pauseStation(stationId: Int) {
+    private fun applyStopStateLocally(stationId: Int, commitSegment: Boolean, continueRunning: Boolean, payerCustomerIds: List<Long> = emptyList(), payerCustomerNames: List<String> = emptyList()) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val station = repository.getStationStateByIdLocal(stationId)
-                ?: stationStates.value.find { it.id == stationId }
-                ?: return@launch
-            if (station.status != "RUNNING") return@launch
-
-            val now = System.currentTimeMillis()
-            val sessionElapsed = now - station.lastStateChangeTimeMillis
-            val totalElapsed = station.elapsedPlayingTimeMillis + sessionElapsed
-
-            val updated = station.copy(
-                status = "PAUSED",
-                lastStateChangeTimeMillis = now,
-                elapsedPlayingTimeMillis = totalElapsed
-            )
-
-            // The Stop button must never depend on a network/session-event operation.
-            // Persist the PAUSED state first; ancillary sync/logging is best-effort and
-            // cannot prevent the local state transition.
-            repository.insertStationState(updated)
-            runCatching { cancelAlarm(stationId) }
-            runCatching { logOperatorActivity("توقف موقت ایستگاه", "ایستگاه $stationId متوقف شد.") }
-            runCatching {
-                val sessionId = repository.getSetting("active_session_" + stationId)?.takeIf { it.isNotBlank() }
-                if (sessionId != null) queueOrSendSessionEvent(sessionId, "PAUSE", now, org.json.JSONObject())
-            }.onFailure { error ->
-                android.util.Log.e("GameNetViewModel", "Ancillary PAUSE event failed for station $stationId", error)
-            }
-            } catch (e: Exception) {
-                android.util.Log.e("GameNetViewModel", "Stop(simple) failed for station $stationId", e)
+                    ?: stationStates.value.find { it.id == stationId }
+                    ?: return@launch
+                if (station.status != "RUNNING") return@launch
+                val now = System.currentTimeMillis()
+                val elapsed = (now - station.lastStateChangeTimeMillis).coerceAtLeast(0L)
+                val segments = station.getSegmentsList().toMutableList()
+                if (commitSegment && elapsed > 0L) {
+                    val durationMin = maxOf(1, (elapsed / 60_000L).toInt())
+                    val rate = getHourlyRate(station.consoleType, station.controllerCount)
+                    val cost = ((elapsed / 1000L) * rate) / 3600L
+                    segments.add(StationSegment(
+                        segmentIndex = segments.size + 1,
+                        consoleType = station.consoleType,
+                        controllerCount = station.controllerCount,
+                        customerIds = station.getCustomerIds(),
+                        customerNames = station.getCustomerNames(),
+                        startTimeMs = station.lastStateChangeTimeMillis,
+                        endTimeMs = now,
+                        durationMinutes = durationMin,
+                        cost = cost,
+                        payerCustomerId = payerCustomerIds.firstOrNull(),
+                        payerCustomerName = payerCustomerNames.firstOrNull(),
+                        payerCustomerIds = payerCustomerIds.distinct(),
+                        payerCustomerNames = payerCustomerNames.distinct()
+                    ))
+                }
+                val updated = station.copy(
+                    status = if (continueRunning) "RUNNING" else "PAUSED",
+                    lastStateChangeTimeMillis = now,
+                    elapsedPlayingTimeMillis = if (commitSegment) 0L else station.elapsedPlayingTimeMillis + elapsed,
+                    segmentsJson = if (commitSegment) segments.toJson() else station.segmentsJson
+                )
+                // The Stop click is a local state transition. Never wait for HTTP, logging,
+                // alarms, or cloud serialization before the station becomes PAUSED/RUNNING.
+                repository.insertStationState(updated)
+                runCatching { cancelAlarm(stationId) }
+                runCatching {
+                    val sessionId = repository.getSetting("active_session_$stationId")?.takeIf { it.isNotBlank() }
+                    if (sessionId != null) queueOrSendSessionEvent(sessionId, if (continueRunning) "SEGMENT_CONTINUE" else "PAUSE", now, org.json.JSONObject())
+                }
+                if (commitSegment) {
+                    runCatching { saveAndSyncStationState(updated) }
+                        .onFailure { android.util.Log.e("GameNetViewModel", "Stop background sync failed for station $stationId", it) }
+                }
+            } catch (t: Throwable) {
+                // Catch Throwable here deliberately: this is an operator safety path and a
+                // malformed legacy station must never terminate the Android process.
+                android.util.Log.e("GameNetViewModel", "STOP_FATAL_GUARD station=$stationId", t)
                 withContext(Dispatchers.Main) {
                     Toast.makeText(getApplication(), "توقف ایستگاه انجام نشد؛ وضعیت بازی حفظ شد.", Toast.LENGTH_LONG).show()
                 }
@@ -3390,116 +3410,13 @@ loadSettings()
         }
     }
 
-    fun commitSegmentAndPause(
-        stationId: Int,
-        payerCustomerIds: List<Long>,
-        payerCustomerNames: List<String>
-    ) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val station = repository.getStationStateByIdLocal(stationId)
-                ?: stationStates.value.find { it.id == stationId }
-                ?: return@launch
-            if (station.status != "RUNNING") return@launch
+    fun pauseStation(stationId: Int) = applyStopStateLocally(stationId, commitSegment = false, continueRunning = false)
 
-            val now = System.currentTimeMillis()
-            val sessionElapsed = now - station.lastStateChangeTimeMillis
+    fun commitSegmentAndPause(stationId: Int, payerCustomerIds: List<Long>, payerCustomerNames: List<String>) =
+        applyStopStateLocally(stationId, commitSegment = true, continueRunning = false, payerCustomerIds, payerCustomerNames)
 
-            val existingSegments = station.getSegmentsList().toMutableList()
-
-            val durationMin = maxOf(1, (sessionElapsed / (1000L * 60L)).toInt())
-            val rate = getHourlyRate(station.consoleType, station.controllerCount)
-            val segmentCost = ((sessionElapsed.coerceAtLeast(0L) / 1000L) * rate) / 3600L
-
-            val segment = StationSegment(
-                segmentIndex = existingSegments.size + 1,
-                consoleType = station.consoleType,
-                controllerCount = station.controllerCount,
-                customerIds = station.getCustomerIds(),
-                customerNames = station.getCustomerNames(),
-                startTimeMs = station.lastStateChangeTimeMillis,
-                endTimeMs = now,
-                durationMinutes = durationMin,
-                cost = segmentCost,
-                payerCustomerId = payerCustomerIds.firstOrNull(),
-                payerCustomerName = payerCustomerNames.firstOrNull(),
-                payerCustomerIds = payerCustomerIds,
-                payerCustomerNames = payerCustomerNames
-            )
-            existingSegments.add(segment)
-
-            val updated = station.copy(
-                status = "PAUSED",
-                lastStateChangeTimeMillis = now,
-                elapsedPlayingTimeMillis = 0L,
-                segmentsJson = existingSegments.toJson()
-            )
-
-                saveAndSyncStationState(updated)
-                cancelAlarm(stationId)
-            } catch (e: Exception) {
-                android.util.Log.e("GameNetViewModel", "Stop(commit+pause) failed for station $stationId", e)
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(getApplication(), "ثبت رکورد و توقف انجام نشد؛ وضعیت بازی حفظ شد.", Toast.LENGTH_LONG).show()
-                }
-            }
-        }
-    }
-
-    fun commitSegmentAndContinue(
-        stationId: Int,
-        payerCustomerIds: List<Long>,
-        payerCustomerNames: List<String>
-    ) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val station = repository.getStationStateByIdLocal(stationId)
-                ?: stationStates.value.find { it.id == stationId }
-                ?: return@launch
-            if (station.status != "RUNNING") return@launch
-
-            val now = System.currentTimeMillis()
-            val sessionElapsed = now - station.lastStateChangeTimeMillis
-
-            val existingSegments = station.getSegmentsList().toMutableList()
-
-            val durationMin = maxOf(1, (sessionElapsed / (1000L * 60L)).toInt())
-            val rate = getHourlyRate(station.consoleType, station.controllerCount)
-            val segmentCost = ((sessionElapsed.coerceAtLeast(0L) / 1000L) * rate) / 3600L
-
-            val segment = StationSegment(
-                segmentIndex = existingSegments.size + 1,
-                consoleType = station.consoleType,
-                controllerCount = station.controllerCount,
-                customerIds = station.getCustomerIds(),
-                customerNames = station.getCustomerNames(),
-                startTimeMs = station.lastStateChangeTimeMillis,
-                endTimeMs = now,
-                durationMinutes = durationMin,
-                cost = segmentCost,
-                payerCustomerId = payerCustomerIds.firstOrNull(),
-                payerCustomerName = payerCustomerNames.firstOrNull(),
-                payerCustomerIds = payerCustomerIds,
-                payerCustomerNames = payerCustomerNames
-            )
-            existingSegments.add(segment)
-
-            val updated = station.copy(
-                status = "RUNNING",
-                lastStateChangeTimeMillis = now,
-                elapsedPlayingTimeMillis = 0L,
-                segmentsJson = existingSegments.toJson()
-            )
-
-                saveAndSyncStationState(updated)
-            } catch (e: Exception) {
-                android.util.Log.e("GameNetViewModel", "Stop(commit+continue) failed for station $stationId", e)
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(getApplication(), "ثبت رکورد و ادامه انجام نشد؛ وضعیت بازی حفظ شد.", Toast.LENGTH_LONG).show()
-                }
-            }
-        }
-    }
+    fun commitSegmentAndContinue(stationId: Int, payerCustomerIds: List<Long>, payerCustomerNames: List<String>) =
+        applyStopStateLocally(stationId, commitSegment = true, continueRunning = true, payerCustomerIds, payerCustomerNames)
 
     fun resumeStation(stationId: Int) {
         viewModelScope.launch(Dispatchers.IO) {
