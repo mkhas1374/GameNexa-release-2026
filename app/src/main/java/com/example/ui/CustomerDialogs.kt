@@ -755,10 +755,12 @@ fun StationPauseDialog(
     val selectedPayerNamesMap = remember { mutableStateMapOf<Long, String>() }
 
     val availableCustomers = remember(stationCustomers, allCustomers) {
-        val source = when {
-            stationCustomers.isNotEmpty() -> stationCustomers
-            allCustomers.isNotEmpty() -> allCustomers
-            else -> (1..4).map { num ->
+        val source = if (stationCustomers.isNotEmpty()) {
+            stationCustomers
+        } else {
+            // Stop decisions must never silently assign the cost to every customer in the hall.
+            // With no station participant, expose only explicit guest payers for the Manager to choose.
+            (1..4).map { num ->
                 Customer(id = -num.toLong(), fullName = "مهمان $num", phoneNumber = "")
             }
         }

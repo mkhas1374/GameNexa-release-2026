@@ -4341,9 +4341,12 @@ loadSettings()
                 val serverUpdated = SelfHostedManager.updateManagerCustomerTransaction(updated)
                 if (serverUpdated) {
                     repository.saveSetting("customer_transaction_outbox_${transaction.id}", "")
-                    // Keep the just-updated Room row visible immediately. The subsequent server
-                    // refresh replaces it with the canonical row when available.
-                    repository.syncCustomerTransactionsFromServer()
+                    // Keep the just-updated Room row authoritative for the current UI frame.
+                    // A delayed refresh must never race the PATCH and resurrect the old status.
+                    viewModelScope.launch {
+                        delay(1500L)
+                        repository.syncCustomerTransactionsFromServer()
+                    }
                 } else {
                     queueOrSyncCustomerTransaction(updated)
                 }
@@ -4358,9 +4361,12 @@ loadSettings()
                 val serverUpdated = SelfHostedManager.updateManagerCustomerTransaction(updated)
                 if (serverUpdated) {
                     repository.saveSetting("customer_transaction_outbox_${transaction.id}", "")
-                    // Keep the just-updated Room row visible immediately. The subsequent server
-                    // refresh replaces it with the canonical row when available.
-                    repository.syncCustomerTransactionsFromServer()
+                    // Keep the just-updated Room row authoritative for the current UI frame.
+                    // A delayed refresh must never race the PATCH and resurrect the old status.
+                    viewModelScope.launch {
+                        delay(1500L)
+                        repository.syncCustomerTransactionsFromServer()
+                    }
                 } else {
                     queueOrSyncCustomerTransaction(updated)
                 }
@@ -6068,14 +6074,14 @@ loadSettings()
         val userId = decryptSetting("enc_user_id")
         val username = decryptSetting("enc_auth_username")
         val phone = decryptSetting("enc_auth_phone")
-        val role = decryptSetting("enc_auth_role").ifBlank { "OPERATOR" }
+        val role = decryptSetting("enc_auth_role")
         val email = decryptSetting("enc_auth_email")
 
         if (token.isNotBlank()) {
             if (sessionType == "CUSTOMER") {
                 NetworkClient.customerAuthToken = token
                 _authState.value = AuthState.Unauthenticated
-            } else if (userId.isNotBlank()) {
+            } else if (userId.isNotBlank() && role in setOf("MANAGER", "GAMENET_MANAGER", "SUPER_MANAGER")) {
                 NetworkClient.managerAuthToken = token
                 _authState.value = AuthState.Authenticated(
                     userId = userId,
@@ -6691,7 +6697,12 @@ loadSettings()
             val paid = if (status == "REVIEWED") tx.amount else r.optLong("paidAmount", tx.paidAmount)
             repository.updateCustomerTransaction(tx.copy(status=status, paidAmount=paid, earnedGn=earnedGn, earnedLp=earnedLp))
         }
-        repository.syncCustomerTransactionsFromServer()
+        // Refresh only after the local Room state has rendered; immediate replacement can race
+        // the server response and make a successfully completed invoice appear unchanged until restart.
+        viewModelScope.launch {
+            delay(1500L)
+            repository.syncCustomerTransactionsFromServer()
+        }
         true
     }
 
