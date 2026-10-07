@@ -6698,8 +6698,18 @@ loadSettings()
             val cid = r.optLong("customerId", 0L)
             val customerName = r.optString("customerName", "")
             val txId = r.optLong("transactionId", 0L)
+            // The server transaction id and Android Room id are not guaranteed to be
+            // identical (the Android row can be created before the server row exists).
+            // Prefer the exact id when it is local, but ALWAYS fall back to the stable
+            // session + participant identity so the invoice disappears immediately.
             val tx = if (txId > 0L) {
                 all.firstOrNull { it.id == txId && it.status != "DELETED" }
+                    ?: all.firstOrNull {
+                        it.sessionId == sessionId &&
+                            it.status != "DELETED" &&
+                            if (cid > 0L) it.customerId == cid
+                            else it.customerId <= 0L && customerName.isNotBlank() && it.customerName == customerName
+                    }
             } else {
                 all.firstOrNull {
                     it.sessionId == sessionId &&

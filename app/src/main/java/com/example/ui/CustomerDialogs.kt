@@ -1029,11 +1029,17 @@ fun StationPauseDialog(
                             color = MaterialTheme.colorScheme.error
                         )
                     } else {
-                        LazyColumn(
-                            modifier = Modifier.heightIn(max = 150.dp),
+                        // This is a short payer list (max 4 guests / station participants).
+                        // Keep it as a bounded scrollable Column instead of a nested LazyColumn
+                        // inside AlertDialog; this removes the remaining Compose crash path seen
+                        // when Stop is opened/confirmed on legacy station data.
+                        Column(
+                            modifier = Modifier
+                                .heightIn(max = 150.dp)
+                                .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            items(availableCustomers, key = { it.id }) { cust ->
+                            availableCustomers.forEach { cust ->
                                 val isChecked = selectedPayerIds.contains(cust.id)
                                 Surface(
                                     onClick = {
@@ -1090,12 +1096,19 @@ fun StationPauseDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    val ids = selectedPayerIds.toList()
-                    val names = ids.mapNotNull { selectedPayerNamesMap[it] }
-                    when (selectedOption) {
-                        1 -> onSimplePause()
-                        2 -> onCommitSegmentAndPause(ids, names)
-                        3 -> onCommitSegmentAndContinue(ids, names)
+                    val ids = selectedPayerIds.distinct().toList()
+                    val names = ids.map { selectedPayerNamesMap[it].orEmpty() }
+                    // Dismiss first, then invoke the operation. A malformed legacy station
+                    // must never be able to keep the modal in an unstable Compose state.
+                    onDismiss()
+                    runCatching {
+                        when (selectedOption) {
+                            1 -> onSimplePause()
+                            2 -> onCommitSegmentAndPause(ids, names)
+                            3 -> onCommitSegmentAndContinue(ids, names)
+                        }
+                    }.onFailure { error ->
+                        android.util.Log.e("StationPauseDialog", "Stop action failed", error)
                     }
                 },
                 enabled = if (selectedOption == 2 || selectedOption == 3) selectedPayerIds.isNotEmpty() else true,

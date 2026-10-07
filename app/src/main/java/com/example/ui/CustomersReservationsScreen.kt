@@ -1137,16 +1137,27 @@ fun CustomerTransactionCard(
                         // status updater here: it can re-submit the pre-finalization paidAmount and
                         // resurrect a just-finalized invoice as DEBTOR/UNREVIEWED.
                         isSubmitting = false
-                        settlementReview = viewModel.fetchSettlementReview(
-                            transaction.sessionId,
-                            transaction.customerId,
-                            transaction.customerName.takeIf { transaction.customerId <= 0L && it.isNotBlank() }
-                        )
+                        // Close the dialog FIRST. Never make the Manager wait for a
+                        // second network GET before seeing the state transition.
+                        // finalizeSettlementReview has already written the authoritative
+                        // response into Room, so the Flow updates the list immediately.
+                        isSubmitting = false
+                        showPrepaymentDialog = false
                         prepaymentAllocations = emptyMap()
                         refundMethods = emptyMap()
                         reviewStatuses = emptyMap()
-                        showPrepaymentDialog = false
-                        android.widget.Toast.makeText(viewModel.getApplication(), "تعیین تکلیف نشست با موفقیت ثبت شد؛ GN و LP قطعی شدند.", android.widget.Toast.LENGTH_SHORT).show()
+                        android.widget.Toast.makeText(viewModel.getApplication(), "تعیین تکلیف فاکتور با موفقیت ثبت شد.", android.widget.Toast.LENGTH_SHORT).show()
+                        // Refresh only after the UI has closed; it is best-effort and must
+                        // never delay or undo the authoritative local transition.
+                        viewModel.viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            runCatching {
+                                viewModel.fetchSettlementReview(
+                                    transaction.sessionId,
+                                    transaction.customerId,
+                                    transaction.customerName.takeIf { transaction.customerId <= 0L && it.isNotBlank() }
+                                )
+                            }
+                        }
                     } else {
                         isSubmitting = false
                         android.widget.Toast.makeText(viewModel.getApplication(), "تعیین تکلیف با سرور ثبت نشد؛ اتصال را بررسی و دوباره تلاش کنید.", android.widget.Toast.LENGTH_LONG).show()
