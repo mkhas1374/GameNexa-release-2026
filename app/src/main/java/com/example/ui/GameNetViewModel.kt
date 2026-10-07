@@ -3369,12 +3369,18 @@ loadSettings()
                 elapsedPlayingTimeMillis = totalElapsed
             )
 
-            saveAndSyncStationState(updated)
-            repository.getSetting("active_session_" + stationId)?.takeIf { it.isNotBlank() }?.let { sessionId ->
-                queueOrSendSessionEvent(sessionId, "PAUSE", now, org.json.JSONObject())
+            // The Stop button must never depend on a network/session-event operation.
+            // Persist the PAUSED state first; ancillary sync/logging is best-effort and
+            // cannot prevent the local state transition.
+            repository.insertStationState(updated)
+            runCatching { cancelAlarm(stationId) }
+            runCatching { logOperatorActivity("توقف موقت ایستگاه", "ایستگاه $stationId متوقف شد.") }
+            runCatching {
+                val sessionId = repository.getSetting("active_session_" + stationId)?.takeIf { it.isNotBlank() }
+                if (sessionId != null) queueOrSendSessionEvent(sessionId, "PAUSE", now, org.json.JSONObject())
+            }.onFailure { error ->
+                android.util.Log.e("GameNetViewModel", "Ancillary PAUSE event failed for station $stationId", error)
             }
-            cancelAlarm(stationId)
-                logOperatorActivity("توقف موقت ایستگاه", "ایستگاه $stationId متوقف شد.")
             } catch (e: Exception) {
                 android.util.Log.e("GameNetViewModel", "Stop(simple) failed for station $stationId", e)
                 withContext(Dispatchers.Main) {

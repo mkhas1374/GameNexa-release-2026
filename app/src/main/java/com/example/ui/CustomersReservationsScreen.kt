@@ -1147,17 +1147,6 @@ fun CustomerTransactionCard(
                         refundMethods = emptyMap()
                         reviewStatuses = emptyMap()
                         android.widget.Toast.makeText(viewModel.getApplication(), "تعیین تکلیف فاکتور با موفقیت ثبت شد.", android.widget.Toast.LENGTH_SHORT).show()
-                        // Refresh only after the UI has closed; it is best-effort and must
-                        // never delay or undo the authoritative local transition.
-                        viewModel.viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                            runCatching {
-                                viewModel.fetchSettlementReview(
-                                    transaction.sessionId,
-                                    transaction.customerId,
-                                    transaction.customerName.takeIf { transaction.customerId <= 0L && it.isNotBlank() }
-                                )
-                            }
-                        }
                     } else {
                         isSubmitting = false
                         android.widget.Toast.makeText(viewModel.getApplication(), "تعیین تکلیف با سرور ثبت نشد؛ اتصال را بررسی و دوباره تلاش کنید.", android.widget.Toast.LENGTH_LONG).show()
