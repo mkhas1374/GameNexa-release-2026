@@ -3393,14 +3393,15 @@ loadSettings()
                 // never invoke the network-backed station writer from the Stop coroutine.
                 // Cloud synchronization is explicitly best-effort afterwards.
                 repository.insertStationStateLocal(updated)
+                // The UI-critical Stop transaction ends here. Alarm cancellation, session-event
+                // logging, and cloud sync are detached from the state transition so none of
+                // their callbacks can invalidate the active StationCard composition.
                 runCatching { cancelAlarm(stationId) }
-                runCatching {
-                    val sessionId = repository.getSetting("active_session_$stationId")?.takeIf { it.isNotBlank() }
-                    if (sessionId != null) queueOrSendSessionEvent(sessionId, if (continueRunning) "SEGMENT_CONTINUE" else "PAUSE", now, org.json.JSONObject())
-                }
-                // Sync after the local state transition; a server/network/serialization
-                // failure must never be able to tear down the Stop UI path.
                 viewModelScope.launch(Dispatchers.IO) {
+                    runCatching {
+                        val sessionId = repository.getSetting("active_session_$stationId")?.takeIf { it.isNotBlank() }
+                        if (sessionId != null) queueOrSendSessionEvent(sessionId, if (continueRunning) "SEGMENT_CONTINUE" else "PAUSE", now, org.json.JSONObject())
+                    }.onFailure { android.util.Log.e("GameNetViewModel", "Stop event sync failed for station $stationId", it) }
                     runCatching { saveAndSyncStationState(updated) }
                         .onFailure { android.util.Log.e("GameNetViewModel", "Stop background sync failed for station $stationId", it) }
                 }
@@ -6630,36 +6631,26 @@ loadSettings()
             // identical (the Android row can be created before the server row exists).
             // Prefer the exact id when it is local, but ALWAYS fall back to the stable
             // session + participant identity so the invoice disappears immediately.
-            val tx = if (txId > 0L) {
-                all.firstOrNull { it.id == txId && it.status != "DELETED" }
-                    ?: all.firstOrNull {
-                        it.sessionId == sessionId &&
-                            it.status != "DELETED" &&
-                            if (cid > 0L) it.customerId == cid
-                            else it.customerId <= 0L && customerName.isNotBlank() && it.customerName == customerName
-                    }
-            } else {
-                all.firstOrNull {
-                    it.sessionId == sessionId &&
-                        it.status != "DELETED" &&
-                        if (cid > 0L) it.customerId == cid
-                        else it.customerId <= 0L && customerName.isNotBlank() && it.customerName == customerName
-                }
-            } ?: continue
-            val status = r.optString("status", "REVIEWED")
+            val matching = all.filter { tx ->
+                tx.status != "DELETED" &&
+                    tx.sessionId == sessionId &&
+                    if (cid > 0L) tx.customerId == cid
+                    else tx.customerId <= 0L && customerName.isNotBlank() && tx.customerName == customerName
+            }
+            val exact = if (txId > 0L) all.firstOrNull { it.id == txId && it.status != "DELETED" } else null
+            val targets = (matching + listOfNotNull(exact)).distinctBy { it.id }
+            if (targets.isEmpty()) continue
+            val status = r.optString("status", "REVIEWED").uppercase()
             val earnedGn = r.optLong("earnedGn", 0L)
             val earnedLp = r.optLong("earnedLp", 0L)
-            val paid = if (status == "REVIEWED") tx.amount else r.optLong("paidAmount", tx.paidAmount)
-            repository.updateCustomerTransaction(tx.copy(status=status, paidAmount=paid, earnedGn=earnedGn, earnedLp=earnedLp))
+            targets.forEach { tx ->
+                val paid = if (status == "REVIEWED") tx.amount else r.optLong("paidAmount", tx.paidAmount)
+                repository.upsertCustomerTransactionLocal(tx.copy(status=status, paidAmount=paid, earnedGn=earnedGn, earnedLp=earnedLp))
+            }
         }
-        // The server response above is authoritative and the exact result is written to Room
-        // first, so the dialog can close immediately. Then reconcile once in the background;
-        // this refresh is deliberately after the local writes and cannot resurrect the old status.
-        viewModelScope.launch(Dispatchers.IO) {
-            kotlinx.coroutines.delay(250)
-            runCatching { repository.syncCustomerTransactionsFromServer() }
-                .onFailure { android.util.Log.w("GameNetViewModel", "Post-settlement transaction refresh failed", it) }
-        }
+        // The finalize response is the authoritative committed server result. Do not issue
+        // an immediate GET that can race another stale cache/replica and put UNREVIEWED back
+        // into Room. The next normal hydration may reconcile history later.
         true
     }
 

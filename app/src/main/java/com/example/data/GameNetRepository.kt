@@ -1026,7 +1026,13 @@ class GameNetRepository(private val db: AppDatabase) {
         customerTransactionDao.insert(transaction)
 
     suspend fun updateCustomerTransaction(transaction: CustomerTransaction) =
-        customerTransactionDao.update(transaction)
+        // Use REPLACE/upsert rather than @Update. The server transaction id and the
+        // pre-server local Room id are not guaranteed to be identical; upsert guarantees
+        // the authoritative result is observable by the Flow immediately.
+        customerTransactionDao.insert(transaction)
+
+    suspend fun upsertCustomerTransactionLocal(transaction: CustomerTransaction) =
+        customerTransactionDao.insert(transaction)
 
     suspend fun deleteCustomerTransactionLocal(transaction: CustomerTransaction) = withContext(Dispatchers.IO) {
         customerTransactionDao.delete(transaction)

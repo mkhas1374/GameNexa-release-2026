@@ -581,13 +581,20 @@ fun StationCard(
             var pendingStopPayerIds by remember { mutableStateOf<List<Long>>(emptyList()) }
             var pendingStopPayerNames by remember { mutableStateOf<List<String>>(emptyList()) }
 
-            LaunchedEffect(pendingStopOption) {
+            LaunchedEffect(showStationPauseDialog, pendingStopOption) {
+                // Never execute the Stop mutation while the AlertDialog is still in the
+                // composition. The previous implementation keyed only on pendingStopOption,
+                // which could race the dialog-dismiss recomposition on some Compose versions.
+                if (showStationPauseDialog) return@LaunchedEffect
                 val option = pendingStopOption ?: return@LaunchedEffect
-                val payerIds = pendingStopPayerIds
-                val payerNames = pendingStopPayerNames
+                val payerIds = pendingStopPayerIds.toList()
+                val payerNames = pendingStopPayerNames.toList()
+                // Clear the transient action before launching the ViewModel mutation so a
+                // recomposition can never execute it twice.
                 pendingStopOption = null
                 pendingStopPayerIds = emptyList()
                 pendingStopPayerNames = emptyList()
+                kotlinx.coroutines.yield()
                 when (option) {
                     1 -> viewModel.pauseStation(station.id)
                     2 -> viewModel.commitSegmentAndPause(station.id, payerIds, payerNames)
