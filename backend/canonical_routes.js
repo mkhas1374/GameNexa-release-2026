@@ -1065,6 +1065,12 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
         const earnedGn=Math.max(0,gameReward+buffetReward);
         const earnedLp=Math.max(0,gameReward+buffetReward);
         const reviewKey='session-review:'+sid+':'+cid;
+        // Capture the authoritative outstanding amount before applying this decision. Debt is
+        // reconciled by delta below, making retries idempotent instead of adding the same debt twice.
+        const debtBefore = (exactTransactionId>0
+          ? (await c.query("SELECT id,customer_id,amount,paid_amount FROM customer_transactions WHERE id=$1 AND manager_id=$2 AND status<>'DELETED' FOR UPDATE",[exactTransactionId,mid])).rows[0]
+          : (await c.query("SELECT id,customer_id,amount,paid_amount FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' AND ((customer_id=$3 AND $3>0) OR (customer_id IS NULL AND $3<=0 AND customer_name=$4)) ORDER BY id DESC LIMIT 1 FOR UPDATE",[mid,sid,cid,participant.participant_name])).rows[0]);
+        const debtBeforeOutstanding = debtBefore ? Math.max(0,Number(debtBefore.amount||0)-Number(debtBefore.paid_amount||0)) : 0;
         // The invoice ledger is not enough: customer_transactions is the Manager queue's
         // authoritative status row. Persist the decision here so the next Android sync
         // cannot resurrect an already finalized invoice as UNREVIEWED.
@@ -1086,9 +1092,14 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
             await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,session_id=COALESCE(session_id,$4),updated_at=NOW() WHERE manager_id=$3 AND session_id IS NOT DISTINCT FROM $4 AND customer_id=$5 AND status<>'DELETED'",[finalStatus,paidAmount,mid,sid,cid]);
           }
         }
-        if(finalStatus==='DEBTOR' && !isGuestDecision){
-          const outstanding=Math.max(0,total-paidAmount);
-          if(outstanding>0) await c.query("UPDATE customers SET debt=GREATEST(0,COALESCE(debt,0)+$1),updated_at=NOW() WHERE id=$2 AND manager_id=$3",[outstanding,cid,mid]);
+        // Reconcile customer debt from the transaction's authoritative before/after
+        // outstanding values. This handles REVIEWED -> zero debt, DEBTOR -> outstanding,
+        // and repeated finalization without double-counting.
+        if(!isGuestDecision && debtBefore && Number(debtBefore.customer_id||0)===cid){
+          const debtAfter=(await c.query("SELECT amount,paid_amount FROM customer_transactions WHERE id=$1 AND manager_id=$2",[debtBefore.id,mid])).rows[0];
+          const debtAfterOutstanding=debtAfter ? Math.max(0,Number(debtAfter.amount||0)-Number(debtAfter.paid_amount||0)) : Math.max(0,total-paidAmount);
+          const debtDelta=debtAfterOutstanding-debtBeforeOutstanding;
+          if(debtDelta!==0) await c.query("UPDATE customers SET debt=GREATEST(0,COALESCE(debt,0)+$1),updated_at=NOW() WHERE id=$2 AND manager_id=$3",[debtDelta,cid,mid]);
         }
         const resolvedTx=(await c.query("SELECT id FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' AND ((customer_id=$3 AND $3>0) OR (customer_id IS NULL AND $3<=0 AND customer_name=$4)) ORDER BY id DESC LIMIT 1",[mid,sid,cid,participant.participant_name])).rows[0];
         results.push({customerId:cid,customerName:participant.participant_name,transactionId:Number(resolvedTx?.id||exactTransactionId||0),refundAmount:String(refund),refundMethod:method,earnedGn,earnedLp,status:finalStatus});
