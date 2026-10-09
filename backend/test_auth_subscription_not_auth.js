@@ -1,0 +1,14 @@
+const fs = require("fs");
+const assert = require("assert");
+const vm = fs.readFileSync(__dirname + "/../app/src/main/java/com/example/ui/GameNetViewModel.kt", "utf8");
+const start = vm.indexOf("if (checkRes.isLicenseActive)");
+const end = vm.indexOf("} catch (e: Exception)", start);
+assert(start >= 0 && end > start, "license verification branch must exist");
+const block = vm.slice(start, end);
+assert(block.includes("hasServerManagerSession"), "active subscription must require explicit persisted server session");
+assert(block.includes('persistedSessionType == "ADMIN"'), "session type must be checked before restoring Manager auth");
+assert(block.includes("persistedToken.isNotBlank()"), "server-issued token must be present before restoring Manager auth");
+assert(block.includes("_isAdminAuthenticated.value = false"), "invalid/missing session must remain logged out");
+assert(/if \(hasServerManagerSession && !_isCustomerAuthenticated\.value\) \{[\s\S]*?_isAdminAuthenticated\.value = true/.test(block), "authentication may be restored only inside the valid-session guard");
+assert(block.indexOf("if (hasServerManagerSession && !_isCustomerAuthenticated.value)") < block.indexOf("_isAdminAuthenticated.value = true"), "the valid-session guard must precede authentication");
+console.log("PASS: active subscription no longer authenticates a fresh install without a valid Manager session");

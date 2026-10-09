@@ -1008,9 +1008,23 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
         if(!participant){await c.query('ROLLBACK');return res.status(422).json({error:'Customer is not a payer in this session',customerId:cid,transactionId:decisionTransactionId||null});}
         const priorReview=(await c.query("SELECT refund_amount,method,status FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 AND customer_id=$3 LIMIT 1",[mid,sid,cid])).rows[0];
         if(priorReview){
+          // Idempotency must not mean "skip repair". Older releases wrote the refund marker
+          // before the invoice/transaction queue had converged, so a retry could return 200
+          // forever while the Manager still saw UNREVIEWED. Re-apply the requested final state
+          // idempotently, while never re-crediting the wallet or rewards.
+          const retryRequested=String(d.status||'REVIEWED').toUpperCase();
+          const retryStatus=retryRequested==='DEBTOR'||retryRequested==='PARTIAL'?'DEBTOR':'REVIEWED';
+          const retryPaid=Math.max(0,Math.trunc(Number(d.paidAmount||0)));
+          if(isGuestDecision){
+            await c.query("UPDATE customer_transactions SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN amount ELSE LEAST(amount,$2) END,session_id=COALESCE(session_id,$3),updated_at=NOW() WHERE manager_id=$4 AND session_id=$3 AND customer_id IS NULL AND customer_name=$5 AND status<>'DELETED'",[retryStatus,retryPaid,sid,mid,participant.participant_name]);
+            await c.query("UPDATE invoices SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN total_amount ELSE LEAST(total_amount,$2) END,updated_at=NOW() WHERE manager_id=$3 AND session_id=$4 AND customer_id IS NULL AND customer_snapshot->>'name'=$5",[retryStatus,retryPaid,mid,sid,participant.participant_name]);
+          }else{
+            await c.query("UPDATE customer_transactions SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN amount ELSE LEAST(amount,$2) END,session_id=COALESCE(session_id,$3),updated_at=NOW() WHERE manager_id=$4 AND session_id=$3 AND customer_id=$5 AND status<>'DELETED'",[retryStatus,retryPaid,sid,mid,cid]);
+            await c.query("UPDATE invoices SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN total_amount ELSE LEAST(total_amount,$2) END,updated_at=NOW() WHERE manager_id=$3 AND session_id=$4 AND customer_id=$5",[retryStatus,retryPaid,mid,sid,cid]);
+          }
           const rg=Number((await c.query("SELECT COALESCE(SUM(amount),0) amount FROM gn_ledger WHERE manager_id=$1 AND customer_id=$2 AND reference_type='SESSION_REVIEW' AND reference_id=$3 AND type='CREDIT'",[mid,cid,sid])).rows[0].amount||0);
           const rl=Number((await c.query("SELECT COALESCE(SUM(amount),0) amount FROM lp_ledger WHERE manager_id=$1 AND customer_id=$2 AND reference_type='SESSION_REVIEW' AND reference_id=$3 AND type='CREDIT'",[mid,cid,sid])).rows[0].amount||0);
-          results.push({customerId:cid,customerName:participant.participant_name,refundAmount:String(priorReview.refund_amount||0),refundMethod:String(priorReview.method||'NONE'),earnedGn:rg,earnedLp:rl,status:String(priorReview.status||'REVIEWED'),idempotent:true});
+          results.push({customerId:cid,customerName:participant.participant_name,refundAmount:String(priorReview.refund_amount||0),refundMethod:String(priorReview.method||'NONE'),earnedGn:rg,earnedLp:rl,status:retryStatus,idempotent:true});
           continue;
         }
         const solePayerFallback=(participants.length===1 && participant.is_payer)?Number(snapshot.initialPrepaymentAmount||0):0;

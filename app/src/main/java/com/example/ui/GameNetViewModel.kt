@@ -5308,8 +5308,32 @@ loadSettings()
                     val code = checkRes.licenseCode ?: decryptSetting("enc_license_code")
                     saveLicenseLocal(code, checkRes.realPlanType, checkRes.realExpireTime, serverTime, true)
                     _isSubscribed.value = true
-                    _isAdminAuthenticated.value = true
-                    _isCustomerAuthenticated.value = false
+                    // An active subscription is entitlement, not authentication. Never route a
+                    // fresh install (or a corrupted/legacy role marker) into the Manager UI just
+                    // because the device has a valid license. Only restore an explicit server-issued
+                    // Manager session; Trial is handled by its separate server-authoritative flow.
+                    val persistedSessionType = decryptSetting("enc_session_type")
+                    val persistedRole = decryptSetting("enc_admin_role")
+                    val persistedManagerId = decryptSetting("enc_manager_id").ifBlank { decryptSetting("enc_user_id") }
+                    val persistedToken = decryptSetting("enc_auth_token")
+                    val hasServerManagerSession = persistedSessionType == "ADMIN" &&
+                        persistedManagerId.isNotBlank() && persistedToken.isNotBlank() &&
+                        persistedRole in setOf("MANAGER", "GAMENET_MANAGER", "SUPER_MANAGER")
+                    if (hasServerManagerSession && !_isCustomerAuthenticated.value) {
+                        _currentAdminRole.value = persistedRole
+                        SelfHostedManager.setManagerId(persistedManagerId)
+                        NetworkClient.managerAuthToken = persistedToken
+                        NetworkClient.authToken = persistedToken
+                        _isAdminAuthenticated.value = true
+                    } else {
+                        _currentAdminRole.value = "UNAUTHENTICATED"
+                        _isAdminAuthenticated.value = false
+                        if (!_isCustomerAuthenticated.value) {
+                            SelfHostedManager.setManagerId("")
+                            NetworkClient.managerAuthToken = null
+                            NetworkClient.authToken = null
+                        }
+                    }
                     _licenseState.value = LicenseState.Active(
                         planType = checkRes.realPlanType,
                         expiresAt = checkRes.realExpireTime,
