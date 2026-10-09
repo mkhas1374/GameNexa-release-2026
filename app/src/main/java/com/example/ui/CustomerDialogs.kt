@@ -840,7 +840,7 @@ fun StationPauseDialog(
                                     color = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
-                                    text = "هزینه بازی تا الان: %,.0f تومان".format(java.util.Locale.US, gameCost),
+                                    text = "هزینه بازی تا الان: %,d تومان".format(java.util.Locale.US, gameCost),
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
