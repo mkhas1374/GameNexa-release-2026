@@ -1067,6 +1067,7 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
         const reviewKey='session-review:'+sid+':'+cid;
         // Capture the authoritative outstanding amount before applying this decision. Debt is
         // reconciled by delta below, making retries idempotent instead of adding the same debt twice.
+        const exactTransactionId=Number(d.transactionId||0);
         const debtBefore = (exactTransactionId>0
           ? (await c.query("SELECT id,customer_id,amount,paid_amount FROM customer_transactions WHERE id=$1 AND manager_id=$2 AND status<>'DELETED' FOR UPDATE",[exactTransactionId,mid])).rows[0]
           : (await c.query("SELECT id,customer_id,amount,paid_amount FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' AND ((customer_id=$3 AND $3>0) OR (customer_id IS NULL AND $3<=0 AND customer_name=$4)) ORDER BY id DESC LIMIT 1 FOR UPDATE",[mid,sid,cid,participant.participant_name])).rows[0]);
@@ -1074,7 +1075,6 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
         // The invoice ledger is not enough: customer_transactions is the Manager queue's
         // authoritative status row. Persist the decision here so the next Android sync
         // cannot resurrect an already finalized invoice as UNREVIEWED.
-        const exactTransactionId=Number(d.transactionId||0);
         if(exactTransactionId>0){
           await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,session_id=COALESCE(session_id,$4),updated_at=NOW() WHERE id=$5 AND manager_id=$3 AND status<>'DELETED'",[finalStatus,paidAmount,mid,sid,exactTransactionId]);
         } else if (isGuestDecision) {
