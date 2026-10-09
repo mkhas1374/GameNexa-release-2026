@@ -1626,7 +1626,15 @@ object SelfHostedManager {
                 val list = mutableListOf<CustomerTransaction>()
                 for (i in 0 until data.length()) {
                     val o = data.optJSONObject(i) ?: continue
-                    val id = o.optLong("id", o.optLong("localId", 0L))
+                    // Keep Room identity stable across server hydration. `id` is the
+                    // server primary key; `local_id` is the Android Room ID sent during sync.
+                    // Using server `id` here causes every refresh to POST a new local_id and
+                    // create duplicate transaction/invoice rows.
+                    val id = if (o.has("local_id") && !o.isNull("local_id")) {
+                        o.optLong("local_id", 0L)
+                    } else {
+                        o.optLong("localId", o.optLong("id", 0L))
+                    }
                     val rawCustomerId = o.optLong("customerId", o.optLong("customer_id", 0L))
                     val customerName = o.optString("customerName", o.optString("customer_name", ""))
                     // A NULL customer_id is the canonical server representation of a true walk-in.

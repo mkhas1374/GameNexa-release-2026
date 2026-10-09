@@ -6620,13 +6620,16 @@ loadSettings()
 
     suspend fun finalizeSettlementReview(sessionId: String, decisions: List<org.json.JSONObject>): Boolean = withContext(Dispatchers.IO) {
         val result = SelfHostedManager.finalizeSettlementReview(sessionId, decisions) ?: return@withContext false
+        // The API response is committed on the server. Re-hydrate the authoritative list so
+        // UI state is reconciled by stable local_id rather than confusing server IDs with Room IDs.
+        if (repository.syncCustomerTransactionsFromServer()) return@withContext true
         val results = result.optJSONArray("results") ?: org.json.JSONArray()
         val all = repository.allCustomerTransactions.firstOrNull() ?: emptyList()
+        var appliedLocally = false
         for (i in 0 until results.length()) {
             val r = results.optJSONObject(i) ?: continue
             val cid = r.optLong("customerId", 0L)
             val customerName = r.optString("customerName", "")
-            val txId = r.optLong("transactionId", 0L)
             // The server transaction id and Android Room id are not guaranteed to be
             // identical (the Android row can be created before the server row exists).
             // Prefer the exact id when it is local, but ALWAYS fall back to the stable
@@ -6637,8 +6640,9 @@ loadSettings()
                     if (cid > 0L) tx.customerId == cid
                     else tx.customerId <= 0L && customerName.isNotBlank() && tx.customerName == customerName
             }
-            val exact = if (txId > 0L) all.firstOrNull { it.id == txId && it.status != "DELETED" } else null
-            val targets = (matching + listOfNotNull(exact)).distinctBy { it.id }
+            // `transactionId` in the response is a server ID, not necessarily a Room ID.
+            // Never apply it to an unrelated local row; use session + participant identity.
+            val targets = matching.distinctBy { it.id }
             if (targets.isEmpty()) continue
             val status = r.optString("status", "REVIEWED").uppercase()
             val earnedGn = r.optLong("earnedGn", 0L)
@@ -6646,12 +6650,10 @@ loadSettings()
             targets.forEach { tx ->
                 val paid = if (status == "REVIEWED") tx.amount else r.optLong("paidAmount", tx.paidAmount)
                 repository.upsertCustomerTransactionLocal(tx.copy(status=status, paidAmount=paid, earnedGn=earnedGn, earnedLp=earnedLp))
+                appliedLocally = true
             }
         }
-        // The finalize response is the authoritative committed server result. Do not issue
-        // an immediate GET that can race another stale cache/replica and put UNREVIEWED back
-        // into Room. The next normal hydration may reconcile history later.
-        true
+        appliedLocally
     }
 
     suspend fun refundUnusedPrepayment(sessionId: String, allocations: Map<Long, Long>): Boolean {
