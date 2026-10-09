@@ -821,12 +821,26 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
       const participants=(await pool.query("SELECT customer_id,participant_key,participant_name,is_guest,is_payer,prepayment_amount FROM session_participants WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sid,mid])).rows;
       const snapshot=session.pricing_snapshot && typeof session.pricing_snapshot==='object' ? session.pricing_snapshot : {};
       const snapshotPrepayments=snapshot.customerPrepayments && typeof snapshot.customerPrepayments==='object' ? snapshot.customerPrepayments : {};
-      // A true walk-in session may have no session_participants row. Preserve the session-level
-      // initial payment as a single guest payer so settlement review can still account for it.
+      // Legacy sessions may have invoices/transactions but no participant rows. Rebuild the
+      // payer identity from the persisted invoice snapshot first, then transaction history;
+      // a generic walk-in name here breaks transactionId matching and leaves the real invoice
+      // permanently UNREVIEWED after the server returns success.
       if(participants.length===0){
-        // A true walk-in has no customer/session-participant row. It must still be a real
-        // payer in settlement review so an invoice can be created even when prepayment is zero.
-        participants.push({customer_id:null,participant_key:'guest:walk-in',participant_name:'مشتری گذری (بدون اشتراک)',is_guest:true,is_payer:true,prepayment_amount:Number(snapshot.initialPrepaymentAmount||0)});
+        const legacyInvoices=(await pool.query("SELECT invoice_number,customer_snapshot,paid_amount FROM invoices WHERE session_id=$1 AND manager_id=$2 AND customer_id IS NULL ORDER BY id",[sid,mid])).rows;
+        const seenLegacy=new Set();
+        for(const inv of legacyInvoices){
+          const name=String(inv.customer_snapshot?.name||'').trim()||'مشتری گذری (بدون اشتراک)';
+          const key=String(inv.customer_snapshot?.participantKey||'guest:walk-in');
+          const identity=key+'|'+name;
+          if(seenLegacy.has(identity)) continue;
+          seenLegacy.add(identity);
+          participants.push({customer_id:null,participant_key:key,participant_name:name,is_guest:true,is_payer:true,prepayment_amount:Number(snapshot.initialPrepaymentAmount||0)});
+        }
+        if(participants.length===0){
+          const legacyTx=(await pool.query("SELECT customer_name,MIN(local_id) local_id FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND customer_id IS NULL AND status<>'DELETED' GROUP BY customer_name ORDER BY MIN(id)",[mid,sid])).rows;
+          legacyTx.forEach((tx,i)=>participants.push({customer_id:null,participant_key:'guest:'+String(-(i+1)),participant_name:String(tx.customer_name||'مشتری گذری (بدون اشتراک)'),is_guest:true,is_payer:true,prepayment_amount:0}));
+        }
+        if(participants.length===0) participants.push({customer_id:null,participant_key:'guest:walk-in',participant_name:'مشتری گذری (بدون اشتراک)',is_guest:true,is_payer:true,prepayment_amount:Number(snapshot.initialPrepaymentAmount||0)});
       }
       const invoiceRows=(await pool.query("SELECT invoice_number,customer_id,game_cost,buffet_cost,total_amount,paid_amount,status,customer_snapshot FROM invoices WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sid,mid])).rows;
       const orderBuffet=Number((await pool.query("SELECT COALESCE(SUM(line_total),0) amount FROM session_orders WHERE session_id=$1 AND manager_id=$2",[sid,mid])).rows[0]?.amount||0);
@@ -960,6 +974,24 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
       const gameRewardPer10000=Math.max(0,Number(settings.policy_game_reward_rate??10));
       const buffetRewardPer10000=Math.max(0,Number(settings.policy_buffet_reward_rate??5));
       const participants=(await c.query("SELECT customer_id,participant_key,participant_name,is_guest,is_payer,prepayment_amount FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND is_payer=TRUE FOR UPDATE",[sid,mid])).rows;
+      // Same legacy identity repair as the review GET endpoint. Keep names/participant keys
+      // aligned with the invoice and transaction rows so finalization updates the intended payer.
+      if(participants.length===0){
+        const legacyInvoices=(await c.query("SELECT invoice_number,customer_snapshot FROM invoices WHERE session_id=$1 AND manager_id=$2 AND customer_id IS NULL ORDER BY id FOR UPDATE",[sid,mid])).rows;
+        const seenLegacy=new Set();
+        for(const inv of legacyInvoices){
+          const name=String(inv.customer_snapshot?.name||'').trim()||'مشتری گذری (بدون اشتراک)';
+          const key=String(inv.customer_snapshot?.participantKey||'guest:walk-in');
+          const identity=key+'|'+name;
+          if(seenLegacy.has(identity)) continue;
+          seenLegacy.add(identity);
+          participants.push({customer_id:null,participant_key:key,participant_name:name,is_guest:true,is_payer:true,prepayment_amount:0});
+        }
+        if(participants.length===0){
+          const legacyTx=(await c.query("SELECT customer_name,MIN(local_id) local_id FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND customer_id IS NULL AND status<>'DELETED' GROUP BY customer_name ORDER BY MIN(id)",[mid,sid])).rows;
+          legacyTx.forEach((tx,i)=>participants.push({customer_id:null,participant_key:'guest:'+String(-(i+1)),participant_name:String(tx.customer_name||'مشتری گذری (بدون اشتراک)'),is_guest:true,is_payer:true,prepayment_amount:0}));
+        }
+      }
       const authoritativeBuffet=Number((await c.query("SELECT COALESCE(SUM(line_total),0) amount FROM session_orders WHERE session_id=$1 AND manager_id=$2",[sid,mid])).rows[0]?.amount||0);
       const byId=new Map(participants.filter(p=>p.customer_id).map(p=>[Number(p.customer_id),p]));
       const guestPayers=participants.filter(p=>!p.customer_id && p.is_guest && p.is_payer);

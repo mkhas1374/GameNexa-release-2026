@@ -8,6 +8,8 @@ assert(routes.includes('local_id=$3 OR id=$3'), 'finalize must resolve Room loca
 assert(routes.includes(`customer_transactions.status IN ('REVIEWED','DEBTOR','PARTIAL') AND EXCLUDED.status='UNREVIEWED'`), 'stale sync must not downgrade finalized status');
 assert(routes.includes(`customer_snapshot->>'name'=$5`), 'duplicate guest invoices must be finalized by session and participant');
 assert(routes.includes('Idempotency must not mean'), 'idempotent retries must repair stale invoice/transaction status');
+assert(routes.includes('Legacy sessions may have invoices/transactions but no participant rows'), 'legacy sessions without participant rows must use the actual invoice identity');
+assert(routes.includes('legacyTx.forEach'), 'legacy sessions without invoice snapshots must fall back to transaction identity');
 assert(routes.includes('status:retryStatus,idempotent:true'), 'idempotent response must return the invoice status, not refund-marker status');
 assert(manager.includes('o.has("local_id") && !o.isNull("local_id")'), 'hydration must preserve local_id as Room identity');
 assert(viewModel.includes('if (repository.syncCustomerTransactionsFromServer()) return@withContext true'), 'finalization must refresh authoritative transactions');
