@@ -1181,7 +1181,7 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         const requestedCid=Number(d.customerId||0);
         const requestedName=String(d.customerName||'').trim();
         const linkedTx=decisionTransactionId>0
-          ? (await c.query("SELECT id,local_id,customer_id,customer_name,session_id,amount,paid_amount,game_cost,food_cost FROM customer_transactions WHERE manager_id=$1 AND status<>'DELETED' AND (local_id=$2 OR id=$2) AND session_id=$3 AND ((customer_id=$4 AND $4>0) OR (customer_id IS NULL AND $4<=0 AND customer_name=$5)) ORDER BY CASE WHEN local_id=$2 THEN 0 ELSE 1 END,id DESC LIMIT 1 FOR UPDATE",[mid,decisionTransactionId,sid,requestedCid,requestedName])).rows[0]
+          ? (await c.query("SELECT id,local_id,customer_id,customer_name,session_id,amount,paid_amount,game_cost,food_cost FROM customer_transactions WHERE manager_id=$1 AND status<>'DELETED' AND (local_id=$2 OR id=$2) AND session_id=$3 AND ((customer_id=$4 AND $4>0) OR (customer_id IS NULL AND $4<=0 AND ($5='' OR customer_name=$5))) ORDER BY CASE WHEN local_id=$2 THEN 0 ELSE 1 END,id DESC LIMIT 1 FOR UPDATE",[mid,decisionTransactionId,sid,requestedCid,requestedName])).rows[0]
           : null;
         // When an invoice was created before participant allocation was repaired, the
         // Android transaction identity is more authoritative than a stale/synthetic
