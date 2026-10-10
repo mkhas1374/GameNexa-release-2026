@@ -4495,48 +4495,57 @@ loadSettings()
     }
 
 
-    fun incrementBuffetOrder(stationId: Int, productName: String) {
+    fun incrementBuffetOrder(stationId: Int, productName: String, targetCustomerId: Long? = null, targetCustomerName: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
-            val existingId = "${stationId}_${productName}"
-            val orders = repository.getOrdersForStationSync(stationId)
-            val matched = orders.find { it.productName == productName }
-            if (matched != null) {
-                val updated = matched.copy(quantity = matched.quantity + 1)
-
-                val currentMap = _stationOrdersMap.value.toMutableMap()
-                val stationOrders = (currentMap[stationId] ?: emptyList()).toMutableList()
-                val idx = stationOrders.indexOfFirst { it.productName == productName }
-                if (idx >= 0) {
-                    stationOrders[idx] = updated
-                    currentMap[stationId] = stationOrders
-                    _stationOrdersMap.value = currentMap
+            try {
+                val matched = repository.getOrdersForStationSync(stationId).find {
+                    it.productName == productName && it.targetCustomerId == targetCustomerId &&
+                        (targetCustomerName.isNullOrBlank() || it.targetCustomerName == targetCustomerName)
+                } ?: return@launch
+                val sessionId = repository.getSetting("active_session_" + stationId)?.takeIf { it.isNotBlank() }
+                if (sessionId == null) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "شناسه نشست فعال موجود نیست؛ سفارش افزایش نیافت.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
                 }
-
-                repository.insertStationOrder(updated)
-                refreshOrdersForStation(stationId)
-
-                val p = repository.getProductByName(productName)
-                sendOrQueueBuffetOrder(
+                val product = repository.getProductByName(productName)
+                    ?: (repository.allProducts.firstOrNull() ?: emptyList()).find { it.name.trim().equals(productName.trim(), ignoreCase = true) }
+                if (product == null) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "محصول بوفه پیدا نشد.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+                val acceptedOrQueued = sendOrQueueBuffetOrder(
                     stationId = stationId,
                     productName = productName,
                     quantity = 1,
-                    price = p?.price ?: 0L,
-                    targetCustomerId = matched.targetCustomerId
+                    price = product.price,
+                    targetCustomerId = targetCustomerId,
+                    targetCustomerName = targetCustomerName,
+                    sessionId = sessionId
                 )
-
+                if (!acceptedOrQueued) return@launch
+                repository.insertStationOrder(matched.copy(quantity = matched.quantity + 1))
+                refreshOrdersForStation(stationId)
                 val st = repository.getStationStateByIdLocal(stationId)
-                if (st != null) {
-                    saveAndSyncStationState(st)
+                if (st != null) saveAndSyncStationState(st)
+            } catch (t: Throwable) {
+                android.util.Log.e("GameNetViewModel", "BUFFET_INCREMENT_GUARD station=" + stationId, t)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "افزایش سفارش بوفه انجام نشد.", Toast.LENGTH_LONG).show()
                 }
             }
         }
     }
 
-    fun decrementBuffetOrder(stationId: Int, productName: String) {
+    fun decrementBuffetOrder(stationId: Int, productName: String, targetCustomerId: Long? = null, targetCustomerName: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
-            val existingId = "${stationId}_${productName}"
+            val existingId = if (targetCustomerId != null) "${stationId}_${productName}_${targetCustomerId}" else "${stationId}_${productName}"
             val orders = repository.getOrdersForStationSync(stationId)
-            val matched = orders.find { it.productName == productName }
+            val matched = orders.find { it.productName == productName && it.targetCustomerId == targetCustomerId &&
+                (targetCustomerName.isNullOrBlank() || it.targetCustomerName == targetCustomerName) }
             if (matched != null) {
                 val currentMap = _stationOrdersMap.value.toMutableMap()
                 val stationOrders = (currentMap[stationId] ?: emptyList()).toMutableList()

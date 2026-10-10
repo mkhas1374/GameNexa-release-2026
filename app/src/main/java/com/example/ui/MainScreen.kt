@@ -294,8 +294,8 @@ fun MainScreen(
                             onConsoleChange = { name -> viewModel.updateStationConsole(station.id, name) },
                             onControllersChange = { count -> viewModel.updateStationControllers(station.id, count) },
                             onAddProduct = { pName -> viewModel.addBuffetOrder(station.id, pName) },
-                            onIncrementProduct = { pName -> viewModel.incrementBuffetOrder(station.id, pName) },
-                            onDecrementProduct = { pName -> viewModel.decrementBuffetOrder(station.id, pName) }
+                            onIncrementProduct = { order -> viewModel.incrementBuffetOrder(station.id, order.productName, order.targetCustomerId, order.targetCustomerName) },
+                            onDecrementProduct = { order -> viewModel.decrementBuffetOrder(station.id, order.productName, order.targetCustomerId, order.targetCustomerName) }
                         )
                     }
                 }
@@ -324,8 +324,8 @@ fun StationCard(
     onConsoleChange: (String) -> Unit,
     onControllersChange: (Int) -> Unit,
     onAddProduct: (String) -> Unit,
-    onIncrementProduct: (String) -> Unit,
-    onDecrementProduct: (String) -> Unit
+    onIncrementProduct: (com.example.data.StationOrder) -> Unit,
+    onDecrementProduct: (com.example.data.StationOrder) -> Unit
 ) {
     val isRunning = station.status == "RUNNING"
     val isPaused = station.status == "PAUSED"
@@ -1844,7 +1844,7 @@ fun StationCard(
                                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                                 ) {
                                     IconButton(
-                                        onClick = { onDecrementProduct(order.productName) },
+                                        onClick = { onDecrementProduct(order) },
                                         modifier = Modifier.size(22.dp)
                                     ) {
                                         Icon(Icons.Default.Remove, contentDescription = "Decrease", modifier = Modifier.size(12.dp))
@@ -1858,7 +1858,7 @@ fun StationCard(
                                         modifier = Modifier.padding(horizontal = 4.dp)
                                     )
                                     IconButton(
-                                        onClick = { onIncrementProduct(order.productName) },
+                                        onClick = { onIncrementProduct(order) },
                                         modifier = Modifier.size(22.dp)
                                     ) {
                                         Icon(Icons.Default.Add, contentDescription = "Increase", modifier = Modifier.size(12.dp))

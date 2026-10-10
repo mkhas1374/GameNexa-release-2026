@@ -32,4 +32,6 @@ assert(server.includes('SEGMENT_CONTINUE') && server.includes('SEGMENT_PAUSE'), 
 assert(server.includes('targetParticipantKey') && server.includes('SESSION_NOT_ACTIVE'), 'buffet order endpoint must support guest targets and reject closed sessions explicitly');
 assert(managerApi.includes('sessionId?.takeIf') && vm.includes('result.retryable'), 'Android must bind buffet retries to the original session and avoid retrying permanent 4xx errors');
 assert(vm.includes('BUFFET_ORDER_GUARD station='), 'buffet operation must catch failures without crashing the Manager screen');
+assert(screen.includes('onIncrementProduct = { order -> viewModel.incrementBuffetOrder(station.id, order.productName, order.targetCustomerId, order.targetCustomerName)'), 'station order controls must preserve payer identity for targeted buffet orders');
+assert(vm.includes('targetCustomerName = targetCustomerName,') && vm.includes('sessionId = sessionId'), 'all buffet API call sites must provide session and payer identity');
 console.log('PASS: segment commits reset current timer/cost, final settlement avoids duplicate segment charging, and invoices display per-customer segment details');
