@@ -1006,13 +1006,14 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
           ? Number(p.customer_id || 0) === requestedCustomerId
           : requestedCustomerId === 0
             ? Boolean(p.is_guest) && p.customer_id === null && String(p.participant_name || '') === requestedParticipantName
-            : Boolean(p.is_guest) && p.customer_id === null && (String(p.participant_key || '') === 'guest:' + requestedCustomerId || (requestedCustomerId === -1 && String(p.participant_key || '') === 'guest:walk-in'))
+            : Boolean(p.is_guest) && p.customer_id === null && ((requestedParticipantName && String(p.participant_name || '') === requestedParticipantName) || String(p.participant_key || '') === 'guest:' + requestedCustomerId || (requestedCustomerId === -1 && String(p.participant_key || '') === 'guest:walk-in'))
       )) {
         const fallbackInvoice = requestedCustomerId > 0
           ? invoiceRows.find(r => Number(r.customer_id || 0) === requestedCustomerId)
           : requestedCustomerId === 0
             ? invoiceRows.find(r => r.customer_id === null && String(r.customer_snapshot?.name || '') === requestedParticipantName)
-            : invoiceRows.filter(r => r.customer_id === null)[Math.max(0, -requestedCustomerId - 1)]
+            : (requestedParticipantName ? invoiceRows.find(r => r.customer_id === null && String(r.customer_snapshot?.name || '') === requestedParticipantName) : null)
+              || invoiceRows.filter(r => r.customer_id === null)[Math.max(0, -requestedCustomerId - 1)]
               || (requestedCustomerId === -1 ? invoiceRows.find(r => r.customer_id === null && String(r.customer_snapshot?.participantKey || '') === 'guest:walk-in') : null);
         if (fallbackInvoice) {
           const guest = fallbackInvoice.customer_id === null;
@@ -1033,6 +1034,10 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         ? enriched
         : requestedCustomerId < 0
           ? (() => {
+              const byParticipantName = requestedParticipantName
+                ? guestParticipants.find(p => String(p.participant_name || '') === requestedParticipantName)
+                : null;
+              if (byParticipantName) return [byParticipantName];
               const billingKey = "guest:" + requestedCustomerId;
               const byParticipantKey = guestParticipants.find(p => String(p.participant_key || '') === billingKey);
               if (byParticipantKey) return [byParticipantKey];
@@ -1082,7 +1087,9 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       const responseParticipants=selectedParticipants.map(p=>{
         const billingCustomerId=p.customer_id!==null
           ? Number(p.customer_id)
-          : -(guestParticipants.findIndex(g=>g.participant_key===p.participant_key)+1);
+          : requestedCustomerId!==null
+            ? requestedCustomerId
+            : -(guestParticipants.findIndex(g=>g.participant_key===p.participant_key)+1);
         return {...p,billing_customer_id:billingCustomerId};
       });
       return res.json({success:true,session:{...session},participants:responseParticipants,totalPrepayment:String(poolAmount),sessionTotalPrepayment:String(sessionTotalPrepayment),gameCost:String(gameCost),buffetCost:String(buffetCost),unusedPool:String(unusedPool),refundedPrepayment:String(refunded),remainingRefundable:String(Math.max(0,unusedPool-Number(refunded||0))),finalized});
@@ -1198,7 +1205,7 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         const cid=resolvedCid, method=String(d.refundMethod||'NONE').toUpperCase(), refund=Math.max(0,Math.trunc(Number(d.refundAmount||0))), status=String(d.status||'REVIEWED').toUpperCase();
         const isGuestDecision=cid<=0;
         const participant=isGuestDecision
-          ? ((cid===0 && resolvedName ? guestPayers.find(p=>String(p.participant_name||'')===String(resolvedName)) : null)
+          ? ((resolvedName ? guestPayers.find(p=>String(p.participant_name||'')===String(resolvedName)) : null)
               || guestPayers.find(p => String(p.participant_key || '') === "guest:" + cid)
               || (cid === -1 ? guestPayers.find(p => String(p.participant_key || '') === 'guest:walk-in') : null)
               || (cid<0 ? guestPayers[Math.max(0,(-cid)-1)] : null)

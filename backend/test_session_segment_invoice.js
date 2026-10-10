@@ -19,6 +19,10 @@ assert(invoice.includes('formatSegmentDetailBlocks(transaction.segmentDetails)')
 assert(invoice.includes('جمع کل فاکتور همین مشتری'), 'dialog must distinguish invoice total from remaining debt');
 assert(invoice.includes('review.sessionTotalCost'), 'dialog must show full-session total separately');
 assert(backend.includes('const fallbackInvoice = requestedCustomerId > 0'), 'GET review must recover missing payer identity from a persisted invoice');
+assert(backend.includes("(requestedParticipantName && String(p.participant_name || '') === requestedParticipantName)"), 'negative guest IDs must resolve by the exact displayed guest name before synthetic-key fallback');
+assert(backend.includes("requestedCustomerId!==null") && backend.includes("? requestedCustomerId"), 'GET must preserve the caller guest ID when returning a name-matched payer');
+assert(backend.includes('requestedParticipantName ? invoiceRows.find(r => r.customer_id === null'), 'legacy guest invoice lookup must search by name before positional indexing');
+assert(managerApi.includes('selectedCustomerId != null && selectedCustomerId <= 0L && encodedParticipantName != null'), 'Android must send the guest name for negative synthetic customer IDs');
 assert(backend.includes('Historical segment payers can be missing'), 'finalization must include historical invoice payers');
 assert(backend.includes('paidAmount:retryPaid') && backend.includes('status:finalStatus,paidAmount'), 'finalization response must include authoritative paidAmount');
 assert(backend.includes('const transactionByGuestName=new Map()'), 'settlement review must find the actual transaction for a walk-in guest');

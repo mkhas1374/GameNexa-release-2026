@@ -1311,7 +1311,8 @@ object SelfHostedManager {
             val selectedCustomerId = customerId
             val encodedParticipantName = participantName?.takeIf { it.isNotBlank() }?.let { java.net.URLEncoder.encode(it, "UTF-8") }
             val query = when {
-                selectedCustomerId == 0L && encodedParticipantName != null -> "?customerId=0&participantName=$encodedParticipantName"
+                selectedCustomerId != null && selectedCustomerId <= 0L && encodedParticipantName != null ->
+                    "?customerId=$selectedCustomerId&participantName=$encodedParticipantName"
                 selectedCustomerId != null -> "?customerId=$selectedCustomerId"
                 else -> ""
             }

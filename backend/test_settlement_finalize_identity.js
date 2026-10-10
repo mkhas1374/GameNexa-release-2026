@@ -7,6 +7,7 @@ const viewModel = fs.readFileSync(__dirname + '/../app/src/main/java/com/example
 assert(routes.includes('local_id=$3 OR id=$3'), 'finalize must resolve Room local IDs to server rows');
 assert(routes.includes('local_id=$2 OR id=$2'), 'linked payer lookup must resolve the Room local ID before a colliding server ID');
 assert(routes.includes('requestedBillingCid<0 ? requestedBillingCid : 0'), 'guest billing IDs must not collapse to customer ID zero during finalization');
+assert(routes.includes("resolvedName ? guestPayers.find(p=>String(p.participant_name||'')===String(resolvedName)) : null"), 'finalization must match guest name before a mismatched synthetic participant key');
 assert(routes.includes("$5='' OR customer_name=$5"), 'older Android clients without customerName must still resolve the exact guest by local transaction ID');
 assert(routes.includes('Number(linkedTxInSession ? linkedTx.amount : (inv.total_amount ?? (gameCost+buffetCost)))'), 'settlement paid amount must follow the payer total, not the component sum');
 assert(routes.includes(`customer_transactions.status IN ('REVIEWED','DEBTOR','PARTIAL') AND EXCLUDED.status='UNREVIEWED'`), 'stale sync must not downgrade finalized status');
