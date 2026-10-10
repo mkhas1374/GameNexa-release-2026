@@ -3,6 +3,7 @@ const assert = require('assert');
 const vm = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/ui/GameNetViewModel.kt', 'utf8');
 const screen = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/ui/MainScreen.kt', 'utf8');
 const invoice = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/ui/CustomersReservationsScreen.kt', 'utf8');
+const backend = fs.readFileSync(__dirname + '/canonical_routes.js', 'utf8');
 assert(vm.includes('elapsedPlayingTimeMillis = if (commitSegment) 0L else station.elapsedPlayingTimeMillis + elapsed'), 'committing a segment must reset the live segment elapsed timer');
 assert(vm.includes('val remainingMs = totalElapsed.coerceAtLeast(0L)'), 'final settlement must not subtract already-committed segments from current-segment elapsed time');
 assert(!vm.includes('customerGameCostMap.clear()'), 'final settlement must not redistribute every segment using only final payer selection');
