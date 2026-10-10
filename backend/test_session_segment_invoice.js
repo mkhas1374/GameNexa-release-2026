@@ -23,6 +23,9 @@ assert(backend.includes("(requestedParticipantName && String(p.participant_name 
 assert(backend.includes("requestedCustomerId!==null") && backend.includes("? requestedCustomerId"), 'GET must preserve the caller guest ID when returning a name-matched payer');
 assert(backend.includes('requestedParticipantName ? invoiceRows.find(r => r.customer_id === null'), 'legacy guest invoice lookup must search by name before positional indexing');
 assert(managerApi.includes('selectedCustomerId != null && selectedCustomerId <= 0L && encodedParticipantName != null'), 'Android must send the guest name for negative synthetic customer IDs');
+assert(vm.includes('syncCustomerTransactionToCloud(transactionForSession)'), 'settlement dialog must sync a missing local payer transaction before the server review GET');
+assert(backend.includes('const requestMatches=requestedCustomerId!==null && requestedCustomerId<0 && requestedParticipantName===name'), 'GET must reconstruct missing guest participants using the selected local guest identity');
+assert(backend.includes('const transactionRowsForSession='), 'finalization must recover guest payers that have transactions but no session participant row');
 assert(backend.includes('Historical segment payers can be missing'), 'finalization must include historical invoice payers');
 assert(backend.includes('paidAmount:retryPaid') && backend.includes('status:finalStatus,paidAmount'), 'finalization response must include authoritative paidAmount');
 assert(backend.includes('const transactionByGuestName=new Map()'), 'settlement review must find the actual transaction for a walk-in guest');

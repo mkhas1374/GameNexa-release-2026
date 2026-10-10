@@ -6818,7 +6818,17 @@ loadSettings()
     suspend fun fetchManagerCustomerActivity(customerId: Long): com.example.data.network.ManagerCustomerActivity {
         return com.example.data.network.SelfHostedManager.fetchManagerCustomerActivity(customerId)
     }
-    suspend fun fetchSettlementReview(sessionId: String, customerId: Long? = null, participantName: String? = null): com.example.data.network.SettlementReview? {
+    suspend fun fetchSettlementReview(
+        sessionId: String,
+        customerId: Long? = null,
+        participantName: String? = null,
+        transaction: CustomerTransaction? = null
+    ): com.example.data.network.SettlementReview? {
+        if (transaction != null && transaction.status != "DELETED") {
+            val transactionForSession = if (transaction.sessionId == sessionId) transaction else transaction.copy(sessionId = sessionId)
+            val synced = com.example.data.network.SelfHostedManager.syncCustomerTransactionToCloud(transactionForSession)
+            if (!synced) android.util.Log.w("GameNetViewModel", "Settlement review transaction pre-sync failed for localId=" + transaction.id)
+        }
         return com.example.data.network.SelfHostedManager.fetchSettlementReview(sessionId, customerId, participantName)
     }
 

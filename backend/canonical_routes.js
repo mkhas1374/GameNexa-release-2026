@@ -938,6 +938,32 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       const invoiceRows=(await pool.query("SELECT invoice_number,customer_id,game_cost,buffet_cost,total_amount,paid_amount,status,customer_snapshot FROM invoices WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sid,mid])).rows;
       const orderBuffet=Number((await pool.query("SELECT COALESCE(SUM(line_total),0) amount FROM session_orders WHERE session_id=$1 AND manager_id=$2",[sid,mid])).rows[0]?.amount||0);
       const transactionRows=(await pool.query("SELECT id,local_id,customer_id,customer_name,amount,paid_amount,status,game_cost,food_cost FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' ORDER BY id DESC",[mid,sid])).rows;
+      // Merge payer records that arrived from Android after the original session snapshot.
+      // This is essential for older sessions whose session_participants list is incomplete.
+      for(const inv of invoiceRows){
+        if(inv.customer_id!==null && inv.customer_id!==undefined){
+          const cid=Number(inv.customer_id);
+          if(!participants.some(p=>Number(p.customer_id||0)===cid)) participants.push({customer_id:cid,participant_key:'customer:'+cid,participant_name:String(inv.customer_snapshot?.name||'مشتری '+cid),is_guest:false,is_payer:true,prepayment_amount:Number(snapshotPrepayments[String(cid)]||0)});
+        }else{
+          const name=String(inv.customer_snapshot?.name||'').trim();
+          const key=String(inv.customer_snapshot?.participantKey||'guest:walk-in');
+          if(name && !participants.some(p=>p.customer_id===null && (String(p.participant_key||'')===key || String(p.participant_name||'')===name))) participants.push({customer_id:null,participant_key:key,participant_name:name,is_guest:true,is_payer:true,prepayment_amount:Number(snapshotPrepayments[key]||0)});
+        }
+      }
+      for(const tx of transactionRows){
+        if(tx.customer_id!==null && tx.customer_id!==undefined){
+          const cid=Number(tx.customer_id);
+          if(!participants.some(p=>Number(p.customer_id||0)===cid)) participants.push({customer_id:cid,participant_key:'customer:'+cid,participant_name:String(tx.customer_name||'مشتری '+cid),is_guest:false,is_payer:true,prepayment_amount:Number(snapshotPrepayments[String(cid)]||0)});
+        }else{
+          const name=String(tx.customer_name||'').trim();
+          if(name && !participants.some(p=>p.customer_id===null && String(p.participant_name||'')===name)){
+            const matchedInvoice=invoiceRows.find(r=>r.customer_id===null && String(r.customer_snapshot?.name||'')===name);
+            const requestMatches=requestedCustomerId!==null && requestedCustomerId<0 && requestedParticipantName===name;
+            const key=String(matchedInvoice?.customer_snapshot?.participantKey || (requestMatches ? 'guest:'+requestedCustomerId : 'guest:local-'+String(tx.local_id||tx.id)));
+            participants.push({customer_id:null,participant_key:key,participant_name:name,is_guest:true,is_payer:true,prepayment_amount:Number(snapshotPrepayments[key]||snapshotPrepayments[String(requestedCustomerId)]||0)});
+          }
+        }
+      }
       const transactionByCustomer=new Map();
       const transactionByGuestName=new Map();
       for(const tx of transactionRows){
@@ -1136,15 +1162,8 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       const snapshot=session.pricing_snapshot && typeof session.pricing_snapshot==='object'?session.pricing_snapshot:{};
       const snapPre=snapshot.customerPrepayments && typeof snapshot.customerPrepayments==='object'?snapshot.customerPrepayments:{};
       const legacyPrepaymentMap=new Map();
-      if(Number(snapshot.initialPrepaymentAmount||0)>0 && participants.length>0 && participants.every(p=>Number(p.prepayment_amount||0)===0) && Object.keys(snapPre).length===0){
-        const base=Math.floor(Number(snapshot.initialPrepaymentAmount||0)/participants.length);
-        const rem=Number(snapshot.initialPrepaymentAmount||0)%participants.length;
-        participants.forEach((p,i)=>{
-          const key=p.customer_id!==null?String(p.customer_id):String(p.participant_key||('guest:'+String(i+1)));
-          legacyPrepaymentMap.set(key,base+(i===participants.length-1?rem:0));
-        });
-      }
       const invoiceRowsForSession=(await c.query("SELECT id,invoice_number,customer_id,game_cost,buffet_cost,total_amount,paid_amount,status,customer_snapshot FROM invoices WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sid,mid])).rows;
+      const transactionRowsForSession=(await c.query("SELECT id,local_id,customer_id,customer_name,amount,paid_amount,status,game_cost,food_cost FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' ORDER BY id DESC",[mid,sid])).rows;
       // Historical segment payers can be missing from session_participants when only the final
       // station participants were persisted. Every existing invoice remains a valid payer record.
       for (const inv of invoiceRowsForSession) {
@@ -1168,6 +1187,29 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         participants.forEach((p, i) => {
           const key = p.customer_id !== null ? String(p.customer_id) : String(p.participant_key || ('guest:' + String(i + 1)));
           legacyPrepaymentMap.set(key, base + (i === participants.length - 1 ? remainder : 0));
+        });
+      }
+      for(const tx of transactionRowsForSession){
+        if(tx.customer_id!==null && tx.customer_id!==undefined){
+          const cid=Number(tx.customer_id);
+          if(!participants.some(p=>Number(p.customer_id||0)===cid)) participants.push({customer_id:cid,participant_key:'customer:'+cid,participant_name:String(tx.customer_name||'مشتری '+cid),is_guest:false,is_payer:true,prepayment_amount:Number(snapPre[String(cid)]||0)});
+        }else{
+          const name=String(tx.customer_name||'').trim();
+          if(name && !participants.some(p=>p.customer_id===null && String(p.participant_name||'')===name)){
+            const decision=decisions.find(d=>Number(d.customerId||0)<0 && String(d.customerName||'').trim()===name);
+            const requestedGuestId=Number(decision?.customerId||0);
+            const matchingInvoice=invoiceRowsForSession.find(r=>r.customer_id===null && String(r.customer_snapshot?.name||'')===name);
+            const key=String(matchingInvoice?.customer_snapshot?.participantKey || (requestedGuestId<0 ? 'guest:'+requestedGuestId : 'guest:local-'+String(tx.local_id||tx.id)));
+            participants.push({customer_id:null,participant_key:key,participant_name:name,is_guest:true,is_payer:true,prepayment_amount:Number(snapPre[key]||snapPre[String(requestedGuestId)]||0)});
+          }
+        }
+      }
+      if(Number(snapshot.initialPrepaymentAmount||0)>0 && participants.length>0 && participants.every(p=>Number(p.prepayment_amount||0)===0) && Object.keys(snapPre).length===0){
+        const base=Math.floor(Number(snapshot.initialPrepaymentAmount||0)/participants.length);
+        const rem=Number(snapshot.initialPrepaymentAmount||0)%participants.length;
+        participants.forEach((p,i)=>{
+          const key=p.customer_id!==null?String(p.customer_id):String(p.participant_key||('guest:'+String(i+1)));
+          legacyPrepaymentMap.set(key,base+(i===participants.length-1?rem:0));
         });
       }
       const byId=new Map(participants.filter(p=>p.customer_id).map(p=>[Number(p.customer_id),p]));

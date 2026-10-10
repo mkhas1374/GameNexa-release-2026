@@ -1093,7 +1093,8 @@ fun CustomerTransactionCard(
             settlementReview = viewModel.fetchSettlementReview(
                 transaction.sessionId,
                 transaction.customerId,
-                transaction.customerName.takeIf { transaction.customerId <= 0L && it.isNotBlank() }
+                transaction.customerName.takeIf { transaction.customerId <= 0L && it.isNotBlank() },
+                transaction
             )
             prepaymentAllocations = emptyMap()
         }
