@@ -63,6 +63,12 @@ data class SettlementPayer(
     val unusedPrepayment: Long = 0L
 )
 
+data class BuffetOrderSyncResult(
+    val accepted: Boolean,
+    val retryable: Boolean,
+    val errorMessage: String = ""
+)
+
 data class SettlementReview(
     val sessionId: String,
     val totalPrepayment: Long,
@@ -2478,31 +2484,45 @@ object SelfHostedManager {
         quantity: Int,
         price: Long,
         targetCustomerId: Long? = null,
-        idempotencyKey: String? = null
-    ): Boolean = withContext(Dispatchers.IO) {
+        idempotencyKey: String? = null,
+        sessionId: String? = null,
+        targetCustomerName: String? = null
+    ): BuffetOrderSyncResult = withContext(Dispatchers.IO) {
         try {
-            if (_currentManagerId.isBlank()) return@withContext false
+            if (_currentManagerId.isBlank()) return@withContext BuffetOrderSyncResult(false, true, "شناسه مدیر در دسترس نیست.")
             val json = JSONObject().apply {
                 put("managerId", _currentManagerId)
                 put("stationId", stationId.toString())
                 put("productName", productName)
                 put("quantity", quantity)
                 put("price", price)
-                put("targetCustomerId", targetCustomerId ?: 0)
+                put("targetCustomerId", targetCustomerId?.takeIf { it > 0L } ?: 0L)
+                if (targetCustomerId != null && targetCustomerId < 0L) put("targetParticipantKey", "guest:" + targetCustomerId)
+                targetCustomerName?.takeIf { it.isNotBlank() }?.let { put("targetCustomerName", it) }
+                sessionId?.takeIf { it.isNotBlank() }?.let { put("sessionId", it) }
             }
             val requestIdempotencyKey = idempotencyKey?.trim().takeIf { !it.isNullOrBlank() }
-                ?: "station-order:${stationId}:${productName}:${targetCustomerId ?: 0}:${java.util.UUID.randomUUID()}"
+                ?: ("station-order:" + stationId + ":" + productName + ":" + (targetCustomerId ?: 0) + ":" + java.util.UUID.randomUUID())
             val request = Request.Builder()
-                .url("$SERVER_URL/api/station/order")
+                .url(SERVER_URL + "/api/station/order")
                 .headers(getBaseHeaders())
                 .header("Idempotency-Key", requestIdempotencyKey)
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            val response = client.newCall(request).execute()
-            response.isSuccessful
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (response.isSuccessful) {
+                    BuffetOrderSyncResult(true, false)
+                } else {
+                    val message = runCatching { JSONObject(body).optString("error", body) }.getOrDefault(body)
+                    val retryable = response.code == 408 || response.code == 429 || response.code >= 500
+                    Log.w(TAG, "addBuffetOrderEvent HTTP " + response.code + ": " + message.take(300))
+                    BuffetOrderSyncResult(false, retryable, message)
+                }
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "addBuffetOrderEvent error: ${e.message}", e)
-            false
+            Log.e(TAG, "addBuffetOrderEvent error: " + e.message, e)
+            BuffetOrderSyncResult(false, true, e.message.orEmpty())
         }
     }
 

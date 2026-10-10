@@ -913,8 +913,8 @@ function sessionEventActiveSeconds(events, startAt, endAt) {
         const t = new Date(event.occurred_at);
         if (t < cursor) continue;
         if (running) activeSeconds += Math.max(0, Math.floor((t.getTime() - cursor.getTime()) / 1000));
-        if (event.event_type === "PAUSE") running = false;
-        if (event.event_type === "RESUME") running = true;
+        if (event.event_type === "PAUSE" || event.event_type === "SEGMENT_PAUSE") running = false;
+        if (event.event_type === "RESUME" || event.event_type === "SEGMENT_CONTINUE") running = true;
         cursor = t;
     }
     if (running) activeSeconds += Math.max(0, Math.floor((new Date(endAt).getTime() - cursor.getTime()) / 1000));
@@ -1300,15 +1300,28 @@ app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlem
 
 app.post("/api/station/order", requireManagerAuth, requireActiveEntitlement, rateLimit({windowMs:60000,max:60}), async (req,res) => {
     const managerId = sessionManagerId(req), stationId = Number(req.body?.stationId);
+    const requestedSessionId = String(req.body?.sessionId || "").trim();
     const productName = String(req.body?.productName || "").trim(), quantity = Number(req.body?.quantity || 0);
-    const targetCustomerId = Number(req.body?.targetCustomerId || 0);
+    const rawTargetCustomerId = Number(req.body?.targetCustomerId || 0);
+    const targetCustomerId = rawTargetCustomerId > 0 ? rawTargetCustomerId : 0;
+    const targetParticipantKey = String(req.body?.targetParticipantKey || (rawTargetCustomerId < 0 ? "guest:" + rawTargetCustomerId : "")).trim();
+    const targetCustomerName = String(req.body?.targetCustomerName || "").trim();
     const idempotencyKey = String(req.headers["idempotency-key"] || req.body?.idempotencyKey || "").trim();
     if (!managerId || !stationId || !productName || !Number.isInteger(quantity) || quantity <= 0 || !idempotencyKey) return res.status(400).json({success:false,error:"Invalid order payload"});
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
-        const session = await client.query("SELECT id FROM game_sessions WHERE manager_id=$1 AND station_id=$2 AND status IN ('ACTIVE','PAUSED') ORDER BY started_at DESC LIMIT 1 FOR UPDATE",[managerId,stationId]);
-        if (!session.rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({success:false,error:"Active session not found"}); }
+        const session = requestedSessionId
+          ? await client.query("SELECT id FROM game_sessions WHERE id=$1 AND manager_id=$2 AND station_id=$3 AND status IN ('ACTIVE','PAUSED') FOR UPDATE",[requestedSessionId,managerId,stationId])
+          : await client.query("SELECT id FROM game_sessions WHERE manager_id=$1 AND station_id=$2 AND status IN ('ACTIVE','PAUSED') ORDER BY started_at DESC LIMIT 1 FOR UPDATE",[managerId,stationId]);
+        if (!session.rows[0]) {
+            await client.query("ROLLBACK");
+            if (requestedSessionId) {
+                const ended = await pool.query("SELECT status FROM game_sessions WHERE id=$1 AND manager_id=$2 AND station_id=$3",[requestedSessionId,managerId,stationId]);
+                if (ended.rows[0]) return res.status(409).json({success:false,code:"SESSION_NOT_ACTIVE",error:"This session is no longer active; the order was not added."});
+            }
+            return res.status(404).json({success:false,error:"Active session not found"});
+        }
         const sid=session.rows[0].id;
         const duplicate=await client.query("SELECT id,session_id FROM session_events WHERE manager_id=$1 AND event_id=$2 LIMIT 1",[managerId,idempotencyKey]);
         if(duplicate.rows[0]){
@@ -1324,15 +1337,24 @@ app.post("/api/station/order", requireManagerAuth, requireActiveEntitlement, rat
         const unitPrice=Number(product?.price ?? product ?? 0);
         if(!Number.isFinite(unitPrice) || unitPrice < 0) { await client.query("ROLLBACK"); return res.status(422).json({success:false,error:"Product pricing not configured"}); }
         const unitPriceWhole = Math.trunc(unitPrice);
-        if(targetCustomerId){
-            const target=await client.query("SELECT id FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND customer_id=$3",[sid,managerId,targetCustomerId]);
-            if(!target.rows[0]){
+        let resolvedTargetParticipant = null;
+        if(targetCustomerId > 0){
+            const target=await client.query("SELECT participant_key,participant_name FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND customer_id=$3 AND is_payer=TRUE LIMIT 1",[sid,managerId,targetCustomerId]);
+            resolvedTargetParticipant=target.rows[0]||null;
+            if(!resolvedTargetParticipant){
+                await client.query("ROLLBACK");
+                return res.status(409).json({success:false,code:"ORDER_CUSTOMER_NOT_IN_SESSION"});
+            }
+        } else if(targetParticipantKey || targetCustomerName){
+            const target=await client.query("SELECT participant_key,participant_name FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND customer_id IS NULL AND is_payer=TRUE AND ((($3<>'') AND participant_key=$3) OR (($4<>'') AND participant_name=$4)) ORDER BY CASE WHEN participant_key=$3 THEN 0 ELSE 1 END,id LIMIT 1",[sid,managerId,targetParticipantKey,targetCustomerName]);
+            resolvedTargetParticipant=target.rows[0]||null;
+            if(!resolvedTargetParticipant){
                 await client.query("ROLLBACK");
                 return res.status(409).json({success:false,code:"ORDER_CUSTOMER_NOT_IN_SESSION"});
             }
         }
         const lineTotal=unitPriceWhole*quantity;
-        await client.query("INSERT INTO session_orders(manager_id,session_id,product_name,quantity,unit_price,target_customer_id,line_total,product_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)",[managerId,sid,productName,quantity,unitPriceWhole,targetCustomerId||null,lineTotal,JSON.stringify({productName,unitPrice:unitPriceWhole,capturedAt:new Date().toISOString()})]);
+        await client.query("INSERT INTO session_orders(manager_id,session_id,product_name,quantity,unit_price,target_customer_id,line_total,product_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)",[managerId,sid,productName,quantity,unitPriceWhole,targetCustomerId||null,lineTotal,JSON.stringify({productName,unitPrice:unitPriceWhole,capturedAt:new Date().toISOString(),targetParticipantKey:resolvedTargetParticipant?.participant_key||null,targetCustomerName:resolvedTargetParticipant?.participant_name||null})]);
         const last=await client.query("SELECT COALESCE(MAX(sequence_no),0)+1 seq FROM session_events WHERE session_id=$1 AND manager_id=$2",[sid,managerId]);
         await client.query("INSERT INTO session_events(manager_id,session_id,event_id,event_type,occurred_at,payload,sequence_no) VALUES($1,$2,$3,'ORDER',NOW(),$4::jsonb,$5)",[managerId,sid,idempotencyKey,JSON.stringify({productName,quantity,unitPrice,targetCustomerId:targetCustomerId||null}),Number(last.rows[0].seq)]);
         await client.query("COMMIT");
@@ -1347,7 +1369,7 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
     const eventId = String(req.body?.eventId || "").trim();
     const eventType = String(req.body?.eventType || "").trim().toUpperCase();
     const occurredAtMs = Number(req.body?.occurredAt);
-    const allowed = new Set(["PAUSE","RESUME","ADD_PARTICIPANT","REMOVE_PARTICIPANT","ORDER"]);
+    const allowed = new Set(["PAUSE","RESUME","SEGMENT_PAUSE","SEGMENT_CONTINUE","ADD_PARTICIPANT","REMOVE_PARTICIPANT","ORDER"]);
     if (!managerId || !sessionId || !eventId || !allowed.has(eventType) || !Number.isFinite(occurredAtMs)) return res.status(400).json({success:false,error:"Invalid session event payload"});
     const client = await pool.connect();
     try {
@@ -1377,8 +1399,9 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
             await client.query("ROLLBACK");
             return res.status(409).json({success:false,code:"EVENT_ORDER_CONFLICT"});
         }
-        if (eventType === "PAUSE" && session.rows[0].status !== "ACTIVE") { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"SESSION_NOT_RUNNING"}); }
+        if ((eventType === "PAUSE" || eventType === "SEGMENT_PAUSE") && session.rows[0].status !== "ACTIVE") { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"SESSION_NOT_RUNNING"}); }
         if (eventType === "RESUME" && session.rows[0].status !== "PAUSED") { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"SESSION_NOT_PAUSED"}); }
+        if (eventType === "SEGMENT_CONTINUE" && !["ACTIVE","PAUSED"].includes(session.rows[0].status)) { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"SESSION_NOT_CONTINUABLE"}); }
         const payload = req.body?.payload && typeof req.body.payload === "object" ? req.body.payload : {};
         if (eventType === "ADD_PARTICIPANT") {
             const participant = normalizeParticipant(payload, 0);
@@ -1417,8 +1440,9 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
             "INSERT INTO session_events(manager_id,session_id,event_id,event_type,occurred_at,payload,sequence_no) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7)",
             [managerId,sessionId,eventId,eventType,occurredAt.toISOString(),JSON.stringify(payload),sequenceNo]
         );
-        if (eventType === "PAUSE" || eventType === "RESUME") {
-            await client.query("UPDATE game_sessions SET status=$1::varchar,paused_at=CASE WHEN $1::varchar='PAUSED' THEN $2 ELSE paused_at END,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[eventType==="PAUSE"?"PAUSED":"ACTIVE",occurredAt.toISOString(),sessionId,managerId]);
+        if (["PAUSE","RESUME","SEGMENT_PAUSE","SEGMENT_CONTINUE"].includes(eventType)) {
+            const nextStatus = (eventType === "PAUSE" || eventType === "SEGMENT_PAUSE") ? "PAUSED" : "ACTIVE";
+            await client.query("UPDATE game_sessions SET status=$1::varchar,paused_at=CASE WHEN $1::varchar='PAUSED' THEN $2 ELSE NULL END,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[nextStatus,occurredAt.toISOString(),sessionId,managerId]);
         }
         await client.query("COMMIT");
         return res.json({success:true,sessionId,sequenceNo,serverTime:Date.now()});
@@ -1504,7 +1528,9 @@ app.get("/api/v1/manager/live-sessions", requireManagerAuth, requireActiveEntitl
                      WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id),'[]'::json) AS participants,
                    COALESCE((SELECT json_agg(json_build_object(
                        'productName',so.product_name,'quantity',so.quantity,
-                       'unitPrice',so.unit_price,'targetCustomerId',so.target_customer_id,
+                       'unitPrice',so.unit_price,'targetCustomerId',CASE WHEN so.target_customer_id IS NOT NULL THEN so.target_customer_id WHEN so.product_snapshot->>'targetParticipantKey' ~ '^guest:-[0-9]+$' THEN substring(so.product_snapshot->>'targetParticipantKey' from 7)::integer ELSE NULL END,
+                       'targetParticipantKey',so.product_snapshot->>'targetParticipantKey',
+                       'targetCustomerName',so.product_snapshot->>'targetCustomerName',
                        'lineTotal',so.line_total,'createdAt',so.created_at
                    ) ORDER BY so.created_at,so.id) FROM session_orders so
                      WHERE so.session_id=gs.id AND so.manager_id=gs.manager_id),'[]'::json) AS orders,
@@ -1651,8 +1677,21 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
                     remainingFixed -= buffetDeduction;
                     if (remainingFixed > 0n) invoiceGameCost = invoiceGameCost > remainingFixed ? invoiceGameCost - remainingFixed : 0n;
                 }
+                // A synced payer transaction contains the accumulated shares across the actual
+                // historical segments. Prefer it over the legacy equal split, which charged late
+                // joiners for sections they did not participate in.
+                const payerTransaction = payer.customer_id
+                    ? (await client.query("SELECT amount,game_cost,food_cost FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND customer_id=$3 AND status<>'DELETED' ORDER BY id DESC LIMIT 1",[managerId,sessionId,payer.customer_id])).rows[0]
+                    : (await client.query("SELECT amount,game_cost,food_cost FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND customer_id IS NULL AND customer_name=$3 AND status<>'DELETED' ORDER BY id DESC LIMIT 1",[managerId,sessionId,payer.participant_name])).rows[0];
+                let invoiceTotal;
+                if (payerTransaction) {
+                    invoiceGameCost = BigInt(normalizeMoneyInteger(payerTransaction.game_cost) || "0");
+                    invoiceBuffetCost = BigInt(normalizeMoneyInteger(payerTransaction.food_cost) || "0");
+                    invoiceTotal = BigInt(normalizeMoneyInteger(payerTransaction.amount) || "0");
+                } else {
+                    invoiceTotal = invoiceGameCost + invoiceBuffetCost;
+                }
                 const prepayment = BigInt(normalizeMoneyInteger(payer.prepayment_amount) || "0");
-                const invoiceTotal = invoiceGameCost + invoiceBuffetCost;
                 // Settlement never auto-determines a financial invoice. The Manager reviews the
                 // invoice in the unreviewed queue and explicitly decides how any initial payment
                 // is applied and how unused balance is returned to wallet.
@@ -1666,8 +1705,8 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
                 const invoiceNumber = "GN-" + sessionId + "-" + payerIdentity;
                 const invoicePricingSnapshot = {...pricing,clubTier:tier,gameDiscountPercent,buffetDiscountPercent,fixedDiscountToman,prepaymentAmount:prepayment.toString(),appliedPrepayment:appliedPrepayment.toString()};
                 await client.query(
-                    "INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,$3,$4,$5,$6,'IRT',$7,$8,($7::numeric+$8::numeric),$9,$10,$11::jsonb,$12::jsonb,$13::jsonb) ON CONFLICT(manager_id,invoice_number) DO UPDATE SET status=EXCLUDED.status,game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,paid_amount=EXCLUDED.paid_amount,settlement_idempotency_key=COALESCE(invoices.settlement_idempotency_key,EXCLUDED.settlement_idempotency_key),pricing_snapshot=EXCLUDED.pricing_snapshot,customer_snapshot=EXCLUDED.customer_snapshot,updated_at=NOW()",
-                    [invoiceNumber,managerId,payer.customer_id,sessionId,session.station_id,invoiceStatus,invoiceGameCost.toString(),invoiceBuffetCost.toString(),appliedPrepayment.toString(),"settle_"+sessionId+"_"+(payer.customer_id || "guest")+"_"+payer.participant_key,JSON.stringify(invoicePricingSnapshot),JSON.stringify({id:payer.customer_id || null,name:payer.participant_name,isGuest:Boolean(payer.is_guest),participantKey:payer.participant_key}),JSON.stringify({id:managerId})]
+                    "INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,$3,$4,$5,$6,'IRT',$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14::jsonb) ON CONFLICT(manager_id,invoice_number) DO UPDATE SET status=CASE WHEN invoices.status IN ('REVIEWED','DEBTOR','PARTIAL') THEN invoices.status ELSE EXCLUDED.status END,game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,paid_amount=CASE WHEN invoices.status IN ('REVIEWED','DEBTOR','PARTIAL') THEN LEAST(invoices.paid_amount,EXCLUDED.total_amount) ELSE LEAST(EXCLUDED.paid_amount,EXCLUDED.total_amount) END,settlement_idempotency_key=COALESCE(invoices.settlement_idempotency_key,EXCLUDED.settlement_idempotency_key),pricing_snapshot=EXCLUDED.pricing_snapshot,customer_snapshot=EXCLUDED.customer_snapshot,updated_at=NOW()",
+                    [invoiceNumber,managerId,payer.customer_id,sessionId,session.station_id,invoiceStatus,invoiceGameCost.toString(),invoiceBuffetCost.toString(),invoiceTotal.toString(),appliedPrepayment.toString(),"settle_"+sessionId+"_"+(payer.customer_id || "guest")+"_"+payer.participant_key,JSON.stringify(invoicePricingSnapshot),JSON.stringify({id:payer.customer_id || null,name:payer.participant_name,isGuest:Boolean(payer.is_guest),participantKey:payer.participant_key}),JSON.stringify({id:managerId})]
                 );
             }
         }

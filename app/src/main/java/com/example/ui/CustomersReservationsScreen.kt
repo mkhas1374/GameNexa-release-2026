@@ -1130,6 +1130,7 @@ fun CustomerTransactionCard(
                     if (partialPaid < 0L || partialPaid > payable) invalid = true
                     decisions.put(org.json.JSONObject().apply {
                         put("customerId", payer.customerId)
+                        put("customerName", payer.name)
                         if (payer.customerId == transaction.customerId || (payer.customerId <= 0L && transaction.customerId <= 0L && payer.name == transaction.customerName)) {
                             put("transactionId", transaction.id)
                         }

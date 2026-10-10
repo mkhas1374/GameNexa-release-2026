@@ -694,11 +694,104 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
     }catch(e){console.error('[customer-activity]',e?.message||e);res.status(500).json({error:'Customer activity lookup failed'});}
   });
 
-  app.post('/api/v1/manager/customer-transactions', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const b=req.body||{},mid=manager(req),customerId=Number(b.customerId||0),localId=Number(b.localId||0)||null;const customerOrNull=customerId>0?customerId:null;if(customerOrNull!==null){const customer=await pool.query('SELECT id FROM customers WHERE id=$1 AND manager_id=$2',[customerOrNull,mid]);if(!customer.rows[0])return res.status(404).json({error:'Customer not found'});}const amount=Math.max(0,Math.trunc(Number(b.amount||0)));const paidAmount=Math.max(0,Math.trunc(Number(b.paidAmount||0)));const gameCost=Math.max(0,Math.trunc(Number(b.gameCost||b.game_cost||0)));const foodCost=Math.max(0,Math.trunc(Number(b.foodCost||b.food_cost||0)));const sessionId=String(b.sessionId||b.session_id||'').trim()||null;const q=await pool.query(`INSERT INTO customer_transactions(manager_id,customer_id,customer_name,station_name,title,amount,paid_amount,status,date_str,time_str,segment_details,buffet_details,event_timestamp,play_minutes,game_cost,food_cost,local_id,session_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT (manager_id,local_id) WHERE local_id IS NOT NULL DO UPDATE SET customer_id=EXCLUDED.customer_id,customer_name=EXCLUDED.customer_name,station_name=EXCLUDED.station_name,title=EXCLUDED.title,amount=EXCLUDED.amount,paid_amount=CASE WHEN customer_transactions.status IN ('REVIEWED','DEBTOR','PARTIAL') AND EXCLUDED.status='UNREVIEWED' THEN customer_transactions.paid_amount ELSE EXCLUDED.paid_amount END,status=CASE WHEN customer_transactions.status IN ('REVIEWED','DEBTOR','PARTIAL') AND EXCLUDED.status='UNREVIEWED' THEN customer_transactions.status ELSE EXCLUDED.status END,date_str=EXCLUDED.date_str,time_str=EXCLUDED.time_str,segment_details=EXCLUDED.segment_details,buffet_details=EXCLUDED.buffet_details,event_timestamp=EXCLUDED.event_timestamp,play_minutes=EXCLUDED.play_minutes,game_cost=EXCLUDED.game_cost,food_cost=EXCLUDED.food_cost,session_id=COALESCE(EXCLUDED.session_id,customer_transactions.session_id),updated_at=NOW() RETURNING *`,[mid,customerOrNull,b.customerName||'',b.stationName||'',b.title||'',amount,paidAmount,b.status||'UNREVIEWED',b.dateStr||'',b.timeStr||'',b.segmentDetails||'',b.buffetDetails||'',Number(b.timestamp||0),Number(b.playMinutes||b.play_minutes||0),gameCost,foodCost,localId,sessionId]);if(sessionId && customerOrNull===null){
-  const guestKey='guest:walk-in';
-  await pool.query(`INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,pricing_snapshot,customer_snapshot,manager_snapshot) SELECT $1,$2::varchar,NULL,gs.id,gs.station_id,$3,'IRT',$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb FROM game_sessions gs WHERE gs.id=$11 AND gs.manager_id=$2::varchar ON CONFLICT(manager_id,invoice_number) DO UPDATE SET game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,paid_amount=EXCLUDED.paid_amount,status=EXCLUDED.status,updated_at=NOW()`,['GN-'+sessionId+'-guest-walk-in',mid,b.status||'UNREVIEWED',gameCost,foodCost,amount,paidAmount,JSON.stringify(b.pricingSnapshot||{}),JSON.stringify({id:null,name:b.customerName||'مشتری گذری (بدون اشتراک)',isGuest:true,participantKey:guestKey}),JSON.stringify({id:mid}),sessionId]);
-}
-res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]',e?.message||e);res.status(500).json({error:'Internal server error'});} });
+  app.post('/api/v1/manager/customer-transactions', requireManagerAuth, requireActiveEntitlement, async (req, res) => {
+    try {
+      const b = req.body || {};
+      const mid = manager(req);
+      const customerId = Number(b.customerId || 0);
+      const localId = Number(b.localId || 0) || null;
+      const customerOrNull = customerId > 0 ? customerId : null;
+      const customerName = String(b.customerName || '').trim();
+      if (customerOrNull !== null) {
+        const customer = await pool.query('SELECT id FROM customers WHERE id=$1 AND manager_id=$2', [customerOrNull, mid]);
+        if (!customer.rows[0]) return res.status(404).json({ error: 'Customer not found' });
+      }
+      const amount = Math.max(0, Math.trunc(Number(b.amount || 0)));
+      const paidAmount = Math.min(amount, Math.max(0, Math.trunc(Number(b.paidAmount || 0))));
+      const gameCost = Math.max(0, Math.trunc(Number(b.gameCost || b.game_cost || 0)));
+      const foodCost = Math.max(0, Math.trunc(Number(b.foodCost || b.food_cost || 0)));
+      const sessionId = String(b.sessionId || b.session_id || '').trim() || null;
+      const incomingStatus = String(b.status || 'UNREVIEWED').toUpperCase();
+      const q = await pool.query(
+        `INSERT INTO customer_transactions(manager_id,customer_id,customer_name,station_name,title,amount,paid_amount,status,date_str,time_str,segment_details,buffet_details,event_timestamp,play_minutes,game_cost,food_cost,local_id,session_id)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+         ON CONFLICT (manager_id,local_id) WHERE local_id IS NOT NULL DO UPDATE SET
+           customer_id=EXCLUDED.customer_id, customer_name=EXCLUDED.customer_name,
+           station_name=EXCLUDED.station_name, title=EXCLUDED.title, amount=EXCLUDED.amount,
+           paid_amount=CASE WHEN customer_transactions.status IN ('REVIEWED','DEBTOR','PARTIAL') AND EXCLUDED.status='UNREVIEWED'
+             THEN LEAST(customer_transactions.paid_amount,EXCLUDED.amount) ELSE LEAST(EXCLUDED.paid_amount,EXCLUDED.amount) END,
+           status=CASE WHEN customer_transactions.status IN ('REVIEWED','DEBTOR','PARTIAL') AND EXCLUDED.status='UNREVIEWED'
+             THEN customer_transactions.status ELSE EXCLUDED.status END,
+           date_str=EXCLUDED.date_str, time_str=EXCLUDED.time_str, segment_details=EXCLUDED.segment_details,
+           buffet_details=EXCLUDED.buffet_details, event_timestamp=EXCLUDED.event_timestamp,
+           play_minutes=EXCLUDED.play_minutes, game_cost=EXCLUDED.game_cost, food_cost=EXCLUDED.food_cost,
+           session_id=COALESCE(EXCLUDED.session_id,customer_transactions.session_id), updated_at=NOW()
+         RETURNING *`,
+        [mid, customerOrNull, customerName, b.stationName || '', b.title || '', amount, paidAmount,
+          incomingStatus, b.dateStr || '', b.timeStr || '', b.segmentDetails || '', b.buffetDetails || '',
+          Number(b.timestamp || 0), Number(b.playMinutes || b.play_minutes || 0), gameCost, foodCost, localId, sessionId]
+      );
+
+      // Keep the server invoice aligned with this payer's actual accumulated segment shares.
+      // A session-level equal split is only a fallback when the per-payer transaction has not arrived yet.
+      if (sessionId) {
+        const session = (await pool.query(
+          'SELECT id,station_id,pricing_snapshot FROM game_sessions WHERE id=$1 AND manager_id=$2',
+          [sessionId, mid]
+        )).rows[0];
+        if (session) {
+          let participant = null;
+          if (customerOrNull !== null) {
+            participant = (await pool.query(
+              'SELECT participant_key,participant_name,is_guest FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND customer_id=$3 ORDER BY id DESC LIMIT 1',
+              [sessionId, mid, customerOrNull]
+            )).rows[0] || null;
+          } else {
+            if (customerId < 0) {
+              participant = (await pool.query(
+                'SELECT participant_key,participant_name,is_guest FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND participant_key=$3 ORDER BY id DESC LIMIT 1',
+                [sessionId, mid, 'guest:' + customerId]
+              )).rows[0] || null;
+            }
+            if (!participant && customerName) {
+              participant = (await pool.query(
+                'SELECT participant_key,participant_name,is_guest FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND customer_id IS NULL AND participant_name=$3 ORDER BY id DESC LIMIT 1',
+                [sessionId, mid, customerName]
+              )).rows[0] || null;
+            }
+          }
+          const participantKey = String(participant?.participant_key ||
+            (customerOrNull !== null ? 'customer:' + customerOrNull : (customerId < 0 ? 'guest:' + customerId : 'guest:walk-in')));
+          const payerIdentity = customerOrNull !== null ? 'C' + customerOrNull : participantKey.replace(/[^A-Za-z0-9_-]/g, '_');
+          const invoiceNumber = 'GN-' + sessionId + '-' + payerIdentity;
+          const snapshot = b.pricingSnapshot && typeof b.pricingSnapshot === 'object'
+            ? b.pricingSnapshot : (session.pricing_snapshot || {});
+          await pool.query(
+            `INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,pricing_snapshot,customer_snapshot,manager_snapshot)
+             VALUES($1,$2,$3,$4,$5,$6,'IRT',$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb)
+             ON CONFLICT(manager_id,invoice_number) DO UPDATE SET
+               customer_id=EXCLUDED.customer_id, station_id=EXCLUDED.station_id,
+               game_cost=EXCLUDED.game_cost, buffet_cost=EXCLUDED.buffet_cost, total_amount=EXCLUDED.total_amount,
+               paid_amount=CASE WHEN invoices.status IN ('REVIEWED','DEBTOR','PARTIAL')
+                 THEN LEAST(invoices.paid_amount,EXCLUDED.total_amount)
+                 ELSE LEAST(EXCLUDED.paid_amount,EXCLUDED.total_amount) END,
+               status=CASE WHEN invoices.status IN ('REVIEWED','DEBTOR','PARTIAL')
+                 THEN invoices.status ELSE EXCLUDED.status END,
+               pricing_snapshot=EXCLUDED.pricing_snapshot, customer_snapshot=EXCLUDED.customer_snapshot,
+               manager_snapshot=EXCLUDED.manager_snapshot, updated_at=NOW()`,
+            [invoiceNumber, mid, customerOrNull, sessionId, session.station_id, incomingStatus,
+              gameCost, foodCost, amount, paidAmount, JSON.stringify(snapshot),
+              JSON.stringify({ id: customerOrNull, name: participant?.participant_name || customerName || 'مشتری گذری (بدون اشتراک)',
+                isGuest: customerOrNull === null, participantKey }), JSON.stringify({ id: mid })]
+          );
+        }
+      }
+      return res.status(201).json(q.rows[0]);
+    } catch (e) {
+      console.error('[customer-transactions]', e?.message || e);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  });
   app.get('/api/v1/manager/customer-transactions', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{try{const q=await pool.query(`SELECT ct.*, COALESCE((SELECT gs.id FROM game_sessions gs WHERE ct.session_id IS NULL AND ct.customer_id IS NULL AND gs.manager_id=ct.manager_id AND gs.station_id=CAST(NULLIF(regexp_replace(ct.station_name,'[^0-9]','','g'),'') AS integer) AND gs.status='SETTLED' AND gs.ended_at BETWEEN ct.created_at-INTERVAL '5 seconds' AND ct.created_at+INTERVAL '5 seconds' ORDER BY ABS(EXTRACT(EPOCH FROM (gs.ended_at-ct.created_at))) LIMIT 1),ct.session_id) AS session_id, COALESCE((SELECT SUM(g.amount) FROM gn_ledger g WHERE g.manager_id=ct.manager_id AND g.customer_id=ct.customer_id AND g.type='CREDIT' AND ((g.reference_type='SESSION_REVIEW' AND g.reference_id=ct.session_id::text) OR g.reference_id LIKE ('SESSION_REVIEW_'||ct.session_id::text||'_CUST_'||ct.customer_id::text||'%') OR g.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=ct.manager_id AND i.session_id=ct.session_id AND i.customer_id=ct.customer_id))),0)::bigint AS earned_gn, COALESCE((SELECT SUM(l.amount) FROM lp_ledger l WHERE l.manager_id=ct.manager_id AND l.customer_id=ct.customer_id AND l.type='CREDIT' AND ((l.reference_type='SESSION_REVIEW' AND l.reference_id=ct.session_id::text) OR l.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=ct.manager_id AND i.session_id=ct.session_id AND i.customer_id=ct.customer_id))),0)::bigint AS earned_lp FROM customer_transactions ct WHERE ct.manager_id=$1 AND ct.status <> 'DELETED' ORDER BY ct.created_at DESC LIMIT 1000`,[manager(req)]);res.json(q.rows);}catch(e){console.error('[customer-transactions/list]',e?.message||e);res.status(500).json({error:'Internal server error'});} });
   app.patch('/api/v1/manager/customer-transactions/:id', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{
     const c=await pool.connect();
@@ -844,6 +937,17 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
       }
       const invoiceRows=(await pool.query("SELECT invoice_number,customer_id,game_cost,buffet_cost,total_amount,paid_amount,status,customer_snapshot FROM invoices WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sid,mid])).rows;
       const orderBuffet=Number((await pool.query("SELECT COALESCE(SUM(line_total),0) amount FROM session_orders WHERE session_id=$1 AND manager_id=$2",[sid,mid])).rows[0]?.amount||0);
+      const transactionRows=(await pool.query("SELECT id,local_id,customer_id,customer_name,amount,paid_amount,status,game_cost,food_cost FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' ORDER BY id DESC",[mid,sid])).rows;
+      const transactionByCustomer=new Map();
+      const transactionByGuestName=new Map();
+      for(const tx of transactionRows){
+        if(tx.customer_id!==null && tx.customer_id!==undefined){
+          if(!transactionByCustomer.has(Number(tx.customer_id))) transactionByCustomer.set(Number(tx.customer_id),tx);
+        }else{
+          const name=String(tx.customer_name||'').trim();
+          if(name && !transactionByGuestName.has(name)) transactionByGuestName.set(name,tx);
+        }
+      }
       const invoiceByCustomer=new Map(invoiceRows.filter(r=>r.customer_id!==null).map(r=>[Number(r.customer_id),r]));
       const invoiceByParticipantKey=new Map();
       invoiceRows.filter(r=>r.customer_id===null).forEach(r=>{
@@ -867,12 +971,14 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
         const inv=cid>0
           ? invoiceByCustomer.get(cid)
           : invoiceByParticipantKey.get(String(p.participant_key||'')) || invoiceRows.find(r=>r.customer_id===null && String(r.customer_snapshot?.name||'')===String(p.participant_name||''));
-        const gameCost=Number(inv?.game_cost||0);
-        const buffetCost=Number(inv?.buffet_cost||0);
-        const invoiceTotal=Number(inv?.total_amount||0);
-        // Initial payment covers the full final invoice (game + buffet), not game time alone.
+        const tx=cid>0 ? transactionByCustomer.get(cid) : transactionByGuestName.get(String(p.participant_name||'').trim());
+        const gameCost=tx && tx.game_cost!==null && tx.game_cost!==undefined ? Number(tx.game_cost||0) : Number(inv?.game_cost||0);
+        const buffetCost=tx && tx.food_cost!==null && tx.food_cost!==undefined ? Number(tx.food_cost||0) : Number(inv?.buffet_cost||0);
+        // The per-payer transaction contains the accumulated shares of the actual segments.
+        // Do not replace it with a session-wide equal split from a legacy invoice.
+        const invoiceTotal=tx ? Math.max(0,Number(tx.amount||0)) : Math.max(0,Number(inv?.total_amount ?? (gameCost+buffetCost)));
         const unusedPrepayment=Math.max(0,prepayment-invoiceTotal);
-        return {...p,prepayment_amount:String(prepayment),game_cost:String(gameCost),buffet_cost:String(buffetCost),invoice_total:String(invoiceTotal),unused_prepayment:String(unusedPrepayment)};
+        return {...p,prepayment_amount:String(prepayment),game_cost:String(gameCost),buffet_cost:String(buffetCost),invoice_total:String(invoiceTotal),unused_prepayment:String(unusedPrepayment),transaction_id:tx?.id||null};
       });
       // Legacy repair: older sessions could snapshot the session-level initial payment
       // without persisting per-payer allocations. If every payer row is zero and there is no
@@ -1072,21 +1178,30 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
       const results=[];
       for(const d of decisions){
         const decisionTransactionId=Number(d.transactionId||0);
+        const requestedCid=Number(d.customerId||0);
+        const requestedName=String(d.customerName||'').trim();
         const linkedTx=decisionTransactionId>0
-          ? (await c.query("SELECT id,customer_id,customer_name,session_id FROM customer_transactions WHERE id=$1 AND manager_id=$2 AND status<>'DELETED' LIMIT 1",[decisionTransactionId,mid])).rows[0]
+          ? (await c.query("SELECT id,local_id,customer_id,customer_name,session_id,amount,paid_amount,game_cost,food_cost FROM customer_transactions WHERE manager_id=$1 AND status<>'DELETED' AND (local_id=$2 OR id=$2) AND session_id=$3 AND ((customer_id=$4 AND $4>0) OR (customer_id IS NULL AND $4<=0 AND customer_name=$5)) ORDER BY CASE WHEN local_id=$2 THEN 0 ELSE 1 END,id DESC LIMIT 1 FOR UPDATE",[mid,decisionTransactionId,sid,requestedCid,requestedName])).rows[0]
           : null;
         // When an invoice was created before participant allocation was repaired, the
         // Android transaction identity is more authoritative than a stale/synthetic
         // customerId. Resolve the payer from that exact transaction, but only inside this
         // exact session to preserve tenant/session isolation.
-        const resolvedCid=linkedTx && String(linkedTx.session_id||sid)===String(sid) ? Number(linkedTx.customer_id||0) : Number(d.customerId||0);
-        const resolvedName=linkedTx?.customer_name || String(d.customerName||'');
+        const requestedBillingCid=Number(d.customerId||0);
+        const linkedTxInSession=Boolean(linkedTx && String(linkedTx.session_id||sid)===String(sid));
+        const resolvedCid=linkedTxInSession
+          ? (linkedTx.customer_id===null || linkedTx.customer_id===undefined
+              ? (requestedBillingCid<0 ? requestedBillingCid : 0)
+              : Number(linkedTx.customer_id))
+          : requestedBillingCid;
+        const resolvedName=linkedTxInSession ? String(linkedTx.customer_name||d.customerName||'') : String(d.customerName||'');
         const cid=resolvedCid, method=String(d.refundMethod||'NONE').toUpperCase(), refund=Math.max(0,Math.trunc(Number(d.refundAmount||0))), status=String(d.status||'REVIEWED').toUpperCase();
         const isGuestDecision=cid<=0;
         const participant=isGuestDecision
-          ? (guestPayers.find(p => String(p.participant_key || '') === "guest:" + cid)
+          ? ((cid===0 && resolvedName ? guestPayers.find(p=>String(p.participant_name||'')===String(resolvedName)) : null)
+              || guestPayers.find(p => String(p.participant_key || '') === "guest:" + cid)
               || (cid === -1 ? guestPayers.find(p => String(p.participant_key || '') === 'guest:walk-in') : null)
-              || guestPayers[Math.max(0,(-cid)-1)]
+              || (cid<0 ? guestPayers[Math.max(0,(-cid)-1)] : null)
               || (cid===0 ? guestPayers[0] : null))
           : (byId.get(cid) || participants.find(p => Number(p.customer_id||0)===cid && resolvedName && String(p.participant_name||'')===String(resolvedName)));
         if(!participant){await c.query('ROLLBACK');return res.status(422).json({error:'Customer is not a payer in this session',customerId:cid,transactionId:decisionTransactionId||null});}
@@ -1100,8 +1215,13 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
           const retryStatus=retryRequested==='DEBTOR'||retryRequested==='PARTIAL'?'DEBTOR':'REVIEWED';
           const retryPaid=Math.max(0,Math.trunc(Number(d.paidAmount||0)));
           if(isGuestDecision){
-            await c.query("UPDATE customer_transactions SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN amount ELSE LEAST(amount,$2) END,session_id=COALESCE(session_id,$3),updated_at=NOW() WHERE manager_id=$4 AND session_id=$3 AND customer_id IS NULL AND customer_name=$5 AND status<>'DELETED'",[retryStatus,retryPaid,sid,mid,participant.participant_name]);
-            await c.query("UPDATE invoices SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN total_amount ELSE LEAST(total_amount,$2) END,updated_at=NOW() WHERE manager_id=$3 AND session_id=$4 AND customer_id IS NULL AND customer_snapshot->>'name'=$5",[retryStatus,retryPaid,mid,sid,participant.participant_name]);
+            if(linkedTxInSession && Number(linkedTx.id||0)>0){
+              await c.query("UPDATE customer_transactions SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN amount ELSE LEAST(amount,$2) END,session_id=COALESCE(session_id,$3),updated_at=NOW() WHERE id=$4 AND manager_id=$5 AND status<>'DELETED'",[retryStatus,retryPaid,sid,Number(linkedTx.id),mid]);
+            }else{
+              await c.query("UPDATE customer_transactions SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN amount ELSE LEAST(amount,$2) END,session_id=COALESCE(session_id,$3),updated_at=NOW() WHERE manager_id=$4 AND session_id=$3 AND customer_id IS NULL AND customer_name=$5 AND status<>'DELETED'",[retryStatus,retryPaid,sid,mid,participant.participant_name]);
+            }
+            const retryGuestInvoiceNumber='GN-'+sid+'-'+String(participant.participant_key||('guest-'+(-cid))).replace(/[^A-Za-z0-9_-]/g,'_');
+            await c.query("UPDATE invoices SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN total_amount ELSE LEAST(total_amount,$2) END,updated_at=NOW() WHERE manager_id=$3 AND session_id=$4 AND invoice_number=$5 AND customer_id IS NULL",[retryStatus,retryPaid,mid,sid,retryGuestInvoiceNumber]);
           }else{
             await c.query("UPDATE customer_transactions SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN amount ELSE LEAST(amount,$2) END,session_id=COALESCE(session_id,$3),updated_at=NOW() WHERE manager_id=$4 AND session_id=$3 AND customer_id=$5 AND status<>'DELETED'",[retryStatus,retryPaid,sid,mid,cid]);
             await c.query("UPDATE invoices SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN total_amount ELSE LEAST(total_amount,$2) END,updated_at=NOW() WHERE manager_id=$3 AND session_id=$4 AND customer_id=$5",[retryStatus,retryPaid,mid,sid,cid]);
@@ -1126,15 +1246,18 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
         if(!inv){
           if(!isGuestDecision){await c.query('ROLLBACK');return res.status(422).json({error:'Invoice not found for customer',customerId:cid});}
           const guestInvoiceNumber='GN-'+sid+'-'+String(participant.participant_key||('guest-'+(-cid))).replace(/[^A-Za-z0-9_-]/g,'_');
-          inv=(await c.query("INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,NULL,$3,$4,'UNPAID','IRT',$5,$6,$7,0,$8,$9::jsonb,$10::jsonb,$11::jsonb) ON CONFLICT(manager_id,invoice_number) DO UPDATE SET game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,updated_at=NOW() RETURNING id,game_cost,buffet_cost,total_amount,paid_amount,status",[guestInvoiceNumber,mid,sid,session.station_id,String(session.game_cost||0),String(session.buffet_cost||0),String(session.total_cost||0),'review_guest_'+sid+'_'+String(participant.participant_key||cid),JSON.stringify(snapshot),JSON.stringify({id:null,name:participant.participant_name,isGuest:true,participantKey:participant.participant_key}),JSON.stringify({id:mid})])).rows[0];
+          const fallbackGame=Number(linkedTxInSession && linkedTx.game_cost!=null ? linkedTx.game_cost : session.game_cost||0);
+          const fallbackBuffet=Number(linkedTxInSession && linkedTx.food_cost!=null ? linkedTx.food_cost : session.buffet_cost||0);
+          const fallbackTotal=Number(linkedTxInSession ? linkedTx.amount : (fallbackGame+fallbackBuffet));
+          inv=(await c.query("INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,NULL,$3,$4,'UNPAID','IRT',$5,$6,$7,0,$8,$9::jsonb,$10::jsonb,$11::jsonb) ON CONFLICT(manager_id,invoice_number) DO UPDATE SET game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,updated_at=NOW() RETURNING id,game_cost,buffet_cost,total_amount,paid_amount,status",[guestInvoiceNumber,mid,sid,session.station_id,String(fallbackGame),String(fallbackBuffet),String(fallbackTotal),'review_guest_'+sid+'_'+String(participant.participant_key||cid),JSON.stringify(snapshot),JSON.stringify({id:null,name:participant.participant_name,isGuest:true,participantKey:participant.participant_key}),JSON.stringify({id:mid})])).rows[0];
         }
-        const gameCost=Number(inv.game_cost||0);
-        const buffetCost=participants.length===1 ? authoritativeBuffet : Number(inv.buffet_cost||0);
-        const total=gameCost+buffetCost;
-        if(participants.length===1 && (Number(inv.buffet_cost||0)!==buffetCost || Number(inv.total_amount||0)!==total)){
-          await c.query("UPDATE invoices SET buffet_cost=$1,total_amount=$2,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[buffetCost,total,inv.id,mid]);
+        const gameCost=Number(linkedTxInSession && linkedTx.game_cost!=null ? linkedTx.game_cost : inv.game_cost||0);
+        const buffetCost=Number(linkedTxInSession && linkedTx.food_cost!=null ? linkedTx.food_cost : inv.buffet_cost||0);
+        const total=Math.max(0,Number(linkedTxInSession ? linkedTx.amount : (inv.total_amount ?? (gameCost+buffetCost))));
+        if(Number(inv.game_cost||0)!==gameCost || Number(inv.buffet_cost||0)!==buffetCost || Number(inv.total_amount||0)!==total){
+          await c.query("UPDATE invoices SET game_cost=$1,buffet_cost=$2,total_amount=$3,updated_at=NOW() WHERE id=$4 AND manager_id=$5",[gameCost,buffetCost,total,inv.id,mid]);
         }
-        const unused=Math.max(0,prepayment-(gameCost+buffetCost));
+        const unused=Math.max(0,prepayment-total);
         if(refund>unused){await c.query('ROLLBACK');return res.status(422).json({error:'Refund exceeds unused initial payment',customerId:cid,unused:String(unused),requested:String(refund)});}
         if(method!=='NONE' && method!=='WALLET' && method!=='CASH'){await c.query('ROLLBACK');return res.status(422).json({error:'Invalid refund method'});}
         if(isGuestDecision && method==='WALLET' && refund>0){await c.query('ROLLBACK');return res.status(422).json({error:'Guest customer cannot receive wallet refund',customerId:cid});}
@@ -1151,7 +1274,7 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
         const finalStatus=requestedStatus==='PARTIAL'?'DEBTOR':requestedStatus;
         const requestedPaid=Math.max(0,Math.trunc(Number(d.paidAmount||0)));
         const minimumPaid=Math.min(total,prepayment);
-        const paidAmount=requestedStatus==='REVIEWED'?total:(requestedStatus==='DEBTOR'?minimumPaid:Math.min(total,Math.max(minimumPaid,requestedPaid)));
+        const paidAmount=Math.min(total,requestedStatus==='REVIEWED'?total:(requestedStatus==='DEBTOR'?minimumPaid:Math.max(minimumPaid,requestedPaid)));
         if(requestedStatus==='PARTIAL' && paidAmount<=minimumPaid){await c.query('ROLLBACK');return res.status(422).json({error:'Partial payment must be greater than the applied initial payment',customerId:cid});}
 
         // Rewards are earned from the amount actually settled/paid, not from an unpaid invoice total.
@@ -1169,9 +1292,9 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
         // local_id first (and constrain by this session + participant); never treat a local
         // ID as a server primary key without validation.
         const requestedTransactionId=Number(d.transactionId||0);
-        const exactTransaction=requestedTransactionId>0
-          ? (await c.query("SELECT id,customer_id,amount,paid_amount FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' AND (local_id=$3 OR id=$3) AND ((customer_id=$4 AND $4>0) OR (customer_id IS NULL AND $4<=0 AND customer_name=$5)) ORDER BY CASE WHEN local_id=$3 THEN 0 ELSE 1 END,id DESC LIMIT 1 FOR UPDATE",[mid,sid,requestedTransactionId,cid,participant.participant_name])).rows[0]
-          : null;
+        const exactTransaction=linkedTxInSession ? linkedTx : (requestedTransactionId>0
+          ? (await c.query("SELECT id,customer_id,amount,paid_amount,game_cost,food_cost FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' AND (local_id=$3 OR id=$3) AND ((customer_id=$4 AND $4>0) OR (customer_id IS NULL AND $4<=0 AND customer_name=$5)) ORDER BY CASE WHEN local_id=$3 THEN 0 ELSE 1 END,id DESC LIMIT 1 FOR UPDATE",[mid,sid,requestedTransactionId,cid,participant.participant_name])).rows[0]
+          : null);
         const exactTransactionId=Number(exactTransaction?.id||0);
         const debtBefore = (exactTransactionId>0
           ? exactTransaction
@@ -1185,7 +1308,7 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
           // Android builds could create a second row with a different local_id; leaving it
           // UNREVIEWED makes the invoice appear unchanged after a successful response.
           if (isGuestDecision) {
-            await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,session_id=COALESCE(session_id,$4),updated_at=NOW() WHERE manager_id=$3 AND session_id=$4 AND customer_id IS NULL AND customer_name=$5 AND status<>'DELETED'",[finalStatus,paidAmount,mid,sid,participant.participant_name]);
+            await c.query("UPDATE customer_transactions SET status=$1,paid_amount=LEAST(amount,$2),session_id=COALESCE(session_id,$4),updated_at=NOW() WHERE id=$5 AND manager_id=$3 AND status<>'DELETED'",[finalStatus,paidAmount,mid,sid,exactTransactionId]);
           } else {
             await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,session_id=COALESCE(session_id,$4),updated_at=NOW() WHERE manager_id=$3 AND session_id=$4 AND customer_id=$5 AND status<>'DELETED'",[finalStatus,paidAmount,mid,sid,cid]);
           }
@@ -1196,12 +1319,7 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
         }
         if(!isGuestDecision && earnedGn>0){const g=await c.query("INSERT INTO gn_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_REVIEW',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",[mid,cid,earnedGn,sid,reviewKey+':GN']);if(g.rowCount>0) await c.query('UPDATE customers SET gn_balance=gn_balance+$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3',[earnedGn,cid,mid]);}
         if(!isGuestDecision && earnedLp>0){const l=await c.query("INSERT INTO lp_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_REVIEW',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id",[mid,cid,earnedLp,sid,reviewKey+':LP']);if(l.rowCount>0) await c.query('UPDATE customers SET lp_balance=lp_balance+$1 WHERE id=$2 AND manager_id=$3',[earnedLp,cid,mid]);}
-        if (isGuestDecision) {
-          // Keep duplicate guest invoice rows consistent with the participant decision.
-          await c.query("UPDATE invoices SET status=$1,paid_amount=$2,updated_at=NOW() WHERE manager_id=$3 AND session_id=$4 AND customer_id IS NULL AND customer_snapshot->>'name'=$5",[finalStatus,paidAmount,mid,sid,participant.participant_name]);
-        } else {
-          await c.query("UPDATE invoices SET status=$1,paid_amount=$2,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[finalStatus,paidAmount,inv.id,mid]);
-        }
+        await c.query("UPDATE invoices SET status=$1,paid_amount=LEAST($2,total_amount),updated_at=NOW() WHERE id=$3 AND manager_id=$4",[finalStatus,paidAmount,inv.id,mid]);
         if(exactTransactionId<=0){
           if (isGuestDecision) {
             await c.query("UPDATE customer_transactions SET status=$1,paid_amount=$2,session_id=COALESCE(session_id,$4),updated_at=NOW() WHERE manager_id=$3 AND session_id IS NOT DISTINCT FROM $4 AND customer_id IS NULL AND customer_name=$5 AND status<>'DELETED'",[finalStatus,paidAmount,mid,sid,participant.participant_name]);

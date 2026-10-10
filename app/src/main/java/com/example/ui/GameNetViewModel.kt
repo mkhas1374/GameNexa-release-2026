@@ -3407,7 +3407,29 @@ loadSettings()
                 viewModelScope.launch(Dispatchers.IO) {
                     runCatching {
                         val sessionId = repository.getSetting("active_session_$stationId")?.takeIf { it.isNotBlank() }
-                        if (sessionId != null) queueOrSendSessionEvent(sessionId, if (continueRunning) "SEGMENT_CONTINUE" else "PAUSE", now, org.json.JSONObject())
+                        if (sessionId != null) {
+                            val committed = if (commitSegment) updated.getSegmentsList().lastOrNull() else null
+                            val eventType = when {
+                                commitSegment && continueRunning -> "SEGMENT_CONTINUE"
+                                commitSegment -> "SEGMENT_PAUSE"
+                                else -> "PAUSE"
+                            }
+                            val payload = org.json.JSONObject()
+                            if (committed != null) {
+                                payload.put("segmentIndex", committed.segmentIndex)
+                                payload.put("startTimeMs", committed.startTimeMs)
+                                payload.put("endTimeMs", committed.endTimeMs)
+                                payload.put("durationSeconds", committed.durationSeconds)
+                                payload.put("cost", committed.cost)
+                                payload.put("consoleType", committed.consoleType)
+                                payload.put("controllerCount", committed.controllerCount)
+                                payload.put("customerIds", org.json.JSONArray(committed.customerIds))
+                                payload.put("customerNames", org.json.JSONArray(committed.customerNames))
+                                payload.put("payerCustomerIds", org.json.JSONArray(committed.payerCustomerIds))
+                                payload.put("payerCustomerNames", org.json.JSONArray(committed.payerCustomerNames))
+                            }
+                            queueOrSendSessionEvent(sessionId, eventType, now, payload)
+                        }
                     }.onFailure { android.util.Log.e("GameNetViewModel", "Stop event sync failed for station $stationId", it) }
                     runCatching { saveAndSyncStationState(updated) }
                         .onFailure { android.util.Log.e("GameNetViewModel", "Stop background sync failed for station $stationId", it) }
@@ -4041,8 +4063,16 @@ loadSettings()
         productName: String,
         quantity: Int,
         price: Long,
-        targetCustomerId: Long?
-    ) {
+        targetCustomerId: Long?,
+        targetCustomerName: String?,
+        sessionId: String
+    ): Boolean {
+        if (sessionId.isBlank()) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(getApplication(), "شناسه نشست فعال پیدا نشد؛ سفارش بوفه ثبت نشد.", Toast.LENGTH_LONG).show()
+            }
+            return false
+        }
         val operationId = java.util.UUID.randomUUID().toString()
         val key = "station_order_outbox_" + stationId
         val current = repository.getSetting(key)
@@ -4053,23 +4083,42 @@ loadSettings()
         }
         val item = org.json.JSONObject().apply {
             put("operationId", operationId)
+            put("sessionId", sessionId)
             put("productName", productName)
             put("quantity", quantity)
             put("price", price)
             put("targetCustomerId", targetCustomerId ?: org.json.JSONObject.NULL)
+            put("targetCustomerName", targetCustomerName ?: "")
+            put("queuedAt", System.currentTimeMillis())
         }
         array.put(item)
         repository.saveSetting(key, array.toString())
 
-        val sent = SelfHostedManager.addBuffetOrderEvent(
+        val result = SelfHostedManager.addBuffetOrderEvent(
             stationId = stationId,
             productName = productName,
             quantity = quantity,
             price = price,
             targetCustomerId = targetCustomerId,
-            idempotencyKey = "station-order:" + operationId
+            targetCustomerName = targetCustomerName,
+            idempotencyKey = "station-order:" + operationId,
+            sessionId = sessionId
         )
-        if (sent) removeBuffetOrderFromOutbox(key, operationId)
+        return when {
+            result.accepted -> {
+                removeBuffetOrderFromOutbox(key, operationId)
+                true
+            }
+            result.retryable -> true
+            else -> {
+                removeBuffetOrderFromOutbox(key, operationId)
+                withContext(Dispatchers.Main) {
+                    val reason = result.errorMessage.ifBlank { "سرور سفارش را نپذیرفت." }
+                    Toast.makeText(getApplication(), "سفارش بوفه ثبت نشد: " + reason, Toast.LENGTH_LONG).show()
+                }
+                false
+            }
+        }
     }
 
     private suspend fun removeBuffetOrderFromOutbox(key: String, operationId: String) {
@@ -4083,6 +4132,20 @@ loadSettings()
         repository.saveSetting(key, remaining.toString())
     }
 
+    private suspend fun removeRejectedBuffetOrder(stationId: Int, item: org.json.JSONObject) {
+        val productName = item.optString("productName")
+        val targetId = if (item.isNull("targetCustomerId")) null else item.optLong("targetCustomerId").takeIf { it != 0L }
+        val existing = repository.getOrdersForStationSync(stationId).firstOrNull {
+            it.productName == productName && it.targetCustomerId == targetId
+        } ?: return
+        if (existing.quantity > 1) {
+            repository.insertStationOrder(existing.copy(quantity = existing.quantity - 1))
+        } else {
+            repository.deleteStationOrder(existing.id, stationId)
+        }
+        refreshOrdersForStation(stationId)
+    }
+
     private suspend fun flushPendingBuffetOrders() {
         val settings = repository.getAllAppSettings()
         settings.filter { it.key.startsWith("station_order_outbox_") }.forEach { setting ->
@@ -4093,16 +4156,31 @@ loadSettings()
                 val item = array.optJSONObject(i) ?: continue
                 val operationId = item.optString("operationId")
                 if (operationId.isBlank()) continue
-                val customer = if (item.isNull("targetCustomerId")) null else item.optLong("targetCustomerId").takeIf { it > 0L }
-                val ok = SelfHostedManager.addBuffetOrderEvent(
+                val sessionId = item.optString("sessionId").takeIf { it.isNotBlank() }
+                if (sessionId == null) {
+                    android.util.Log.w("GameNetViewModel", "Dropping legacy buffet outbox item without session identity")
+                    removeRejectedBuffetOrder(stationId, item)
+                    continue
+                }
+                val customer = if (item.isNull("targetCustomerId")) null else item.optLong("targetCustomerId").takeIf { it != 0L }
+                val result = SelfHostedManager.addBuffetOrderEvent(
                     stationId = stationId,
                     productName = item.optString("productName"),
                     quantity = item.optInt("quantity", 1),
                     price = item.optLong("price", 0L),
                     targetCustomerId = customer,
-                    idempotencyKey = "station-order:" + operationId
+                    targetCustomerName = item.optString("targetCustomerName").takeIf { it.isNotBlank() },
+                    idempotencyKey = "station-order:" + operationId,
+                    sessionId = sessionId
                 )
-                if (!ok) remaining.put(item)
+                when {
+                    result.accepted -> Unit
+                    result.retryable -> remaining.put(item)
+                    else -> {
+                        android.util.Log.w("GameNetViewModel", "Discarding rejected buffet order: " + result.errorMessage)
+                        removeRejectedBuffetOrder(stationId, item)
+                    }
+                }
             }
             repository.saveSetting(setting.key, remaining.toString())
         }
@@ -4110,40 +4188,71 @@ loadSettings()
 
     fun addBuffetOrderWithCustomer(stationId: Int, productName: String, targetCustomerId: Long? = null, targetCustomerName: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
-            val orderId = if (targetCustomerId != null) "${stationId}_${productName}_${targetCustomerId}" else "${stationId}_${productName}"
-            val existingOrders = repository.getOrdersForStationSync(stationId)
-            val matched = existingOrders.find { it.productName == productName && it.targetCustomerId == targetCustomerId }
-
-            val updatedOrder = if (matched != null) {
-                matched.copy(quantity = matched.quantity + 1)
-            } else {
-                StationOrder(
-                    id = orderId,
+            try {
+                val station = repository.getStationStateByIdLocal(stationId)
+                    ?: stationStates.value.find { it.id == stationId }
+                    ?: run {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(getApplication(), "ایستگاه پیدا نشد؛ سفارش ثبت نشد.", Toast.LENGTH_LONG).show()
+                        }
+                        return@launch
+                    }
+                if (station.status !in setOf("RUNNING", "PAUSED")) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "برای ثبت سفارش بوفه، نشست ایستگاه باید فعال یا متوقف موقت باشد.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+                val sessionId = repository.getSetting("active_session_" + stationId)?.takeIf { it.isNotBlank() }
+                if (sessionId == null) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "شناسه نشست فعال موجود نیست؛ سفارش بوفه ثبت نشد.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+                val product = repository.getProductByName(productName)
+                    ?: (repository.allProducts.firstOrNull() ?: emptyList()).find { it.name.trim().equals(productName.trim(), ignoreCase = true) }
+                if (product == null || product.price < 0L) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "محصول یا قیمت معتبر پیدا نشد.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+                val acceptedOrQueued = sendOrQueueBuffetOrder(
                     stationId = stationId,
                     productName = productName,
                     quantity = 1,
+                    price = product.price,
                     targetCustomerId = targetCustomerId,
-                    targetCustomerName = targetCustomerName
+                    targetCustomerName = targetCustomerName,
+                    sessionId = sessionId
                 )
-            }
+                if (!acceptedOrQueued) return@launch
 
-            repository.insertStationOrder(updatedOrder)
-            refreshOrdersForStation(stationId)
-
-            val p = repository.getProductByName(productName)
-            val productPrice = p?.price ?: 0L
-            sendOrQueueBuffetOrder(
-                stationId = stationId,
-                productName = productName,
-                quantity = 1,
-                price = productPrice,
-                targetCustomerId = targetCustomerId
-            )
-
-            // Immediately sync updated orders with station to cloud
-            val st = repository.getStationStateByIdLocal(stationId)
-            if (st != null) {
-                saveAndSyncStationState(st)
+                val orderId = if (targetCustomerId != null) stationId.toString() + "_" + productName + "_" + targetCustomerId else stationId.toString() + "_" + productName
+                val existingOrders = repository.getOrdersForStationSync(stationId)
+                val matched = existingOrders.find { it.productName == productName && it.targetCustomerId == targetCustomerId }
+                val updatedOrder = if (matched != null) {
+                    matched.copy(quantity = matched.quantity + 1, targetCustomerName = targetCustomerName ?: matched.targetCustomerName)
+                } else {
+                    StationOrder(
+                        id = orderId,
+                        stationId = stationId,
+                        productName = productName,
+                        quantity = 1,
+                        targetCustomerId = targetCustomerId,
+                        targetCustomerName = targetCustomerName
+                    )
+                }
+                repository.insertStationOrder(updatedOrder)
+                refreshOrdersForStation(stationId)
+                val latestState = repository.getStationStateByIdLocal(stationId)
+                if (latestState != null) saveAndSyncStationState(latestState)
+            } catch (t: Throwable) {
+                android.util.Log.e("GameNetViewModel", "BUFFET_ORDER_GUARD station=" + stationId, t)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "ثبت سفارش بوفه انجام نشد؛ وضعیت ایستگاه حفظ شد.", Toast.LENGTH_LONG).show()
+                }
             }
         }
     }

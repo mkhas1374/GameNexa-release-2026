@@ -4,6 +4,8 @@ const vm = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/ui/Gam
 const screen = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/ui/MainScreen.kt', 'utf8');
 const invoice = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/ui/CustomersReservationsScreen.kt', 'utf8');
 const backend = fs.readFileSync(__dirname + '/canonical_routes.js', 'utf8');
+const server = fs.readFileSync(__dirname + '/server.js', 'utf8');
+const managerApi = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/data/network/SelfHostedManager.kt', 'utf8');
 assert(vm.includes('elapsedPlayingTimeMillis = if (commitSegment) 0L else station.elapsedPlayingTimeMillis + elapsed'), 'committing a segment must reset the live segment elapsed timer');
 assert(vm.includes('val remainingMs = totalElapsed.coerceAtLeast(0L)'), 'final settlement must not subtract already-committed segments from current-segment elapsed time');
 assert(!vm.includes('customerGameCostMap.clear()'), 'final settlement must not redistribute every segment using only final payer selection');
@@ -19,4 +21,15 @@ assert(invoice.includes('review.sessionTotalCost'), 'dialog must show full-sessi
 assert(backend.includes('const fallbackInvoice = requestedCustomerId > 0'), 'GET review must recover missing payer identity from a persisted invoice');
 assert(backend.includes('Historical segment payers can be missing'), 'finalization must include historical invoice payers');
 assert(backend.includes('paidAmount:retryPaid') && backend.includes('status:finalStatus,paidAmount'), 'finalization response must include authoritative paidAmount');
+assert(backend.includes('const transactionByGuestName=new Map()'), 'settlement review must find the actual transaction for a walk-in guest');
+assert(backend.includes('const invoiceTotal=tx ? Math.max(0,Number(tx.amount||0))'), 'dialog total must use the payer-specific accumulated invoice amount');
+assert(backend.includes('Number(linkedTxInSession ? linkedTx.amount : (inv.total_amount ?? (gameCost+buffetCost)))'), 'finalization must not derive paid total from mismatched component sums');
+assert(backend.includes('requestedBillingCid<0 ? requestedBillingCid : 0'), 'guest synthetic identity must survive server transaction resolution');
+assert(backend.includes('participantKey.replace(/[^A-Za-z0-9_-]/g'), 'guest invoices must use a stable per-participant identity rather than one shared walk-in invoice');
+assert(backend.includes("customerOrNull !== null ? 'C' + customerOrNull"), 'registered customer sync must update the same invoice identity used by server settlement');
+assert(server.includes('payerTransaction') && server.includes('payerTransaction.amount'), 'server settlement must preserve a synced segment-specific payer total');
+assert(server.includes('SEGMENT_CONTINUE') && server.includes('SEGMENT_PAUSE'), 'backend must accept segment boundary events and preserve active session state');
+assert(server.includes('targetParticipantKey') && server.includes('SESSION_NOT_ACTIVE'), 'buffet order endpoint must support guest targets and reject closed sessions explicitly');
+assert(managerApi.includes('sessionId?.takeIf') && vm.includes('result.retryable'), 'Android must bind buffet retries to the original session and avoid retrying permanent 4xx errors');
+assert(vm.includes('BUFFET_ORDER_GUARD station='), 'buffet operation must catch failures without crashing the Manager screen');
 console.log('PASS: segment commits reset current timer/cost, final settlement avoids duplicate segment charging, and invoices display per-customer segment details');

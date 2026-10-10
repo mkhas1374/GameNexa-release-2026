@@ -5,8 +5,11 @@ const manager = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/d
 const viewModel = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/ui/GameNetViewModel.kt', 'utf8');
 
 assert(routes.includes('local_id=$3 OR id=$3'), 'finalize must resolve Room local IDs to server rows');
+assert(routes.includes('local_id=$2 OR id=$2'), 'linked payer lookup must resolve the Room local ID before a colliding server ID');
+assert(routes.includes('requestedBillingCid<0 ? requestedBillingCid : 0'), 'guest billing IDs must not collapse to customer ID zero during finalization');
+assert(routes.includes('Number(linkedTxInSession ? linkedTx.amount : (inv.total_amount ?? (gameCost+buffetCost)))'), 'settlement paid amount must follow the payer total, not the component sum');
 assert(routes.includes(`customer_transactions.status IN ('REVIEWED','DEBTOR','PARTIAL') AND EXCLUDED.status='UNREVIEWED'`), 'stale sync must not downgrade finalized status');
-assert(routes.includes(`customer_snapshot->>'name'=$5`), 'duplicate guest invoices must be finalized by session and participant');
+assert(routes.includes('retryGuestInvoiceNumber') && routes.includes('invoice_number=$5 AND customer_id IS NULL'), 'guest retries must finalize only the invoice for that exact participant key');
 assert(routes.includes('Idempotency must not mean'), 'idempotent retries must repair stale invoice/transaction status');
 assert(routes.includes('Legacy sessions may have invoices/transactions but no participant rows'), 'legacy sessions without participant rows must use the actual invoice identity');
 assert(routes.includes('legacyTx.forEach'), 'legacy sessions without invoice snapshots must fall back to transaction identity');
