@@ -10,7 +10,8 @@ assert(routes.includes(`customer_snapshot->>'name'=$5`), 'duplicate guest invoic
 assert(routes.includes('Idempotency must not mean'), 'idempotent retries must repair stale invoice/transaction status');
 assert(routes.includes('Legacy sessions may have invoices/transactions but no participant rows'), 'legacy sessions without participant rows must use the actual invoice identity');
 assert(routes.includes('legacyTx.forEach'), 'legacy sessions without invoice snapshots must fall back to transaction identity');
-assert(routes.includes('status:retryStatus,idempotent:true'), 'idempotent response must return the invoice status, not refund-marker status');
+assert(routes.includes('status:retryStatus,paidAmount:retryPaid,idempotent:true'), 'idempotent response must return authoritative status and paid amount, not refund-marker status');
+assert(routes.indexOf('const byId=new Map') > routes.indexOf('Historical segment payers can be missing'), 'payer indexes must be built after merging historical invoice payers');
 assert(manager.includes('o.has("local_id") && !o.isNull("local_id")'), 'hydration must preserve local_id as Room identity');
 assert(viewModel.includes('Reconcile Room with the authoritative server in the background'), 'post-finalization refresh must not block dialog closure');
 assert(viewModel.includes('        true\n    }'), 'successful server finalization must return success even if local row matching is incomplete');
