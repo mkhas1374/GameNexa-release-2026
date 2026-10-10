@@ -1020,8 +1020,6 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
         }
       }
       const authoritativeBuffet=Number((await c.query("SELECT COALESCE(SUM(line_total),0) amount FROM session_orders WHERE session_id=$1 AND manager_id=$2",[sid,mid])).rows[0]?.amount||0);
-      const byId=new Map(participants.filter(p=>p.customer_id).map(p=>[Number(p.customer_id),p]));
-      const guestPayers=participants.filter(p=>!p.customer_id && p.is_guest && p.is_payer);
       const snapshot=session.pricing_snapshot && typeof session.pricing_snapshot==='object'?session.pricing_snapshot:{};
       const snapPre=snapshot.customerPrepayments && typeof snapshot.customerPrepayments==='object'?snapshot.customerPrepayments:{};
       const legacyPrepaymentMap=new Map();
@@ -1059,6 +1057,8 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
           legacyPrepaymentMap.set(key, base + (i === participants.length - 1 ? remainder : 0));
         });
       }
+      const byId=new Map(participants.filter(p=>p.customer_id).map(p=>[Number(p.customer_id),p]));
+      const guestPayers=participants.filter(p=>!p.customer_id && p.is_guest && p.is_payer);
       const guestInvoiceByKey=new Map();
       invoiceRowsForSession.filter(r=>r.customer_id===null).forEach(r=>{
         const key=String(r.customer_snapshot?.participantKey||'');
