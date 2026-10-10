@@ -15,4 +15,4 @@ assert(manager.includes('o.has("local_id") && !o.isNull("local_id")'), 'hydratio
 assert(viewModel.includes('Reconcile Room with the authoritative server in the background'), 'post-finalization refresh must not block dialog closure');
 assert(viewModel.includes('        true\n    }'), 'successful server finalization must return success even if local row matching is incomplete');
 assert(!viewModel.includes('val exact = if (txId > 0L)'), 'server IDs must not be applied directly to unrelated Room rows');
-console.log('PASS: settlement finalization preserves local identity, prevents stale status downgrade, and refreshes authoritative state');
+console.log('PASS: settlement finalization preserves local identity, prevents stale status downgrade, and does not block UI closure on refresh');

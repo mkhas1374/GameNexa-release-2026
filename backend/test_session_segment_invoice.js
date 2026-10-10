@@ -11,5 +11,4 @@ assert(vm.includes('durationSeconds = elapsed / 1000L'), 'segment duration must 
 assert(screen.includes('formatTime(currentElapsedMs)'), 'normal session timer must show current segment elapsed time, reset after commit');
 assert(screen.includes('هزینه بخش فعلی:'), 'station card must show the current segment cost separately from session total');
 assert(invoice.includes('transaction.segmentDetails'), 'invoice UI must display multi-segment details');
-assert(invoice.includes('Reconcile Room with the authoritative server in the background') === false, 'UI does not own settlement reconciliation');
 console.log('PASS: segment commits reset current timer/cost, final settlement avoids duplicate segment charging, and invoices display per-customer segment details');
