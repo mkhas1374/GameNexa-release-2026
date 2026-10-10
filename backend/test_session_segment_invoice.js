@@ -6,6 +6,7 @@ const invoice = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/u
 assert(vm.includes('elapsedPlayingTimeMillis = if (commitSegment) 0L else station.elapsedPlayingTimeMillis + elapsed'), 'committing a segment must reset the live segment elapsed timer');
 assert(vm.includes('val remainingMs = totalElapsed.coerceAtLeast(0L)'), 'final settlement must not subtract already-committed segments from current-segment elapsed time');
 assert(!vm.includes('customerGameCostMap.clear()'), 'final settlement must not redistribute every segment using only final payer selection');
+assert(!vm.includes('existingSegments[i] = existingSegments[i].copy('), 'final payer selection must not overwrite payer identity on historical segments');
 assert(vm.includes('segmentDetailsForCustomer[cid].orEmpty().joinToString'), 'each customer transaction must carry its own segment-share detail');
 assert(vm.includes('durationSeconds = elapsed / 1000L'), 'segment duration must be recorded explicitly');
 assert(screen.includes('formatTime(currentElapsedMs)'), 'normal session timer must show current segment elapsed time, reset after commit');

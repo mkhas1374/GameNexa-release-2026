@@ -3547,19 +3547,6 @@ loadSettings()
                     existingSegments.add(finalSegment)
                 }
 
-                if (effectivePayerIds.isNotEmpty()) {
-                    for (i in existingSegments.indices) {
-                        if (existingSegments[i].payerCustomerIds.isEmpty() && existingSegments[i].payerCustomerId == null) {
-                            existingSegments[i] = existingSegments[i].copy(
-                                payerCustomerId = effectivePayerIds.firstOrNull(),
-                                payerCustomerName = effectivePayerNames.firstOrNull(),
-                                payerCustomerIds = effectivePayerIds,
-                                payerCustomerNames = effectivePayerNames
-                            )
-                        }
-                    }
-                }
-
                 val gameCost = existingSegments.sumOf { it.cost }
 
                 val orders = repository.getOrdersForStationSync(stationId)
