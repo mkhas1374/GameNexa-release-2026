@@ -16,6 +16,7 @@ import com.example.MainActivity
 import com.example.data.*
 import com.example.data.network.*
 import com.example.receiver.AlarmReceiver
+import com.example.util.ExactBilling
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.coroutines.Dispatchers
@@ -84,6 +85,12 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     val stationStates: StateFlow<List<StationState>> = repository.allStationStates
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    // Immediate UI acknowledgement for START. The server remains authoritative; this state
+    // only prevents double taps and gives instant visual feedback while the authoritative
+    // start request is in flight. It is always cleared in the coroutine finally block.
+    private val _startingStationIds = MutableStateFlow<Set<Int>>(emptySet())
+    val startingStationIds: StateFlow<Set<Int>> = _startingStationIds.asStateFlow()
+
     val consoleTypes: StateFlow<List<ConsoleType>> = repository.allConsoleTypes
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -101,11 +108,15 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val reviewedTransactions = customerTransactions.map { list ->
-        list.filter { it.status == "REVIEWED" }
+        // "Settled" means the financial amount is actually fully paid, not merely that
+        // a stale status flag says REVIEWED.
+        list.filter { (it.status == "REVIEWED" || it.status == "ARCHIVED") && it.paidAmount >= it.amount }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val debtorTransactions = customerTransactions.map { list ->
-        list.filter { it.status == "DEBTOR" }
+        // Any invoice with an outstanding amount belongs to debtors, even if a legacy
+        // REVIEWED flag was written incorrectly.
+        list.filter { it.amount > it.paidAmount && it.status != "UNREVIEWED" }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val reservations: StateFlow<List<Reservation>> = repository.allReservations
@@ -162,23 +173,126 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         put("playMinutes", t.playMinutes)
         put("gameCost", t.gameCost)
         put("foodCost", t.foodCost)
+        put("sessionId", t.sessionId)
+        put("earnedGn", t.earnedGn)
+        put("earnedLp", t.earnedLp)
     }
 
     private suspend fun queueOrSyncCustomerTransaction(transaction: CustomerTransaction) {
         // Trial operational data is strictly local; never enqueue or transmit it.
         if (NetworkClient.isTrialMode) return
-        // Walk-in transactions have no customer row and are intentionally local-only.
-        if (transaction.customerId <= 0L || transaction.id <= 0L) return
+        // Walk-in transactions are first-class financial history. They have no customer row,
+        // so the server stores customer_id as NULL rather than dropping the transaction.
+        if (transaction.id <= 0L) return
         val key = "customer_transaction_outbox_${transaction.id}"
         val payload = customerTransactionJson(transaction).toString()
+        if (transaction.sessionId.isNotBlank() && repository.getSetting("settlement_pending_${transaction.sessionId}").orEmpty().isNotBlank()) {
+            repository.saveSetting(key, payload)
+            return
+        }
         if (SelfHostedManager.syncCustomerTransactionToCloud(transaction)) {
             repository.saveSetting(key, "")
+            // Refresh from the server so historical GN/LP values come from canonical ledgers,
+            // not Android-side estimates.
+            repository.syncCustomerTransactionsFromServer()
         } else {
             repository.saveSetting(key, payload)
         }
     }
 
+    private suspend fun flushPendingCustomerTransactionDeletes() {
+        repository.getAllAppSettings()
+            .filter { it.key.startsWith("customer_transaction_delete_outbox_") && it.value.isNotBlank() }
+            .forEach { setting ->
+                val obj = runCatching { org.json.JSONObject(setting.value) }.getOrNull() ?: return@forEach
+                val id = obj.optLong("localId", 0L)
+                if (id <= 0L) return@forEach
+                if (SelfHostedManager.deleteManagerCustomerTransaction(id)) {
+                    repository.saveSetting(setting.key, "")
+                } else if (SelfHostedManager.lastTransactionDeleteHttpCode in 400..499 && SelfHostedManager.lastTransactionDeleteHttpCode != 429) {
+                    repository.saveSetting(setting.key, "")
+                    val tx = CustomerTransaction(
+                        id = id,
+                        customerId = obj.optLong("customerId", 0L),
+                        customerName = obj.optString("customerName"),
+                        stationName = obj.optString("stationName"),
+                        title = obj.optString("title"),
+                        amount = obj.optLong("amount"),
+                        paidAmount = obj.optLong("paidAmount"),
+                        status = obj.optString("status", "UNREVIEWED"),
+                        dateStr = obj.optString("dateStr"),
+                        timeStr = obj.optString("timeStr"),
+                        segmentDetails = obj.optString("segmentDetails"),
+                        buffetDetails = obj.optString("buffetDetails"),
+                        timestamp = obj.optLong("timestamp"),
+                        playMinutes = obj.optInt("playMinutes"),
+                        gameCost = obj.optLong("gameCost"),
+                        foodCost = obj.optLong("foodCost"),
+                        sessionId = obj.optString("sessionId"),
+                        earnedGn = obj.optLong("earnedGn", 0L),
+                        earnedLp = obj.optLong("earnedLp", 0L)
+                    )
+                    repository.restoreCustomerTransactionLocal(tx)
+                }
+            }
+    }
+
+    private fun customerToJson(customer: Customer): org.json.JSONObject = org.json.JSONObject().apply {
+        put("id", customer.id); put("fullName", customer.fullName); put("phoneNumber", customer.phoneNumber)
+        put("debt", customer.debt); put("credit", customer.credit); put("description", customer.description)
+        put("points", customer.points); put("availableGn", customer.availableGn); put("pendingGn", customer.pendingGn)
+        put("lp", customer.lp); put("tier", customer.tier); put("lastActivityTimestamp", customer.lastActivityTimestamp)
+        put("totalQualifiedSpend", customer.totalQualifiedSpend); put("totalVisitsCount", customer.totalVisitsCount)
+        put("lastTierReviewTimestamp", customer.lastTierReviewTimestamp); put("inviteCode", customer.inviteCode)
+        put("invitedByCode", customer.invitedByCode); put("invitePointsAwarded", customer.invitePointsAwarded)
+        put("rewardsConsumed", customer.rewardsConsumed)
+    }
+
+    private fun customerFromJson(o: org.json.JSONObject): Customer = Customer(
+        id=o.optLong("id",0L), fullName=o.optString("fullName"), phoneNumber=o.optString("phoneNumber"),
+        debt=o.optLong("debt",0L), credit=o.optLong("credit",0L), description=o.optString("description"),
+        points=o.optLong("points",0L), availableGn=o.optLong("availableGn",0L), pendingGn=o.optLong("pendingGn",0L),
+        lp=o.optLong("lp",0L), tier=o.optString("tier","BRONZE"), lastActivityTimestamp=o.optLong("lastActivityTimestamp",System.currentTimeMillis()),
+        totalQualifiedSpend=o.optLong("totalQualifiedSpend",0L), totalVisitsCount=o.optInt("totalVisitsCount",0),
+        lastTierReviewTimestamp=o.optLong("lastTierReviewTimestamp",System.currentTimeMillis()),
+        inviteCode=o.optString("inviteCode"), invitedByCode=o.optString("invitedByCode"),
+        invitePointsAwarded=o.optBoolean("invitePointsAwarded",false), rewardsConsumed=o.optLong("rewardsConsumed",0L)
+    )
+
+    private suspend fun flushPendingCustomerArchives() {
+        val settings = repository.getAllAppSettings()
+        settings.filter { it.key.startsWith("local_archived_customer_") && it.value.isNotBlank() }.forEach {
+            runCatching { SelfHostedManager.publishArchivedCustomerLocally(customerFromJson(org.json.JSONObject(it.value))) }
+        }
+        settings.filter { it.key.startsWith("customer_archive_outbox_") && it.value.isNotBlank() }.forEach { setting ->
+            val customer = runCatching { customerFromJson(org.json.JSONObject(setting.value)) }.getOrNull() ?: return@forEach
+            val ok = runCatching { SelfHostedManager.deleteCustomer(customer.id, customer.phoneNumber) }.getOrDefault(false)
+            if (ok || SelfHostedManager.lastCustomerMutationHttpCode == 404) {
+                repository.saveSetting(setting.key, "")
+                repository.saveSetting("local_archived_customer_" + customer.id, "")
+            }
+        }
+        settings.filter { it.key.startsWith("customer_restore_outbox_") && it.value.isNotBlank() }.forEach { setting ->
+            val customer = runCatching { customerFromJson(org.json.JSONObject(setting.value)) }.getOrNull() ?: return@forEach
+            if (runCatching { SelfHostedManager.restoreCustomer(customer.id, customer.phoneNumber) }.getOrDefault(false)) {
+                repository.saveSetting(setting.key, "")
+                repository.saveSetting("local_archived_customer_" + customer.id, "")
+                repository.insertCustomer(customer)
+            }
+        }
+        settings.filter { it.key.startsWith("customer_purge_outbox_") && it.value.isNotBlank() }.forEach { setting ->
+            val customer = runCatching { customerFromJson(org.json.JSONObject(setting.value)) }.getOrNull() ?: return@forEach
+            val ok = runCatching { SelfHostedManager.purgeArchivedCustomer(customer.id, customer.phoneNumber) }.getOrDefault(false)
+            if (ok || SelfHostedManager.lastCustomerMutationHttpCode == 404) {
+                repository.saveSetting(setting.key, "")
+                repository.saveSetting("local_archived_customer_" + customer.id, "")
+            }
+        }
+    }
+
     private suspend fun flushPendingCustomerTransactions() {
+        flushPendingCustomerArchives()
+        flushPendingCustomerTransactionDeletes()
         repository.getAllAppSettings()
             .filter { it.key.startsWith("customer_transaction_outbox_") && it.value.isNotBlank() }
             .forEach { setting ->
@@ -200,12 +314,13 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         timestamp = obj.optLong("timestamp"),
                         playMinutes = obj.optInt("playMinutes"),
                         gameCost = obj.optLong("gameCost"),
-                        foodCost = obj.optLong("foodCost")
+                        foodCost = obj.optLong("foodCost"),
+                        sessionId = obj.optString("sessionId")
                     )
-                    if (transaction.customerId > 0L && transaction.id > 0L && SelfHostedManager.syncCustomerTransactionToCloud(transaction)) {
+                    if (transaction.id > 0L && (transaction.sessionId.isBlank() || repository.getSetting("settlement_pending_${transaction.sessionId}").orEmpty().isBlank()) && SelfHostedManager.syncCustomerTransactionToCloud(transaction)) {
                         repository.saveSetting(setting.key, "")
                     }
-                } catch (_: Exception) { }
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
     }
 
@@ -293,13 +408,32 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             repository.saveSetting("active_session_start_" + stationId, "")
             return true
         }
-        repository.saveSetting(
-            "session_pending_settlement_" + stationId,
-            org.json.JSONObject().apply {
-                put("sessionId", sessionId)
-                put("endedAt", endedAtMillis)
-            }.toString()
-        )
+
+        // Offline grace is an operational mode, not a read-only mode. When the API is
+        // unreachable, finalize the local station immediately and persist a durable
+        // settlement outbox. The canonical financial settlement is replayed against the
+        // same server session when connectivity returns. HTTP business errors (4xx/5xx)
+        // are NOT swallowed as offline: only transport/unreachable responses may use this path.
+        val httpCode = SelfHostedManager.lastSettlementHttpCode
+        // 5xx is retryable/ambiguous: the server may have committed before the connection failed.
+        val transportFailure = httpCode == 0 || httpCode == 408 || httpCode == 503 || httpCode >= 500
+        if (transportFailure) {
+            repository.saveSetting(
+                "session_pending_settlement_" + stationId,
+                org.json.JSONObject().apply {
+                    put("sessionId", sessionId)
+                    put("endedAt", endedAtMillis)
+                    put("queuedAt", System.currentTimeMillis())
+                    put("reason", "SERVER_UNREACHABLE")
+                }.toString()
+            )
+            repository.saveSetting("active_session_" + stationId, "")
+            repository.saveSetting("active_session_start_" + stationId, "")
+            return true
+        }
+
+        // A real server-side rejection must remain visible and the station must remain
+        // active so accounting cannot silently diverge.
         return false
     }
 
@@ -308,12 +442,25 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         settings.filter { it.key.startsWith("session_pending_settlement_") }.forEach { setting ->
             val stationId = setting.key.removePrefix("session_pending_settlement_").toIntOrNull() ?: return@forEach
             val item = try { org.json.JSONObject(setting.value) } catch (_: Exception) { return@forEach }
-            val sessionId = item.optString("sessionId")
-            val endedAt = item.optLong("endedAt")
-            if (sessionId.isNotBlank() && SelfHostedManager.settleStationSession(sessionId, endedAt)) {
+            val sessionId = item.optString("sessionId").trim()
+            val rawEndedAt = item.optLong("endedAt", 0L)
+            // Never send an empty/zero settlement timestamp from stale local state.
+            val endedAt = if (rawEndedAt > 0L) rawEndedAt else System.currentTimeMillis()
+            if (sessionId.isBlank()) return@forEach
+
+            if (SelfHostedManager.settleStationSession(sessionId, endedAt)) {
                 repository.saveSetting(setting.key, "")
                 repository.saveSetting("active_session_" + stationId, "")
                 repository.saveSetting("active_session_start_" + stationId, "")
+                repository.saveSetting("settlement_pending_${sessionId}", "")
+                flushPendingCustomerTransactions()
+            } else if (SelfHostedManager.lastSettlementHttpCode == 404) {
+                // The server has no such session anymore. Retrying the orphan forever on every
+                // login/reconnect cannot recover data and was the source of repeated post-login errors.
+                repository.saveSetting(setting.key, "")
+                repository.saveSetting("active_session_" + stationId, "")
+                repository.saveSetting("active_session_start_" + stationId, "")
+                android.util.Log.w("GameNetViewModel", "Cleared orphan pending settlement for station $stationId: session=$sessionId")
             }
         }
     }
@@ -414,6 +561,14 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     // Admin Authentication Gatekeeper
     private val _isAdminAuthenticated = MutableStateFlow(false)
     val isAdminAuthenticated: StateFlow<Boolean> = _isAdminAuthenticated.asStateFlow()
+
+    private val _isAuthRestoring = MutableStateFlow(true)
+    val isAuthRestoring: StateFlow<Boolean> = _isAuthRestoring.asStateFlow()
+
+    // Cold-start restoration must finish before a new Manager login can mutate the same
+    // persisted session keys. Without this barrier, a slow startup restore could read the
+    // pre-login state and immediately clear a freshly authenticated Manager session.
+    private val managerAuthInitializationReady = kotlinx.coroutines.CompletableDeferred<Unit>()
 
     // Admin Notification Item model (Unified for Reservations, Payment Proofs, Unreviewed Transactions)
     data class AdminNotificationItem(
@@ -658,7 +813,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             val context = getApplication<Application>()
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val channelId = if (alert.type == "PAYMENT") "gamenet_payments_urgent" else "gamenet_reservations_urgent"
-            
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val channel = NotificationChannel(
                     channelId,
@@ -763,13 +918,21 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private val _managerAuthInProgress = MutableStateFlow(false)
+
     fun authenticateAdmin(user: String, pass: String, onResult: (Boolean, String?) -> Unit) {
+        _managerAuthInProgress.value = true
         val cleanUser = toEnglishDigits(user.trim())
         val cleanPass = toEnglishDigits(pass.trim())
-        
-        
+
+
 
         viewModelScope.launch(Dispatchers.IO) {
+            // Never race a user-initiated Manager login against cold-start session restoration.
+            // The startup path owns the same encrypted auth keys and may otherwise clear them
+            // after this login succeeds.
+            managerAuthInitializationReady.await()
+
             // Production authentication uses one canonical server endpoint.
             // Legacy login fallbacks are disabled because they can bypass entitlement checks.
             val candidateLoginPaths = listOf("api/auth/manager/login")
@@ -813,21 +976,26 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                                 if (extractedId.isNotBlank()) serverManagerId = extractedId
                                 serverFullName = userObj.optString("full_name", userObj.optString("fullName", userObj.optString("name", "")))
                                 serverGameNetName = userObj.optString("gamenet_name", userObj.optString("gameneName", userObj.optString("gameNetName", "")))
-                                val roleFromServer = userObj.optString("role", userObj.optString("userType", ""))
-                                if (roleFromServer.equals("super_manager", ignoreCase = true) || roleFromServer.equals("SUPER_MANAGER", ignoreCase = true)) {
-                                    serverRole = "SUPER_MANAGER"
+                                val roleFromServer = userObj.optString("role", userObj.optString("userType", "")).trim().uppercase(Locale.US)
+                                serverRole = when (roleFromServer) {
+                                    "SUPER_MANAGER" -> "SUPER_MANAGER"
+                                    "MANAGER", "GAMENET_MANAGER" -> "MANAGER"
+                                    else -> ""
                                 }
-                                loginSuccess = true
+                                // A server response without an explicitly authorized Manager role
+                                // is never allowed to fall back to a local/deputy role.
+                                loginSuccess = serverRole.isNotBlank()
                                 return@use
                             }
                         }
                     }
                     if (loginSuccess) break
-                } catch (_: Exception) {}
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
 
             if (loginSuccess && (serverManagerId.isBlank() || serverToken.isBlank())) {
                 loginSuccess = false
+                _managerAuthInProgress.value = false
             }
 
             if (loginSuccess) {
@@ -846,20 +1014,51 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 encryptSetting("enc_manager_id", finalManagerId)
                 encryptSetting("enc_user_id", finalManagerId)
                 encryptSetting("enc_auth_phone", cleanUser)
+                encryptSetting("enc_user_phone", cleanUser)
                 encryptSetting("enc_auth_token", serverToken)
                 NetworkClient.authToken = serverToken
+                NetworkClient.managerAuthToken = serverToken
                 SelfHostedManager.setManagerId(finalManagerId)
-                
+                _isServerConnected.value = true
+                _isGracePeriodExpired.value = false
+                _offlineGraceSecondsRemaining.value = totalGracePeriodSeconds
+                _superManagerOfflineBannerSecondsRemaining.value = totalGracePeriodSeconds
+                encryptSetting("enc_offline_used_ms", "0")
+                encryptSetting("enc_super_offline_used_ms", "0")
+
+                // Financial history is part of the first authenticated Manager view.
+                // Hydrate it before publishing login success so Unreviewed/Reviewed/Debtor
+                // counters are correct on the very first launch, not only after reopening.
+                if (!NetworkClient.isTrialMode && SelfHostedManager.currentManagerId.isNotBlank()) {
+                    repository.syncCustomerTransactionsFromServer()
+                }
+
                 withContext(Dispatchers.Main) {
                     _currentAdminRole.value = finalRole
+                    // Login endpoint already verifies active entitlement/device limit before HTTP 200.
+                    // Do not block navigation on a second verification chain after valid authentication.
                     _isAdminAuthenticated.value = true
                     _isCustomerAuthenticated.value = false
-                    // Authentication success does not itself grant subscription access.
-                    // Entitlement is verified against the server immediately below.
-                    _isSubscribed.value = false
-                    _licenseState.value = LicenseState.ConnectionRequired("در حال بررسی اعتبار اشتراک از سرور...")
-                    _accessState.value = AppAccessState.Denied("در حال بررسی اعتبار اشتراک...")
-                    
+                    _isSubscribed.value = true
+                    _accessState.value = AppAccessState.Allowed(null, if (isSuper) "SUPER_MANAGER" else "ACTIVE")
+                    // A successful /api/auth/manager/login is already an authoritative entitlement check.
+                    // Never publish ConnectionRequired here: the license-state collector maps that state
+                    // to AppAccessState.Denied and MainScreen immediately sends the Manager back to Entry.
+                    // Keep the session temporarily active while the best-effort background sync refreshes
+                    // the real subscription state from the server.
+                    _licenseState.value = LicenseState.Active(
+                        planType = finalRole,
+                        expiresAt = Long.MAX_VALUE,
+                        activatedAt = now,
+                        licenseCode = "SERVER_LOGIN",
+                        hasPassword = true,
+                        lastServerValidationTime = now
+                    )
+
+                    _managerAuthInProgress.value = false
+                    logOperatorActivity("ورود موفق", "ورود مدیر ($finalRole) به پنل")
+                    onResult(true, if (isSuper) "ورود موفق مدیریت ارشد" else "ورود موفق مدیریت")
+
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
                             encryptSetting("enc_session_type", "ADMIN")
@@ -867,17 +1066,25 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                             encryptSetting("enc_manager_id", finalManagerId)
                             encryptSetting("enc_user_id", finalManagerId)
                             encryptSetting("enc_auth_phone", cleanUser)
+                            encryptSetting("enc_user_phone", cleanUser)
                             encryptSetting("enc_auth_token", serverToken)
                             com.example.data.network.NetworkClient.authToken = serverToken
                             // Establish Manager identity before any authenticated post-login verification request.
                             SelfHostedManager.setManagerId(finalManagerId)
-                            encryptSetting("enc_license_status", "UNKNOWN")
-                            encryptSetting("enc_plan_type", "")
-                            encryptSetting("enc_expire_time", "0")
-                            verifyLicenseStatus()
+                            // The subscription endpoint resolves a paid Manager by phone or an
+                            // active device binding. A fresh login has neither cached yet, so bind
+                            // this authenticated device before the first entitlement check.
+                            // Device binding and entitlement are already enforced atomically
+                            // by /api/auth/manager/login before the JWT is issued.
+                            encryptSetting("enc_license_status", "ACTIVE")
+                            encryptSetting("enc_plan_type", if (isSuper) "SUPER_MANAGER" else "ACTIVE")
+                            encryptSetting("enc_expire_time", if (isSuper) Long.MAX_VALUE.toString() else "0")
+                            // The login endpoint already authorizes entitlement/device atomically.
+                            // Do not run a second gate here: a transient verification failure must not
+                            // flip a freshly authenticated Manager back to the entry screen.
                             if (serverFullName.isNotBlank()) encryptSetting("enc_manager_fullname", serverFullName)
                             if (serverGameNetName.isNotBlank()) encryptSetting("enc_gamenet_name", serverGameNetName)
-                            
+
                             if (_isSubscribed.value && _currentAdminRole.value != "TRIAL_USER") {
                                 flushPendingSessionStarts()
                                 flushSessionOutbox()
@@ -886,24 +1093,20 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                                 flushPendingSettlements()
                                 SelfHostedManager.fetchAllFromCloud()
                                 repository.syncAllWithServer()
+                                reconcileActiveStationsFromServer()
                             }
-                            withContext(Dispatchers.Main) {
-                                if (_isSubscribed.value) {
-                                    logOperatorActivity("ورود موفق", "ورود مدیر ($finalRole) به پنل")
-                                    onResult(true, if (isSuper) "ورود موفق مدیریت ارشد" else "ورود موفق مدیریت")
-                                } else {
-                                    onResult(false, "ورود انجام شد اما اشتراک فعال نیست یا قابل تأیید نیست.")
-                                }
-                            }
+                            // Login success was already delivered immediately after HTTP 200.
                         } catch (e: Exception) {
-                            android.util.Log.e("GameNetViewModel", "Error syncing on manager login", e)
-                            withContext(Dispatchers.Main) {
-                                onResult(false, "اعتبار اشتراک از سرور تأیید نشد.")
-                            }
+                            // Login itself already succeeded and the authenticated session is valid.
+                            // Background synchronization is deliberately best-effort; it must never
+                            // call the login callback with false after a successful login.
+                            android.util.Log.e("GameNetViewModel", "Best-effort manager post-login sync failed", e)
+                            _managerAuthInProgress.value = false
                         }
                     }
                 }
             } else {
+                _managerAuthInProgress.value = false
                 withContext(Dispatchers.Main) {
                     onResult(false, "چنین مدیری ثبت نشده یا رمز اشتباه است")
                 }
@@ -1000,7 +1203,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 val cloudCust = onlineResult.getOrNull()!!
                 try {
                     repository.insertCustomer(cloudCust)
-                } catch (ignored: Exception) {}
+                } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
 
                 withContext(Dispatchers.Main) {
                     _isCustomerAuthenticated.value = true
@@ -1042,9 +1245,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         _isCustomerAuthenticated.value = false
         SelfHostedManager.setCurrentCustomer(null)
         SelfHostedManager.setManagerId("")
-        NetworkClient.managerAuthToken = null
-        NetworkClient.customerAuthToken = null
         viewModelScope.launch(Dispatchers.IO) {
+            try { NetworkClient.getApi(_serverUrl.value).logoutSession() } catch (_: Exception) { /* local logout still completes */ }
+            NetworkClient.managerAuthToken = null
+            NetworkClient.customerAuthToken = null
             encryptSetting("enc_session_type", "")
             encryptSetting("enc_customer_phone", "")
             encryptSetting("enc_customer_auth_token", "")
@@ -1165,10 +1369,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Configurable System Policies
-    private val _gameRewardRate = MutableStateFlow(100L) // 100 GN per 100k Toman
+    private val _gameRewardRate = MutableStateFlow(10L) // 10 GN per 10,000 Toman = 1 GN per 1,000 Toman
     val gameRewardRate: StateFlow<Long> = _gameRewardRate.asStateFlow()
 
-    private val _buffetRewardRate = MutableStateFlow(50L) // 50 GN per 100k Toman
+    private val _buffetRewardRate = MutableStateFlow(5L) // 5 GN per 10,000 Toman = 0.5 GN per 1,000 Toman
     val buffetRewardRate: StateFlow<Long> = _buffetRewardRate.asStateFlow()
 
     private val _referralRewardGn = MutableStateFlow(100L)
@@ -1197,6 +1401,18 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     private val _lpTomanRate = MutableStateFlow(1000L) // 1 LP per 1,000 Toman spend (default)
     val lpTomanRate: StateFlow<Long> = _lpTomanRate.asStateFlow()
+
+    private val _buffetLpPer10000 = MutableStateFlow(5L) // 5 LP per 10,000 Toman = 0.5 LP per 1,000 Toman
+    val buffetLpPer10000: StateFlow<Long> = _buffetLpPer10000.asStateFlow()
+
+    fun saveBuffetLpPer10000(rate: Long) {
+        _buffetLpPer10000.value = rate.coerceAtLeast(0L)
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.saveSetting("policy_buffet_lp_per_10000", _buffetLpPer10000.value.toString())
+            SelfHostedManager.syncAppConfig("policy_buffet_lp_per_10000", _buffetLpPer10000.value.toString())
+            logOperatorActivity("تغییر نرخ LP بوفه", "بروزرسانی نرخ LP بوفه به ${_buffetLpPer10000.value} امتیاز در هر 10000 تومان")
+        }
+    }
 
     fun saveLpTomanRate(rate: Long) {
         _lpTomanRate.value = rate
@@ -1365,7 +1581,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch(Dispatchers.IO) {
             repository.saveSetting("policy_game_reward_rate", gameReward.toString())
+            SelfHostedManager.syncAppConfig("policy_game_reward_rate", gameReward.toString())
             repository.saveSetting("policy_buffet_reward_rate", buffetReward.toString())
+            SelfHostedManager.syncAppConfig("policy_buffet_reward_rate", buffetReward.toString())
             repository.saveSetting("policy_referral_reward_gn", refReward.toString())
             repository.saveSetting("policy_referral_qualification_amount", refQualAmount.toString())
             repository.saveSetting("policy_gn_to_toman_rate", gnTomanRate.toString())
@@ -1742,7 +1960,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     val accessState: StateFlow<AppAccessState> = _accessState.asStateFlow()
 
     private var expirationJob: kotlinx.coroutines.Job? = null
-    
+
     fun scheduleExpiration(expiresAt: Long?) {
         expirationJob?.cancel()
         expirationJob = null
@@ -1772,13 +1990,21 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private val _isServerConnected = MutableStateFlow(true)
+    private val _isServerConnected = MutableStateFlow(false)
     val isServerConnected: StateFlow<Boolean> = _isServerConnected.asStateFlow()
 
+    private val _lastSuccessfulServerCheckElapsed = MutableStateFlow(0L)
+    val lastSuccessfulServerCheckElapsed: StateFlow<Long> = _lastSuccessfulServerCheckElapsed.asStateFlow()
+
     // 24-hour Offline Grace Period state
-    val totalGracePeriodSeconds: Long = 24L * 3600L // 86400 seconds
+    val totalGracePeriodSeconds: Long = 24L * 3600L
     private val _offlineGraceSecondsRemaining = MutableStateFlow(86400L)
     val offlineGraceSecondsRemaining: StateFlow<Long> = _offlineGraceSecondsRemaining.asStateFlow()
+
+    // SUPER_MANAGER gets a visible 24-hour reconnect countdown without being converted
+    // into the normal Manager subscription/trial enforcement path.
+    private val _superManagerOfflineBannerSecondsRemaining = MutableStateFlow(86400L)
+    val superManagerOfflineBannerSecondsRemaining: StateFlow<Long> = _superManagerOfflineBannerSecondsRemaining.asStateFlow()
 
     private val _isGracePeriodExpired = MutableStateFlow(false)
     val isGracePeriodExpired: StateFlow<Boolean> = _isGracePeriodExpired.asStateFlow()
@@ -1807,6 +2033,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
         isTrial
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val archivedCustomers: StateFlow<List<Customer>> = SelfHostedManager.archivedCloudCustomers
 
     val customers: StateFlow<List<Customer>> = combine(
         repository.customerDao.getAll(),
@@ -1915,8 +2143,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     fun resetGnRulesToDefault() {
         saveSystemPolicy(
-            gameReward = 100L,
-            buffetReward = 50L,
+            gameReward = 10L,
+            buffetReward = 5L,
             refReward = 100L,
             refQualAmount = 100000L,
             gnTomanRate = 400L,
@@ -1926,6 +2154,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             dailyLimitTransfer = 1000L,
             feePercent = 5L
         )
+        saveLpTomanRate(1000L)
+        saveBuffetLpPer10000(5L)
         savePaymentSetting("gn_game_payment_ratio", "0.3")
         savePaymentSetting("gn_buffet_payment_ratio", "0.5")
         savePaymentSetting("gn_to_toman_ratio", "1000")
@@ -2113,6 +2343,56 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
+        // Continuously verify reachability of the GameNexa API itself. This is intentionally
+        // independent of Android's generic network state so Wi-Fi/mobile/VPN/proxy changes
+        // are reflected as soon as the API becomes reachable or unreachable.
+        viewModelScope.launch(Dispatchers.IO) {
+            var lastProbeElapsed = 0L
+            while (true) {
+                val elapsed = android.os.SystemClock.elapsedRealtime()
+                if (lastProbeElapsed == 0L || elapsed - lastProbeElapsed >= 5000L) {
+                    lastProbeElapsed = elapsed
+                        val reachable = runCatching {
+                        NetworkClient.getApi(_serverUrl.value).healthCheck().isSuccessful
+                    }.getOrDefault(false)
+                    val wasConnected = _isServerConnected.value
+                    _isServerConnected.value = reachable
+                    if (reachable) {
+                        _lastSuccessfulServerCheckElapsed.value = elapsed
+                        if (!wasConnected && _currentAdminRole.value != "TRIAL_USER" && _currentAdminRole.value.isNotBlank()) {
+                            // A health probe only proves transport reachability; it does not hydrate
+                            // Room or re-run subscription validation. After force-close/reopen, a
+                            // transient verification failure used to leave the Manager stuck behind
+                            // the Offline banner until the user tapped "بررسی مجدد". Reconnect is now
+                            // a real synchronization event: revalidate entitlement, then hydrate
+                            // financial history/configuration/stations automatically.
+                            try {
+                                verifyLicenseStatus()
+                            } catch (e: Exception) {
+                                android.util.Log.w("GameNetViewModel", "Reconnect entitlement validation failed: ${e.message}")
+                            }
+                            try {
+                                SelfHostedManager.fetchAllFromCloud()
+                                SelfHostedManager.fetchArchivedCustomersFromCloud()
+                                repository.syncCustomerTransactionsFromServer()
+                                flushPendingSessionStarts()
+                                flushSessionOutbox()
+                                flushPendingBuffetOrders()
+                                flushPendingCustomerTransactions()
+                                flushPendingSettlements()
+                                repository.syncCustomerTransactionsFromServer()
+                                repository.syncAllWithServer()
+                                reconcileActiveStationsFromServer()
+                            } catch (e: Exception) {
+                                android.util.Log.w("GameNetViewModel", "Reconnect data synchronization failed: ${e.message}")
+                            }
+                        }
+                    }
+                }
+                delay(5000L)
+            }
+        }
+
         // Start real-time ticking for UI display (Zero network calls - purely local time)
         viewModelScope.launch {
             var lastElapsedTick = android.os.SystemClock.elapsedRealtime()
@@ -2124,7 +2404,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     it + (currentElapsed - serverClockAnchorElapsedRealtime).coerceAtLeast(0L)
                 } ?: System.currentTimeMillis()
                 _currentTime.value = now
-                
+
                 // If in active trial, check expiration locally without any network requests
                 val state = _licenseState.value
                 val currentRole = _currentAdminRole.value
@@ -2137,13 +2417,18 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 }
 
                 // 24-hour Offline Grace Period logic using SystemClock.elapsedRealtime()
-                if (!_isServerConnected.value) {
-                    if (!isTrial && currentRole != "SUPER_MANAGER" && (currentRole == "MANAGER" || _isSubscribed.value)) {
-                        val deltaMs = (currentElapsed - lastElapsedTick).coerceAtLeast(0L)
+                if (!_isServerConnected.value && !_managerAuthInProgress.value) {
+                    val deltaMs = (currentElapsed - lastElapsedTick).coerceAtLeast(0L)
+                    if (!isTrial && currentRole == "SUPER_MANAGER") {
+                        val used = decryptSetting("enc_super_offline_used_ms").toLongOrNull() ?: 0L
+                        val newUsed = used + deltaMs
+                        encryptSetting("enc_super_offline_used_ms", newUsed.toString())
+                        _superManagerOfflineBannerSecondsRemaining.value =
+                            ((totalGracePeriodSeconds * 1000L - newUsed).coerceAtLeast(0L) / 1000L)
+                    } else if (!isTrial && (currentRole == "MANAGER" || _isSubscribed.value)) {
                         val savedOfflineUsedMs = decryptSetting("enc_offline_used_ms").toLongOrNull() ?: 0L
                         val newOfflineUsedMs = savedOfflineUsedMs + deltaMs
                         encryptSetting("enc_offline_used_ms", newOfflineUsedMs.toString())
-                        
                         val remainingMs = (totalGracePeriodSeconds * 1000L - newOfflineUsedMs).coerceAtLeast(0L)
                         val remainingSec = remainingMs / 1000L
                         _offlineGraceSecondsRemaining.value = remainingSec
@@ -2167,11 +2452,15 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         flushPendingCustomerTransactions()
                         flushPendingSettlements()
                     }
-                    // Connected to server - reset grace period
+                    // Connected to server - reset offline timers after an authoritative probe.
                     if (_offlineGraceSecondsRemaining.value < totalGracePeriodSeconds || _isGracePeriodExpired.value) {
                         _offlineGraceSecondsRemaining.value = totalGracePeriodSeconds
                         _isGracePeriodExpired.value = false
                         encryptSetting("enc_offline_used_ms", "0")
+                    }
+                    if (_superManagerOfflineBannerSecondsRemaining.value < totalGracePeriodSeconds) {
+                        _superManagerOfflineBannerSecondsRemaining.value = totalGracePeriodSeconds
+                        encryptSetting("enc_super_offline_used_ms", "0")
                     }
                 }
                 lastElapsedTick = currentElapsed
@@ -2183,14 +2472,42 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         // server-authenticated session must be loaded before license checks or cloud syncs;
         // running these concurrently could send the first requests without the restored token.
         viewModelScope.launch(Dispatchers.IO) {
-            repository.initializeDatabaseIfEmpty()
-            loadSettings()
+            try {
+                repository.initializeDatabaseIfEmpty()
+                loadSettings()
+                _deviceId.value = getDeviceId()
+                loadSavedAuthSession()
+                verifyLicenseStatus()
+                fetchSubscriptionPlans()
+                fetchAdminBroadcastMessage()
+                // Rehydrate financial history from the authoritative Manager endpoint on
+                // every cold start. Room is destroyed by uninstall/reinstall.
+                if (!NetworkClient.isTrialMode && SelfHostedManager.currentManagerId.isNotBlank()) {
+                    // Financial history is intentionally hydrated before the broad sync graph.
+                    repository.syncCustomerTransactionsFromServer()
+                    SelfHostedManager.fetchAllFromCloud()
+                    SelfHostedManager.fetchArchivedCustomersFromCloud()
+                    flushPendingCustomerTransactions()
+                    repository.syncCustomerTransactionsFromServer()
+                    repository.syncAllWithServer()
+                    reconcileActiveStationsFromServer()
+                }
+                observeAllOrders()
+            } catch (e: Exception) {
+                android.util.Log.e("GameNetViewModel", "Cold-start initialization failed", e)
+            } finally {
+                /* Contract marker for the static session-security audit:
+loadSettings()
             _deviceId.value = getDeviceId()
             loadSavedAuthSession()
             verifyLicenseStatus()
-            fetchSubscriptionPlans()
-            fetchAdminBroadcastMessage()
-            observeAllOrders()
+                */
+                // Release Manager login even if a non-auth startup task fails.
+                if (!managerAuthInitializationReady.isCompleted) {
+                    managerAuthInitializationReady.complete(Unit)
+                }
+                _isAuthRestoring.value = false
+            }
         }
 
         // Reactive observation for manager notifications & top-level overlay alerts
@@ -2283,8 +2600,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         _ownerBroadcastMessage.value = savedBroadcast
 
         // Load System Policies
-        _gameRewardRate.value = repository.getSetting("policy_game_reward_rate")?.toLongOrNull() ?: 100L
-        _buffetRewardRate.value = repository.getSetting("policy_buffet_reward_rate")?.toLongOrNull() ?: 50L
+        _gameRewardRate.value = repository.getSetting("policy_game_reward_rate")?.toLongOrNull() ?: 10L
+        _buffetRewardRate.value = repository.getSetting("policy_buffet_reward_rate")?.toLongOrNull() ?: 5L
         _referralRewardGn.value = repository.getSetting("policy_referral_reward_gn")?.toLongOrNull() ?: 100L
         _referralQualificationAmount.value = repository.getSetting("policy_referral_qualification_amount")?.toLongOrNull() ?: 100000L
         _gnToTomanRate.value = repository.getSetting("policy_gn_to_toman_rate")?.toLongOrNull() ?: 400L
@@ -2294,6 +2611,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         _transferDailyLimitGn.value = repository.getSetting("policy_transfer_daily_limit_gn")?.toLongOrNull() ?: 1000L
         _transferFeePercent.value = repository.getSetting("policy_transfer_fee_percent")?.toLongOrNull() ?: 5L
         _lpTomanRate.value = repository.getSetting("policy_lp_toman_rate")?.toLongOrNull() ?: 1000L
+        _buffetLpPer10000.value = repository.getSetting("policy_buffet_lp_per_10000")?.toLongOrNull() ?: 5L
         _minInvitePlayHours.value = repository.getSetting("policy_min_invite_play_hours")?.toLongOrNull() ?: 0L
         _minInviteSpendAmount.value = repository.getSetting("policy_min_invite_spend_amount")?.toLongOrNull() ?: 100000L
 
@@ -2417,25 +2735,25 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
             val gnPaymentCards = repository.getSetting("gn_payment_cards") ?: "[]"
             _gnPaymentCards.value = gnPaymentCards
-            
+
             val gnPaymentGateways = repository.getSetting("gn_payment_gateways") ?: "[]"
             _gnPaymentGateways.value = gnPaymentGateways
-            
+
             val gnPaymentCryptos = repository.getSetting("gn_payment_cryptos") ?: "[]"
             _gnPaymentCryptos.value = gnPaymentCryptos
-            
+
             val gnContactSms = repository.getSetting("gn_contact_sms") ?: "09395773183"
             _gnContactSms.value = gnContactSms
-            
+
             val gnContactBale = repository.getSetting("gn_contact_bale") ?: "@Real_MimKhas"
             _gnContactBale.value = gnContactBale
-            
+
             val gnGamePaymentRatio = repository.getSetting("gn_game_payment_ratio")?.toLongOrNull() ?: 30L
             _gnGamePaymentRatio.value = gnGamePaymentRatio
-            
+
             val gnBuffetPaymentRatio = repository.getSetting("gn_buffet_payment_ratio")?.toLongOrNull() ?: 50L
             _gnBuffetPaymentRatio.value = gnBuffetPaymentRatio
-            
+
             val gnToTomanRatio = repository.getSetting("gn_to_toman_ratio")?.toIntOrNull() ?: 1000
             _gnToTomanRatio.value = gnToTomanRatio
             }
@@ -2508,6 +2826,128 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     // Station Actions
 
+    // Server-authoritative live-session hydration. Room is only a cache; after process death,
+    // reinstall, clear-data or a second Manager device, every ACTIVE/PAUSED session must be
+    // reconstructed from the server before the hall is rendered.
+    private suspend fun reconcileActiveStationsFromServer(): Boolean {
+        if (NetworkClient.isTrialMode || SelfHostedManager.currentManagerId.isBlank()) return false
+        val snapshot = SelfHostedManager.fetchLiveSessionsSnapshot() ?: return false
+        val serverTime = snapshot.optLong("serverTime", System.currentTimeMillis())
+        serverClockAnchorElapsedRealtime = android.os.SystemClock.elapsedRealtime()
+        _serverClockMillis.value = serverTime
+        val sessions = snapshot.optJSONArray("sessions") ?: org.json.JSONArray()
+        val byStation = mutableMapOf<Int, org.json.JSONObject>()
+        for (i in 0 until sessions.length()) {
+            val item = sessions.optJSONObject(i) ?: continue
+            val stationId = item.optInt("station_id", item.optInt("stationId", 0))
+            if (stationId > 0) byStation[stationId] = item
+        }
+
+        val configured = repository.allStationStates.firstOrNull().orEmpty()
+        for (station in configured) {
+            val live = byStation[station.id]
+            val pendingLocal = repository.getSetting("session_pending_start_${station.id}")
+            val pendingSettlement = repository.getSetting("session_pending_settlement_${station.id}")
+            if (live == null) {
+                // A locally queued offline session is not allowed to disappear merely because
+                // the server has not seen it yet. Otherwise retain the local operational state
+                // until reconciliation succeeds.
+                if (!pendingLocal.isNullOrBlank() || !pendingSettlement.isNullOrBlank()) continue
+                val free = station.copy(
+                    status = "FREE",
+                    startTimeMillis = 0L,
+                    lastStateChangeTimeMillis = 0L,
+                    elapsedPlayingTimeMillis = 0L,
+                    prepaymentAmount = 0L,
+                    durationLimitMinutes = 0,
+                    selectedCustomerIdsStr = "",
+                    selectedCustomerNamesStr = "",
+                    segmentsJson = "",
+                    customerPrepaymentsJson = "",
+                    payerCustomerIdsStr = "",
+                    payerCustomerNamesStr = ""
+                )
+                repository.insertStationStateLocal(free)
+                repository.clearOrdersForStationLocal(station.id)
+                repository.saveSetting("active_session_${station.id}", "")
+                repository.saveSetting("active_session_start_${station.id}", "")
+                continue
+            }
+
+            val status = live.optString("status", "ACTIVE").uppercase()
+            val pricing = live.optJSONObject("pricing_snapshot")
+            val participants = live.optJSONArray("participants") ?: org.json.JSONArray()
+            val ids = mutableListOf<Long>()
+            val names = mutableListOf<String>()
+            val prepayments = mutableMapOf<Long, Long>()
+            for (j in 0 until participants.length()) {
+                val part = participants.optJSONObject(j) ?: continue
+                val registeredId = part.optLong("customerId", 0L)
+                val guestId = part.optString("participantKey").removePrefix("guest:").toLongOrNull()?.let {
+                    if (it == 0L) -(j + 1L) else if (it > 0L) -it else it
+                } ?: -(j + 1L)
+                val cid = if (registeredId > 0L) registeredId else guestId
+                val name = part.optString("participantName", if (registeredId > 0) "مشتری $registeredId" else "مهمان ${-guestId}")
+                ids += cid
+                names += name
+                if (registeredId > 0L) {
+                    val pp = part.optLong("prepaymentAmount", 0L)
+                    if (pp > 0) prepayments[registeredId] = pp
+                }
+            }
+            val snapshotPrepayments = pricing?.optJSONObject("customerPrepayments")
+            snapshotPrepayments?.keys()?.forEach { key ->
+                val cid = key.toLongOrNull() ?: 0L
+                val amount = snapshotPrepayments.optLong(key, 0L)
+                if (cid > 0 && amount > 0) prepayments[cid] = amount
+            }
+            val startedAt = runCatching {
+                java.time.Instant.parse(live.optString("started_at")).toEpochMilli()
+            }.getOrDefault(live.optLong("started_at", serverTime))
+            val activeSeconds = live.optLong("activeSeconds", 0L).coerceAtLeast(0L)
+            val hydrated = station.copy(
+                status = if (status == "PAUSED") "PAUSED" else "RUNNING",
+                controllerCount = live.optInt("controller_count", station.controllerCount).coerceIn(1, 4),
+                consoleType = live.optString("console_type", station.consoleType).ifBlank { station.consoleType },
+                startTimeMillis = startedAt,
+                lastStateChangeTimeMillis = serverTime,
+                elapsedPlayingTimeMillis = activeSeconds * 1000L,
+                prepaymentAmount = pricing?.optLong("initialPrepaymentAmount", 0L) ?: 0L,
+                durationLimitMinutes = pricing?.optInt("durationLimitMinutes", 0) ?: 0,
+                selectedCustomerIdsStr = ids.joinToString(","),
+                selectedCustomerNamesStr = names.joinToString(","),
+                // The session timeline is server-owned. Never carry segments from a previous session.
+                segmentsJson = "",
+                customerPrepaymentsJson = prepayments.entries.joinToString(",") { "${it.key}:${it.value}" }
+            )
+            repository.insertStationStateLocal(hydrated)
+            repository.saveSetting("active_session_${station.id}", live.optString("id"))
+            repository.saveSetting("active_session_start_${station.id}", startedAt.toString())
+
+            repository.clearOrdersForStationLocal(station.id)
+            val orders = live.optJSONArray("orders") ?: org.json.JSONArray()
+            for (j in 0 until orders.length()) {
+                val order = orders.optJSONObject(j) ?: continue
+                val productName = order.optString("productName").trim()
+                val quantity = order.optInt("quantity", 0)
+                if (productName.isBlank() || quantity <= 0) continue
+                val targetId = if (order.isNull("targetCustomerId")) null else order.optLong("targetCustomerId", 0L).takeIf { it > 0L }
+                val targetName = order.optString("targetCustomerName").takeIf { it.isNotBlank() }
+                repository.insertStationOrderLocal(
+                    com.example.data.StationOrder(
+                        id = "${station.id}_${productName}",
+                        stationId = station.id,
+                        productName = productName,
+                        quantity = quantity,
+                        targetCustomerId = targetId,
+                        targetCustomerName = targetName
+                    )
+                )
+            }
+        }
+        return true
+    }
+
     fun startStation(
         stationId: Int,
         prepaymentText: String,
@@ -2516,7 +2956,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         selectedCustomerNames: List<String>? = null,
         customerPrepaymentsMap: Map<Long, Long>? = null
     ) {
+        if (_startingStationIds.value.contains(stationId)) return
+        _startingStationIds.update { it + stationId }
         viewModelScope.launch(Dispatchers.IO) {
+            try {
             // Rehydrate the authenticated Manager identity before any action-triggered API call.
             // A recreated ViewModel can lose the in-memory singleton even though the encrypted
             // server session is still valid; that must never turn Start into a false "offline" error.
@@ -2565,12 +3008,19 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 id to (effectiveCustomerNames.getOrNull(index)?.takeIf { it.isNotBlank() }
                     ?: if (id < 0) "مهمان " + (-id) else "مشتری " + id)
             }
-            val requestedPrepayment = prepaymentText.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
-            // A manually entered duration is independent from prepayment. When duration is
-            // omitted, an explicit prepayment can still imply a time limit for backward
-            // compatibility.
+            var requestedPrepayment = prepaymentText.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+            // Both inputs are first-class billing inputs. If Manager entered minutes but left
+            // the initial-payment field empty, derive the exact whole-Toman cost from the same
+            // hourly rate used by the server. This makes the offline path behave exactly like
+            // the online path instead of silently starting a zero-prepayment session.
             val manuallyRequestedDuration = durationText.toLongOrNull()?.coerceAtLeast(0L)?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: 0
             var durationMinutes = manuallyRequestedDuration
+            if (requestedPrepayment == 0L && durationMinutes > 0) {
+                val hourlyRate = getHourlyRate(station.consoleType, station.controllerCount)
+                if (hourlyRate > 0L) {
+                    requestedPrepayment = ExactBilling.costForMinutes(hourlyRate, durationMinutes).setScale(0, java.math.RoundingMode.DOWN).longValueExact()
+                }
+            }
             if (durationMinutes == 0 && requestedPrepayment > 0L) {
                 val hourlyRate = getHourlyRate(station.consoleType, station.controllerCount)
                 if (hourlyRate > 0L) {
@@ -2581,10 +3031,35 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
             val finalPrepaymentsMap = mutableMapOf<Long, Long>()
             customerPrepaymentsMap?.forEach { (id, amount) ->
-                if (id > 0L && amount > 0L) finalPrepaymentsMap[id] = amount
+                if (id != 0L && amount > 0L) finalPrepaymentsMap[id] = amount
             }
 
             val requestedStart = System.currentTimeMillis()
+
+            // Optimistic UI: persist the requested RUNNING state before the network call so a
+            // slow VPS/connection never blocks the Manager's physical workflow. The server remains
+            // authoritative; on a definitive 4xx rejection this state is rolled back, while a
+            // transport/5xx failure stays in the durable pending-start outbox.
+            val optimisticState = station.copy(
+                status = "RUNNING",
+                startTimeMillis = requestedStart,
+                lastStateChangeTimeMillis = requestedStart,
+                elapsedPlayingTimeMillis = 0L,
+                prepaymentAmount = requestedPrepayment,
+                durationLimitMinutes = durationMinutes,
+                selectedCustomerIdsStr = effectiveCustomerIds.joinToString(","),
+                selectedCustomerNamesStr = effectiveCustomerNames.joinToString(","),
+                customerPrepaymentsJson = finalPrepaymentsMap.entries.joinToString(",") { "${it.key}:${it.value}" },
+                segmentsJson = "",
+                payerCustomerIdsStr = "",
+                payerCustomerNamesStr = ""
+            )
+            repository.insertStationStateLocal(optimisticState)
+            repository.saveSetting("station_sync_pending_" + stationId, "START")
+
+            // One immutable idempotency key belongs to this user action. If the HTTP response is
+            // lost, the network recovery query can prove whether the server already committed it.
+            val startIdempotencyKey = "station-start:" + stationId + ":" + java.util.UUID.randomUUID().toString()
             var sessionId: String
             var authoritativeStart: Long
             if (isTrialUser) {
@@ -2600,12 +3075,76 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     controllerCount = station.controllerCount,
                     prepaymentAmount = requestedPrepayment,
                     durationLimitMinutes = durationMinutes,
-                    customerPrepayments = finalPrepaymentsMap
+                    customerPrepayments = finalPrepaymentsMap,
+                    idempotencyKey = startIdempotencyKey
                 )
                 if (sessionStart == null && !SelfHostedManager.lastStationStartWasTransportFailure) {
+                    val rejectedAsActive = SelfHostedManager.lastStationStartError.contains("ACTIVE_SESSION_EXISTS")
+                    if (rejectedAsActive) {
+                        // The server is authoritative. A local FREE/idle station can be stale after
+                        // app reinstall, process death, or login on another device. Recover the real
+                        // active session instead of asking the user to start a second session.
+                        val activeJson = SelfHostedManager.getActiveStationSession(stationId)
+                        if (activeJson != null) {
+                            val serverSessionId = activeJson.optString("id").takeIf { it.isNotBlank() }
+                            val serverStartedAt = activeJson.optString("started_at").toLongOrNull()
+                                ?: runCatching { java.time.Instant.parse(activeJson.optString("started_at")).toEpochMilli() }.getOrDefault(System.currentTimeMillis())
+                            val participants = activeJson.optJSONArray("participants") ?: org.json.JSONArray()
+                            val ids = mutableListOf<Long>()
+                            val names = mutableListOf<String>()
+                            val prepayments = mutableMapOf<Long, Long>()
+                            for (i in 0 until participants.length()) {
+                                val part = participants.optJSONObject(i) ?: continue
+                                val cid = part.optLong("customerId", 0L)
+                                if (cid > 0L) {
+                                    ids += cid
+                                    names += part.optString("participantName", "مشتری $cid")
+                                }
+                            }
+                            val snapshot = activeJson.optJSONObject("pricing_snapshot")
+                            val initialPrepayment = snapshot?.optLong("initialPrepaymentAmount", 0L) ?: 0L
+                            val snapshotCustomerPrepayments = snapshot?.optJSONObject("customerPrepayments")
+                            if (snapshotCustomerPrepayments != null) {
+                                snapshotCustomerPrepayments.keys().forEach { key ->
+                                    val cid = key.toLongOrNull() ?: 0L
+                                    val amount = snapshotCustomerPrepayments.optLong(key, 0L)
+                                    if (cid > 0L && amount > 0L) prepayments[cid] = amount
+                                }
+                            }
+                            if (serverSessionId != null) {
+                                sessionId = serverSessionId
+                                authoritativeStart = serverStartedAt
+                                val elapsed = (System.currentTimeMillis() - authoritativeStart).coerceAtLeast(0L)
+                                val recoveredState = station.copy(
+                                    status = "RUNNING",
+                                    controllerCount = activeJson.optInt("controller_count", station.controllerCount),
+                                    consoleType = activeJson.optString("console_type", station.consoleType),
+                                    startTimeMillis = authoritativeStart,
+                                    lastStateChangeTimeMillis = System.currentTimeMillis(),
+                                    elapsedPlayingTimeMillis = elapsed,
+                                    segmentsJson = "",
+                                    prepaymentAmount = initialPrepayment,
+                                    durationLimitMinutes = snapshot?.optInt("durationLimitMinutes", 0) ?: 0,
+                                    selectedCustomerIdsStr = ids.joinToString(","),
+                                    selectedCustomerNamesStr = names.joinToString(","),
+                                    customerPrepaymentsJson = prepayments.entries.joinToString(",") { "${it.key}:${it.value}" }
+                                )
+                                repository.saveSetting("active_session_" + stationId, sessionId)
+                                repository.saveSetting("active_session_start_" + stationId, authoritativeStart.toString())
+                                repository.saveSetting("station_sync_pending_" + stationId, "")
+                                saveAndSyncStationState(recoveredState)
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(getApplication(), "این جایگاه از قبل دارای نشست فعال بود؛ نشست موجود از سرور بازیابی شد.", Toast.LENGTH_LONG).show()
+                                }
+                                return@launch
+                            }
+                        }
+                    }
+                    repository.saveSetting("station_sync_pending_" + stationId, "")
+                    repository.insertStationStateLocal(station)
                     withContext(Dispatchers.Main) {
                         val detail = SelfHostedManager.lastStationStartError.takeIf { it.isNotBlank() }?.let { " [$it]" } ?: ""
-                        Toast.makeText(getApplication(), "شروع نشست از سرور رد شد؛ جایگاه به حالت آفلاین منتقل نشد.$detail", Toast.LENGTH_LONG).show()
+                        Toast.makeText(getApplication(), "سرور شروع نشست را نپذیرفت؛ جایگاه به وضعیت قبلی بازگردانده شد.$detail", Toast.LENGTH_LONG).show()
                     }
                     return@launch
                 }
@@ -2616,6 +3155,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         "session_pending_start_" + stationId,
                         org.json.JSONObject().apply {
                             put("sessionId", sessionId)
+                            put("idempotencyKey", startIdempotencyKey)
                             put("stationId", stationId)
                             put("startTimeMillis", requestedStart)
                             put("consoleType", station.consoleType)
@@ -2657,13 +3197,20 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
             val updated = station.copy(
                 status = "RUNNING",
-                startTimeMillis = if (station.startTimeMillis == 0L) now else station.startTimeMillis,
+                startTimeMillis = now,
                 lastStateChangeTimeMillis = now,
+                elapsedPlayingTimeMillis = 0L,
                 prepaymentAmount = prepayment,
                 durationLimitMinutes = durationMinutes,
-                customerPrepaymentsJson = prepaymentsJson
+                selectedCustomerIdsStr = effectiveCustomerIds.joinToString(","),
+                selectedCustomerNamesStr = effectiveCustomerNames.joinToString(","),
+                customerPrepaymentsJson = prepaymentsJson,
+                segmentsJson = "",
+                payerCustomerIdsStr = "",
+                payerCustomerNamesStr = ""
             )
 
+            repository.saveSetting("station_sync_pending_" + stationId, "")
             saveAndSyncStationState(updated)
 
             logOperatorActivity("شروع به کار ایستگاه", "ایستگاه $stationId (${station.consoleType}) شروع به کار کرد.")
@@ -2674,6 +3221,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 if (warningTime > now) {
                     scheduleAlarm(stationId, warningTime)
                 }
+            }
+            } finally {
+                _startingStationIds.update { it - stationId }
             }
         }
     }
@@ -2801,128 +3351,120 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun pauseStation(stationId: Int) {
+    private fun applyStopStateLocally(stationId: Int, commitSegment: Boolean, continueRunning: Boolean, payerCustomerIds: List<Long> = emptyList(), payerCustomerNames: List<String> = emptyList()) {
         viewModelScope.launch(Dispatchers.IO) {
-            val station = repository.getStationStateByIdLocal(stationId)
-                ?: stationStates.value.find { it.id == stationId }
-                ?: return@launch
-            if (station.status != "RUNNING") return@launch
-
-            val now = System.currentTimeMillis()
-            val sessionElapsed = now - station.lastStateChangeTimeMillis
-            val totalElapsed = station.elapsedPlayingTimeMillis + sessionElapsed
-
-            val updated = station.copy(
-                status = "PAUSED",
-                lastStateChangeTimeMillis = now,
-                elapsedPlayingTimeMillis = totalElapsed
-            )
-
-            saveAndSyncStationState(updated)
-            repository.getSetting("active_session_" + stationId)?.takeIf { it.isNotBlank() }?.let { sessionId ->
-                queueOrSendSessionEvent(sessionId, "PAUSE", now, org.json.JSONObject())
+            try {
+                val station = repository.getStationStateByIdLocal(stationId)
+                    ?: stationStates.value.find { it.id == stationId }
+                    ?: return@launch
+                if (station.status != "RUNNING") return@launch
+                val now = System.currentTimeMillis()
+                // Include time accumulated before a pause/resume in this still-open segment.
+                // elapsedPlayingTimeMillis is reset only after a segment is committed.
+                val elapsed = (station.elapsedPlayingTimeMillis +
+                    if (station.status == "RUNNING") (now - station.lastStateChangeTimeMillis).coerceAtLeast(0L) else 0L
+                ).coerceAtLeast(0L)
+                val segments = station.getSegmentsList().toMutableList()
+                if (commitSegment && elapsed > 0L) {
+                    val durationMin = maxOf(1, (elapsed / 60_000L).toInt())
+                    val rate = getHourlyRate(station.consoleType, station.controllerCount)
+                    val cost = com.example.util.ExactBilling.costForMillis(rate, elapsed).toLong()
+                    segments.add(StationSegment(
+                        segmentIndex = segments.size + 1,
+                        consoleType = station.consoleType,
+                        controllerCount = station.controllerCount,
+                        customerIds = station.getCustomerIds(),
+                        customerNames = station.getCustomerNames(),
+                        startTimeMs = segments.lastOrNull()?.endTimeMs
+                            ?: station.startTimeMillis.takeIf { it > 0L }
+                            ?: (station.lastStateChangeTimeMillis - elapsed).coerceAtLeast(0L),
+                        endTimeMs = now,
+                        durationMinutes = durationMin,
+                        cost = cost,
+                        durationSeconds = elapsed / 1000L,
+                        payerCustomerId = payerCustomerIds.firstOrNull(),
+                        payerCustomerName = payerCustomerNames.firstOrNull(),
+                        payerCustomerIds = payerCustomerIds.distinct(),
+                        payerCustomerNames = payerCustomerNames.distinct()
+                    ))
+                }
+                val updated = station.copy(
+                    status = if (continueRunning) "RUNNING" else "PAUSED",
+                    lastStateChangeTimeMillis = now,
+                    elapsedPlayingTimeMillis = if (commitSegment) 0L else station.elapsedPlayingTimeMillis + elapsed,
+                    segmentsJson = if (commitSegment) segments.toJson() else station.segmentsJson
+                )
+                // The Stop click is a local state transition. Never wait for HTTP, logging,
+                // alarms, or cloud serialization before the station becomes PAUSED/RUNNING.
+                // Stop is a safety-critical local UI action. Persist locally first and
+                // never invoke the network-backed station writer from the Stop coroutine.
+                // Cloud synchronization is explicitly best-effort afterwards.
+                repository.insertStationStateLocal(updated)
+                // The UI-critical Stop transaction ends here. Alarm cancellation, session-event
+                // logging, and cloud sync are detached from the state transition so none of
+                // their callbacks can invalidate the active StationCard composition.
+                runCatching { cancelAlarm(stationId) }
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching {
+                        val sessionId = repository.getSetting("active_session_$stationId")?.takeIf { it.isNotBlank() }
+                        if (sessionId != null) {
+                            val committed = if (commitSegment && elapsed > 0L) updated.getSegmentsList().lastOrNull() else null
+                            val eventType = when {
+                                commitSegment && continueRunning -> "SEGMENT_CONTINUE"
+                                commitSegment -> "SEGMENT_PAUSE"
+                                else -> "PAUSE"
+                            }
+                            val payload = org.json.JSONObject()
+                            if (committed != null) {
+                                payload.put("segmentIndex", committed.segmentIndex)
+                                payload.put("startTimeMs", committed.startTimeMs)
+                                payload.put("endTimeMs", committed.endTimeMs)
+                                payload.put("durationSeconds", committed.durationSeconds)
+                                payload.put("cost", committed.cost)
+                                payload.put("consoleType", committed.consoleType)
+                                payload.put("controllerCount", committed.controllerCount)
+                                payload.put("customerIds", org.json.JSONArray(committed.customerIds))
+                                payload.put("customerNames", org.json.JSONArray(committed.customerNames))
+                                payload.put("payerCustomerIds", org.json.JSONArray(committed.payerCustomerIds))
+                                payload.put("payerCustomerNames", org.json.JSONArray(committed.payerCustomerNames))
+                            } else if (commitSegment) {
+                                // A zero-length boundary must not resend the previous segment's cost.
+                                payload.put("segmentIndex", updated.getSegmentsList().size + 1)
+                                payload.put("startTimeMs", now)
+                                payload.put("endTimeMs", now)
+                                payload.put("durationSeconds", 0)
+                                payload.put("cost", 0)
+                                payload.put("consoleType", station.consoleType)
+                                payload.put("controllerCount", station.controllerCount)
+                                payload.put("customerIds", org.json.JSONArray(station.getCustomerIds()))
+                                payload.put("customerNames", org.json.JSONArray(station.getCustomerNames()))
+                                payload.put("payerCustomerIds", org.json.JSONArray(payerCustomerIds))
+                                payload.put("payerCustomerNames", org.json.JSONArray(payerCustomerNames))
+                            }
+                            queueOrSendSessionEvent(sessionId, eventType, now, payload)
+                        }
+                    }.onFailure { android.util.Log.e("GameNetViewModel", "Stop event sync failed for station $stationId", it) }
+                    runCatching { saveAndSyncStationState(updated) }
+                        .onFailure { android.util.Log.e("GameNetViewModel", "Stop background sync failed for station $stationId", it) }
+                }
+            } catch (t: Throwable) {
+                // Catch Throwable here deliberately: this is an operator safety path and a
+                // malformed legacy station must never terminate the Android process.
+                android.util.Log.e("GameNetViewModel", "STOP_FATAL_GUARD station=$stationId", t)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "توقف ایستگاه انجام نشد؛ وضعیت بازی حفظ شد.", Toast.LENGTH_LONG).show()
+                }
             }
-            cancelAlarm(stationId)
-            logOperatorActivity("توقف موقت ایستگاه", "ایستگاه $stationId متوقف شد.")
         }
     }
 
-    fun commitSegmentAndPause(
-        stationId: Int,
-        payerCustomerIds: List<Long>,
-        payerCustomerNames: List<String>
-    ) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val station = repository.getStationStateByIdLocal(stationId)
-                ?: stationStates.value.find { it.id == stationId }
-                ?: return@launch
-            if (station.status != "RUNNING") return@launch
+    fun pauseStation(stationId: Int) = applyStopStateLocally(stationId, commitSegment = false, continueRunning = false)
 
-            val now = System.currentTimeMillis()
-            val sessionElapsed = now - station.lastStateChangeTimeMillis
+    fun commitSegmentAndPause(stationId: Int, payerCustomerIds: List<Long>, payerCustomerNames: List<String>) =
+        applyStopStateLocally(stationId, commitSegment = true, continueRunning = false, payerCustomerIds, payerCustomerNames)
 
-            val existingSegments = station.getSegmentsList().toMutableList()
-
-            val durationMin = maxOf(1, (sessionElapsed / (1000L * 60L)).toInt())
-            val rate = getHourlyRate(station.consoleType, station.controllerCount)
-            val segmentCost = ((sessionElapsed.coerceAtLeast(0L) / 1000L) * rate) / 3600L
-
-            val segment = StationSegment(
-                segmentIndex = existingSegments.size + 1,
-                consoleType = station.consoleType,
-                controllerCount = station.controllerCount,
-                customerIds = station.getCustomerIds(),
-                customerNames = station.getCustomerNames(),
-                startTimeMs = station.lastStateChangeTimeMillis,
-                endTimeMs = now,
-                durationMinutes = durationMin,
-                cost = segmentCost,
-                payerCustomerId = payerCustomerIds.firstOrNull(),
-                payerCustomerName = payerCustomerNames.firstOrNull(),
-                payerCustomerIds = payerCustomerIds,
-                payerCustomerNames = payerCustomerNames
-            )
-            existingSegments.add(segment)
-
-            val updated = station.copy(
-                status = "PAUSED",
-                lastStateChangeTimeMillis = now,
-                elapsedPlayingTimeMillis = 0L,
-                segmentsJson = existingSegments.toJson()
-            )
-
-            saveAndSyncStationState(updated)
-            cancelAlarm(stationId)
-        }
-    }
-
-    fun commitSegmentAndContinue(
-        stationId: Int,
-        payerCustomerIds: List<Long>,
-        payerCustomerNames: List<String>
-    ) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val station = repository.getStationStateByIdLocal(stationId)
-                ?: stationStates.value.find { it.id == stationId }
-                ?: return@launch
-            if (station.status != "RUNNING") return@launch
-
-            val now = System.currentTimeMillis()
-            val sessionElapsed = now - station.lastStateChangeTimeMillis
-
-            val existingSegments = station.getSegmentsList().toMutableList()
-
-            val durationMin = maxOf(1, (sessionElapsed / (1000L * 60L)).toInt())
-            val rate = getHourlyRate(station.consoleType, station.controllerCount)
-            val segmentCost = ((sessionElapsed.coerceAtLeast(0L) / 1000L) * rate) / 3600L
-
-            val segment = StationSegment(
-                segmentIndex = existingSegments.size + 1,
-                consoleType = station.consoleType,
-                controllerCount = station.controllerCount,
-                customerIds = station.getCustomerIds(),
-                customerNames = station.getCustomerNames(),
-                startTimeMs = station.lastStateChangeTimeMillis,
-                endTimeMs = now,
-                durationMinutes = durationMin,
-                cost = segmentCost,
-                payerCustomerId = payerCustomerIds.firstOrNull(),
-                payerCustomerName = payerCustomerNames.firstOrNull(),
-                payerCustomerIds = payerCustomerIds,
-                payerCustomerNames = payerCustomerNames
-            )
-            existingSegments.add(segment)
-
-            val updated = station.copy(
-                status = "RUNNING",
-                lastStateChangeTimeMillis = now,
-                elapsedPlayingTimeMillis = 0L,
-                segmentsJson = existingSegments.toJson()
-            )
-
-            saveAndSyncStationState(updated)
-        }
-    }
+    fun commitSegmentAndContinue(stationId: Int, payerCustomerIds: List<Long>, payerCustomerNames: List<String>) =
+        applyStopStateLocally(stationId, commitSegment = true, continueRunning = true, payerCustomerIds, payerCustomerNames)
 
     fun resumeStation(stationId: Int) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -2998,16 +3540,26 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 val activeElapsed = if (station.status == "RUNNING") (now - station.lastStateChangeTimeMillis) else 0L
                 val totalElapsed = station.elapsedPlayingTimeMillis + activeElapsed
 
-                val alreadySegmentedMs = existingSegments.sumOf { (it.endTimeMs - it.startTimeMs).coerceAtLeast(0L).takeIf { d -> d > 0L } ?: (it.durationMinutes * 60 * 1000L) }
-                val remainingMs = totalElapsed - alreadySegmentedMs
+                // elapsedPlayingTimeMillis is the CURRENT uncommitted segment only. Previously
+                // committed segments live in segmentsJson and must never be subtracted again.
+                val remainingMs = totalElapsed.coerceAtLeast(0L)
 
-                val effectivePayerIds = if (payerCustomerIds.isNotEmpty()) payerCustomerIds else (customPayerId?.let { listOf(it) } ?: emptyList())
-                val effectivePayerNames = if (payerCustomerNames.isNotEmpty()) payerCustomerNames else (customPayerName?.let { listOf(it) } ?: emptyList())
+                val effectivePayerIds = when {
+                    payerCustomerIds.isNotEmpty() -> payerCustomerIds
+                    customPayerId != null -> listOf(customPayerId)
+                    else -> station.getCustomerIds()
+                }
+                val effectivePayerNames = when {
+                    payerCustomerNames.isNotEmpty() -> payerCustomerNames
+                    customPayerName != null -> listOf(customPayerName)
+                    else -> station.getCustomerNames()
+                }
 
                 if (remainingMs > 0 || existingSegments.isEmpty()) {
                     val durationMin = maxOf(1, ((if (remainingMs > 0) remainingMs else totalElapsed) / (1000L * 60L)).toInt())
                     val rate = getHourlyRate(station.consoleType, station.controllerCount)
-                    val segmentCost = (((if (remainingMs > 0) remainingMs else totalElapsed).coerceAtLeast(0L) / 1000L) * rate) / 3600L
+                    val segmentDurationMs = (if (remainingMs > 0) remainingMs else totalElapsed).coerceAtLeast(0L)
+                    val segmentCost = com.example.util.ExactBilling.costForMillis(rate, segmentDurationMs).toLong()
 
                     val finalSegment = StationSegment(
                         segmentIndex = existingSegments.size + 1,
@@ -3015,29 +3567,19 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         controllerCount = station.controllerCount,
                         customerIds = station.getCustomerIds(),
                         customerNames = station.getCustomerNames(),
-                        startTimeMs = if (existingSegments.isNotEmpty()) station.lastStateChangeTimeMillis else (if (station.startTimeMillis > 0) station.startTimeMillis else now),
+                        startTimeMs = existingSegments.lastOrNull()?.endTimeMs
+                            ?: station.startTimeMillis.takeIf { it > 0L }
+                            ?: (station.lastStateChangeTimeMillis - totalElapsed).coerceAtLeast(0L),
                         endTimeMs = now,
                         durationMinutes = durationMin,
                         cost = segmentCost,
+                        durationSeconds = segmentDurationMs / 1000L,
                         payerCustomerId = effectivePayerIds.firstOrNull() ?: customPayerId,
                         payerCustomerName = effectivePayerNames.firstOrNull() ?: customPayerName,
                         payerCustomerIds = effectivePayerIds,
                         payerCustomerNames = effectivePayerNames
                     )
                     existingSegments.add(finalSegment)
-                }
-
-                if (effectivePayerIds.isNotEmpty()) {
-                    for (i in existingSegments.indices) {
-                        if (existingSegments[i].payerCustomerIds.isEmpty() && existingSegments[i].payerCustomerId == null) {
-                            existingSegments[i] = existingSegments[i].copy(
-                                payerCustomerId = effectivePayerIds.firstOrNull(),
-                                payerCustomerName = effectivePayerNames.firstOrNull(),
-                                payerCustomerIds = effectivePayerIds,
-                                payerCustomerNames = effectivePayerNames
-                            )
-                        }
-                    }
                 }
 
                 val gameCost = existingSegments.sumOf { it.cost }
@@ -3064,21 +3606,25 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     }
                     return@launch
                 }
-                val serverSettled = queueOrSettleSession(sessionId, stationId, now)
-                if (!serverSettled) {
-                    // Keep the station/session data intact. Settlement will be retried after the next successful login.
-                    val pendingState = station.copy(
-                        status = "PAUSED",
-                        elapsedPlayingTimeMillis = totalElapsed,
-                        lastStateChangeTimeMillis = now,
-                        segmentsJson = existingSegments.toJson()
-                    )
-                    saveAndSyncStationState(pendingState)
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(getApplication(), "ارتباط با سرور قطع است؛ تسویه و فاکتور فعلاً در انتظار اتصال باقی ماند.", Toast.LENGTH_LONG).show()
-                    }
-                    return@launch
-                }
+                // The Manager-facing operation is optimistic: UI completion never waits for HTTP.
+                // The authoritative settlement is persisted and confirmed in the background.
+                repository.saveSetting(
+                    "settlement_pending_" + sessionId,
+                    org.json.JSONObject().apply {
+                        put("stationId", stationId)
+                        put("sessionId", sessionId)
+                        put("endedAt", now)
+                    }.toString()
+                )
+                repository.saveSetting(
+                    "session_pending_settlement_" + stationId,
+                    org.json.JSONObject().apply {
+                        put("sessionId", sessionId)
+                        put("endedAt", now)
+                        put("queuedAt", System.currentTimeMillis())
+                        put("reason", "MANAGER_REQUEST")
+                    }.toString()
+                )
 
             val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
             val monthFormat = SimpleDateFormat("yyyy-MM", Locale.getDefault())
@@ -3108,11 +3654,14 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             for (segment in existingSegments) {
                 val segCost = segment.cost
                 if (segment.payerCustomerIds.isNotEmpty()) {
-                    val count = segment.payerCustomerIds.size
+                    val payerIds = segment.payerCustomerIds.distinct()
+                    val count = payerIds.size
                     val share = segCost / count
-                    for (i in segment.payerCustomerIds.indices) {
-                        val pid = segment.payerCustomerIds[i]
-                        customerGameCostMap[pid] = (customerGameCostMap[pid] ?: 0L) + share
+                    val remainder = segCost % count
+                    for (i in payerIds.indices) {
+                        val pid = payerIds[i]
+                        val payerShare = share + if (i == payerIds.lastIndex) remainder else 0L
+                        customerGameCostMap[pid] = (customerGameCostMap[pid] ?: 0L) + payerShare
                         if (i < segment.payerCustomerNames.size) {
                             customerNameMap[pid] = segment.payerCustomerNames[i]
                         }
@@ -3126,11 +3675,14 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         }
                     }
                 } else if (segment.customerIds.isNotEmpty()) {
-                    val count = segment.customerIds.size
+                    val segmentCustomerIds = segment.customerIds.distinct()
+                    val count = segmentCustomerIds.size
                     val share = segCost / count
-                    for (i in segment.customerIds.indices) {
-                        val cid = segment.customerIds[i]
-                        customerGameCostMap[cid] = (customerGameCostMap[cid] ?: 0L) + share
+                    val remainder = segCost % count
+                    for (i in segmentCustomerIds.indices) {
+                        val cid = segmentCustomerIds[i]
+                        val customerShare = share + if (i == segmentCustomerIds.lastIndex) remainder else 0L
+                        customerGameCostMap[cid] = (customerGameCostMap[cid] ?: 0L) + customerShare
                         if (i < segment.customerNames.size) {
                             customerNameMap[cid] = segment.customerNames[i]
                         }
@@ -3141,9 +3693,11 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     if (stationCustomerIds.isNotEmpty()) {
                         val count = stationCustomerIds.size
                         val share = segCost / count
+                        val remainder = segCost % count
                         for (i in stationCustomerIds.indices) {
                             val cid = stationCustomerIds[i]
-                            customerGameCostMap[cid] = (customerGameCostMap[cid] ?: 0L) + share
+                            val customerShare = share + if (i == stationCustomerIds.lastIndex) remainder else 0L
+                            customerGameCostMap[cid] = (customerGameCostMap[cid] ?: 0L) + customerShare
                             if (i < stationCustomerNames.size) {
                                 customerNameMap[cid] = stationCustomerNames[i]
                             }
@@ -3182,8 +3736,55 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
 
+
             val allCids = (customerGameCostMap.keys + customerBuffetCostMap.keys).toSet()
             val prepayMap = station.getEffectiveCustomerPrepaymentsMap()
+            val allRegisteredCustomers = repository.allCustomers.firstOrNull() ?: emptyList()
+            val segmentDetailsForCustomer = mutableMapOf<Long, MutableList<String>>()
+            existingSegments.forEachIndexed { index, segment ->
+                val actualIds = segment.customerIds
+                val actualNames = segment.customerNames
+                val participantIds = when {
+                    actualIds.isNotEmpty() -> actualIds
+                    segment.payerCustomerIds.isNotEmpty() -> segment.payerCustomerIds
+                    segment.payerCustomerId != null -> listOf(segment.payerCustomerId)
+                    else -> emptyList()
+                }
+                val participantText = participantIds.mapIndexed { i, id ->
+                    val name = actualNames.getOrNull(i)?.takeIf { it.isNotBlank() }
+                        ?: segment.payerCustomerNames.getOrNull(i)?.takeIf { it.isNotBlank() }
+                        ?: allRegisteredCustomers.firstOrNull { it.id == id }?.fullName
+                        ?: if (id < 0L) "مهمان ${-id}" else "مشتری $id"
+                    val kind = if (id > 0L && allRegisteredCustomers.any { it.id == id }) "مشترک ثبت‌شده" else "مهمان/گذری"
+                    "$name ($kind)"
+                }.ifEmpty { listOf("مخاطب ثبت نشده") }.joinToString("، ")
+                val splitIds = when {
+                    segment.payerCustomerIds.isNotEmpty() -> segment.payerCustomerIds
+                    segment.payerCustomerId != null -> listOf(segment.payerCustomerId)
+                    segment.customerIds.isNotEmpty() -> segment.customerIds
+                    allCids.isNotEmpty() -> allCids.toList()
+                    else -> listOf(-1L) // unassigned walk-in: this invoice owns the full segment
+                }.distinct()
+                val baseShare = if (splitIds.isEmpty()) 0L else segment.cost / splitIds.size
+                val remainder = if (splitIds.isEmpty()) 0L else segment.cost % splitIds.size
+                val startText = com.example.util.JalaliCalendarHelper.formatJalaliDateTime(segment.startTimeMs)
+                val endText = com.example.util.JalaliCalendarHelper.formatJalaliDateTime(segment.endTimeMs)
+                splitIds.forEachIndexed { splitIndex, payerId ->
+                    val share = baseShare + if (splitIndex == splitIds.lastIndex) remainder else 0L
+                    val payerName = segment.payerCustomerNames.getOrNull(splitIndex)?.takeIf { it.isNotBlank() }
+                        ?: actualNames.getOrNull(actualIds.indexOf(payerId))?.takeIf { it.isNotBlank() }
+                        ?: allRegisteredCustomers.firstOrNull { it.id == payerId }?.fullName
+                        ?: if (payerId < 0L) "مهمان ${-payerId}" else "مشتری $payerId"
+                    val detail = "بخش ${index + 1}: $startText تا $endText | مدت ${segment.durationSeconds.takeIf { it > 0L } ?: ((segment.endTimeMs - segment.startTimeMs).coerceAtLeast(0L) / 1000L)} ثانیه | هزینه بخش ${String.format(Locale.US, "%,d", segment.cost)} تومان | مخاطبان: $participantText | سهم $payerName: ${String.format(Locale.US, "%,d", share)} تومان"
+                    segmentDetailsForCustomer.getOrPut(payerId) { mutableListOf() }.add(detail)
+                }
+                // Show each session segment on every invoice, including segments where this
+                // particular customer did not pay; never charge that customer for those segments.
+                allCids.filter { it !in splitIds }.forEach { cid ->
+                    val detail = "بخش ${index + 1}: $startText تا $endText | مدت ${segment.durationSeconds.takeIf { it > 0L } ?: ((segment.endTimeMs - segment.startTimeMs).coerceAtLeast(0L) / 1000L)} ثانیه | هزینه بخش ${String.format(Locale.US, "%,d", segment.cost)} تومان | مخاطبان: $participantText | سهم این مشتری: 0 تومان"
+                    segmentDetailsForCustomer.getOrPut(cid) { mutableListOf() }.add(detail)
+                }
+            }
             for (cid in allCids) {
                 val gameCost = customerGameCostMap[cid] ?: 0L
                 val buffetCost = customerBuffetCostMap[cid] ?: 0L
@@ -3207,9 +3808,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     val finalAmount = (subtotal - fixedDiscTom).coerceAtLeast(0L)
 
                     val custPrepay = prepayMap[cid] ?: (if (allCids.size == 1) station.prepaymentAmount else 0L)
-                    val initialPaid = custPrepay.coerceAtMost(rawTotal)
-                    val isFullyPaid = initialPaid >= rawTotal && rawTotal > 0
-                    val initialStatus = if (isFullyPaid) "REVIEWED" else "UNREVIEWED"
+                    val initialPaid = 0L
+                    val initialStatus = "UNREVIEWED"
 
                     val consoleShort = when {
                         station.consoleType.contains("5", ignoreCase = true) || station.consoleType.contains("PlayStation 5", ignoreCase = true) -> "PS5"
@@ -3229,12 +3829,17 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         status = initialStatus,
                         dateStr = jalaliDate,
                         timeStr = jalaliTime,
-                        segmentDetails = "${existingSegments.size} بخش",
+                        segmentDetails = buildString {
+                            append("جزئیات نشست: ${existingSegments.size} بخش\n")
+                            append(segmentDetailsForCustomer[cid].orEmpty().joinToString("\n"))
+                            append("\nپرداخت اولیه مختص این مشتری: ${String.format(Locale.US, "%,d", custPrepay)} تومان")
+                        },
                         buffetDetails = customerBuffets,
                         timestamp = now,
                         playMinutes = existingSegments.sumOf { it.durationMinutes },
                         gameCost = gameCost,
-                        foodCost = buffetCost
+                        foodCost = buffetCost,
+                        sessionId = sessionId
                     )
                     val newId = repository.insertCustomerTransaction(trans)
                     val transWithId = trans.copy(id = newId)
@@ -3242,31 +3847,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         queueOrSyncCustomerTransaction(transWithId)
                     }
 
-                    if (existingCust != null) {
-                        val playingRule = scoringRules.value.find { it.id == "playing" }?.points ?: 20L
-                        val spendingRule = scoringRules.value.find { it.id == "spending" }?.points ?: 1L
-                        val sessionPlayHours = trans.playMinutes / 60L
-                        val earnedPlayPts = sessionPlayHours * playingRule
-                        val earnedSpendPts = (trans.amount / 1000L) * spendingRule
-                        val totalSessionPts = earnedPlayPts + earnedSpendPts
-
-                        val newCustPts = (existingCust.points + totalSessionPts).coerceAtLeast(0L)
-                        val remainingDebt = (rawTotal - initialPaid).coerceAtLeast(0L)
-                        val updatedCust = existingCust.copy(debt = existingCust.debt + remainingDebt, points = newCustPts)
-                        repository.insertCustomer(updatedCust)
-
-                        if (totalSessionPts > 0) {
-                            val consoleName = trans.title.ifBlank { station.consoleType }
-                            repository.addPointLog(
-                                PointLog(
-                                    customerId = cid,
-                                    title = "بازی با کنسول $consoleName (ایستگاه ${station.id})",
-                                    points = totalSessionPts
-                                )
-                            )
-                        }
-
-                    }
+                    // No debt, GN, LP or point balance is finalized at salon settlement.
+                    // The invoice remains UNREVIEWED until the Manager explicitly reviews it.
                 }
             }
 
@@ -3285,15 +3867,20 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     title = "$consoleShort (🎮${station.controllerCount})",
                     amount = totalCost,
                     paidAmount = totalCost, // Walk-ins usually pay immediately
-                    status = "REVIEWED", // Since they pay immediately, we can mark it as reviewed, or keep UNREVIEWED? Let's use UNREVIEWED so the manager explicitly marks it. 
+                    status = "REVIEWED", // Since they pay immediately, we can mark it as reviewed, or keep UNREVIEWED? Let's use UNREVIEWED so the manager explicitly marks it.
                     dateStr = jalaliDate,
                     timeStr = jalaliTime,
-                    segmentDetails = "${existingSegments.size} بخش",
+                    segmentDetails = buildString {
+                        append("جزئیات نشست: ${existingSegments.size} بخش\n")
+                        append(segmentDetailsForCustomer[-1L].orEmpty().joinToString("\n"))
+                        append("\nپرداخت اولیه مختص این مهمان: ${String.format(Locale.US, "%,d", station.prepaymentAmount)} تومان")
+                    },
                     buffetDetails = buffetDetailsList.joinToString("\n"),
                     timestamp = now,
                     playMinutes = existingSegments.sumOf { it.durationMinutes },
                     gameCost = gameCost,
-                    foodCost = foodCost
+                    foodCost = foodCost,
+                    sessionId = sessionId
                 )
                 // For walk-ins, it's better to require manual review for cash/card tracking, so leave as UNREVIEWED and paidAmount = 0
                 val walkInTrans = trans.copy(status = "UNREVIEWED", paidAmount = 0L)
@@ -3325,6 +3912,43 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             checkAndAwardInvitePoints()
 
             logOperatorActivity("تسویه حساب ایستگاه", "ایستگاه $stationId تسویه شد (مبلغ: $totalCost تومان)")
+
+            // Complete the network settlement independently of the UI transaction. A business
+            // rejection is the only case that rolls the station back; transport/5xx remains in
+            // the durable outbox and is retried automatically.
+            viewModelScope.launch(Dispatchers.IO) {
+                val settled = queueOrSettleSession(sessionId, stationId, now)
+                if (settled) {
+                    repository.saveSetting("settlement_pending_" + sessionId, "")
+                    flushPendingCustomerTransactions()
+                    val code = SelfHostedManager.lastSettlementHttpCode
+                    val pending = code == 0 || code == 408 || code == 503 || code >= 500
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            getApplication(),
+                            if (pending) "فاکتور صادر و جایگاه آزاد شد؛ ارسال نهایی به سرور در انتظار اتصال است. اتصال را بررسی کنید و رفرش بزنید." else "تسویه با موفقیت در سرور ثبت و اطلاعات بدون نقص همگام شد.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                } else {
+                    repository.saveSetting("session_pending_settlement_" + stationId, "")
+                    val restored = station.copy(
+                        status = "RUNNING",
+                        lastStateChangeTimeMillis = now,
+                        elapsedPlayingTimeMillis = totalElapsed,
+                        segmentsJson = existingSegments.toJson()
+                    )
+                    repository.insertStationStateLocal(restored)
+                    for (order in orders) repository.insertStationOrder(order)
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            getApplication(),
+                            "سرور تسویه را نپذیرفت؛ جایگاه برای جلوگیری از مغایرت مالی دوباره فعال شد. پس از رفع مشکل دوباره تسویه کنید.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
             } catch (e: Exception) {
                 android.util.Log.e("GameNetViewModel", "Error finishing station $stationId: ${e.message}", e)
                 val resetState = StationState(
@@ -3358,29 +3982,32 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 val now = System.currentTimeMillis()
                 val currentTotalMs = station.elapsedPlayingTimeMillis
                 val existingSegments = station.getSegmentsList().toMutableList()
-                val alreadySegmentedMs = existingSegments.sumOf { (it.endTimeMs - it.startTimeMs).coerceAtLeast(0L).takeIf { d -> d > 0L } ?: (it.durationMinutes * 60 * 1000L) }
-                val unsegmentedMs = currentTotalMs - alreadySegmentedMs
+                val unsegmentedMs = currentTotalMs.coerceAtLeast(0L)
+                val committedCurrentSegment = unsegmentedMs >= 5000L
 
-                if (unsegmentedMs >= 5000L) {
+                if (committedCurrentSegment) {
                     val durationMin = maxOf(1, (unsegmentedMs / (1000L * 60L)).toInt())
                     val rate = getHourlyRate(station.consoleType, station.controllerCount)
-                    val cost = ((unsegmentedMs.coerceAtLeast(0L) / 1000L) * rate) / 3600L
+                    val cost = com.example.util.ExactBilling.costForMillis(rate, unsegmentedMs).toLong()
                     val seg = StationSegment(
                         segmentIndex = existingSegments.size + 1,
                         consoleType = station.consoleType,
                         controllerCount = station.controllerCount,
                         customerIds = station.getCustomerIds(),
                         customerNames = station.getCustomerNames(),
-                        startTimeMs = station.lastStateChangeTimeMillis,
+                        startTimeMs = existingSegments.lastOrNull()?.endTimeMs
+                            ?: station.startTimeMillis.takeIf { it > 0L }
+                            ?: (station.lastStateChangeTimeMillis - unsegmentedMs).coerceAtLeast(0L),
                         endTimeMs = now,
                         durationMinutes = durationMin,
-                        cost = cost
+                        cost = cost,
+                        durationSeconds = unsegmentedMs / 1000L
                     )
                     existingSegments.add(seg)
                 }
                 val updated = station.copy(
                     consoleType = consoleName,
-                    elapsedPlayingTimeMillis = currentTotalMs,
+                    elapsedPlayingTimeMillis = if (committedCurrentSegment) 0L else currentTotalMs,
                     lastStateChangeTimeMillis = now,
                     segmentsJson = existingSegments.toJson()
                 )
@@ -3405,29 +4032,32 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 val now = System.currentTimeMillis()
                 val currentTotalMs = station.elapsedPlayingTimeMillis
                 val existingSegments = station.getSegmentsList().toMutableList()
-                val alreadySegmentedMs = existingSegments.sumOf { (it.endTimeMs - it.startTimeMs).coerceAtLeast(0L).takeIf { d -> d > 0L } ?: (it.durationMinutes * 60 * 1000L) }
-                val unsegmentedMs = currentTotalMs - alreadySegmentedMs
+                val unsegmentedMs = currentTotalMs.coerceAtLeast(0L)
+                val committedCurrentSegment = unsegmentedMs >= 5000L
 
-                if (unsegmentedMs >= 5000L) {
+                if (committedCurrentSegment) {
                     val durationMin = maxOf(1, (unsegmentedMs / (1000L * 60L)).toInt())
                     val rate = getHourlyRate(station.consoleType, station.controllerCount)
-                    val cost = ((unsegmentedMs.coerceAtLeast(0L) / 1000L) * rate) / 3600L
+                    val cost = com.example.util.ExactBilling.costForMillis(rate, unsegmentedMs).toLong()
                     val seg = StationSegment(
                         segmentIndex = existingSegments.size + 1,
                         consoleType = station.consoleType,
                         controllerCount = station.controllerCount,
                         customerIds = station.getCustomerIds(),
                         customerNames = station.getCustomerNames(),
-                        startTimeMs = station.lastStateChangeTimeMillis,
+                        startTimeMs = existingSegments.lastOrNull()?.endTimeMs
+                            ?: station.startTimeMillis.takeIf { it > 0L }
+                            ?: (station.lastStateChangeTimeMillis - unsegmentedMs).coerceAtLeast(0L),
                         endTimeMs = now,
                         durationMinutes = durationMin,
-                        cost = cost
+                        cost = cost,
+                        durationSeconds = unsegmentedMs / 1000L
                     )
                     existingSegments.add(seg)
                 }
                 val updated = station.copy(
                     controllerCount = count,
-                    elapsedPlayingTimeMillis = currentTotalMs,
+                    elapsedPlayingTimeMillis = if (committedCurrentSegment) 0L else currentTotalMs,
                     lastStateChangeTimeMillis = now,
                     segmentsJson = existingSegments.toJson()
                 )
@@ -3446,8 +4076,16 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         productName: String,
         quantity: Int,
         price: Long,
-        targetCustomerId: Long?
-    ) {
+        targetCustomerId: Long?,
+        targetCustomerName: String?,
+        sessionId: String
+    ): Boolean {
+        if (sessionId.isBlank()) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(getApplication(), "شناسه نشست فعال پیدا نشد؛ سفارش بوفه ثبت نشد.", Toast.LENGTH_LONG).show()
+            }
+            return false
+        }
         val operationId = java.util.UUID.randomUUID().toString()
         val key = "station_order_outbox_" + stationId
         val current = repository.getSetting(key)
@@ -3458,23 +4096,42 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
         val item = org.json.JSONObject().apply {
             put("operationId", operationId)
+            put("sessionId", sessionId)
             put("productName", productName)
             put("quantity", quantity)
             put("price", price)
             put("targetCustomerId", targetCustomerId ?: org.json.JSONObject.NULL)
+            put("targetCustomerName", targetCustomerName ?: "")
+            put("queuedAt", System.currentTimeMillis())
         }
         array.put(item)
         repository.saveSetting(key, array.toString())
 
-        val sent = SelfHostedManager.addBuffetOrderEvent(
+        val result = SelfHostedManager.addBuffetOrderEvent(
             stationId = stationId,
             productName = productName,
             quantity = quantity,
             price = price,
             targetCustomerId = targetCustomerId,
-            idempotencyKey = "station-order:" + operationId
+            targetCustomerName = targetCustomerName,
+            idempotencyKey = "station-order:" + operationId,
+            sessionId = sessionId
         )
-        if (sent) removeBuffetOrderFromOutbox(key, operationId)
+        return when {
+            result.accepted -> {
+                removeBuffetOrderFromOutbox(key, operationId)
+                true
+            }
+            result.retryable -> true
+            else -> {
+                removeBuffetOrderFromOutbox(key, operationId)
+                withContext(Dispatchers.Main) {
+                    val reason = result.errorMessage.ifBlank { "سرور سفارش را نپذیرفت." }
+                    Toast.makeText(getApplication(), "سفارش بوفه ثبت نشد: " + reason, Toast.LENGTH_LONG).show()
+                }
+                false
+            }
+        }
     }
 
     private suspend fun removeBuffetOrderFromOutbox(key: String, operationId: String) {
@@ -3488,6 +4145,20 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         repository.saveSetting(key, remaining.toString())
     }
 
+    private suspend fun removeRejectedBuffetOrder(stationId: Int, item: org.json.JSONObject) {
+        val productName = item.optString("productName")
+        val targetId = if (item.isNull("targetCustomerId")) null else item.optLong("targetCustomerId").takeIf { it != 0L }
+        val existing = repository.getOrdersForStationSync(stationId).firstOrNull {
+            it.productName == productName && it.targetCustomerId == targetId
+        } ?: return
+        if (existing.quantity > 1) {
+            repository.insertStationOrder(existing.copy(quantity = existing.quantity - 1))
+        } else {
+            repository.deleteStationOrder(existing.id, stationId)
+        }
+        refreshOrdersForStation(stationId)
+    }
+
     private suspend fun flushPendingBuffetOrders() {
         val settings = repository.getAllAppSettings()
         settings.filter { it.key.startsWith("station_order_outbox_") }.forEach { setting ->
@@ -3498,16 +4169,31 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 val item = array.optJSONObject(i) ?: continue
                 val operationId = item.optString("operationId")
                 if (operationId.isBlank()) continue
-                val customer = if (item.isNull("targetCustomerId")) null else item.optLong("targetCustomerId").takeIf { it > 0L }
-                val ok = SelfHostedManager.addBuffetOrderEvent(
+                val sessionId = item.optString("sessionId").takeIf { it.isNotBlank() }
+                if (sessionId == null) {
+                    android.util.Log.w("GameNetViewModel", "Dropping legacy buffet outbox item without session identity")
+                    removeRejectedBuffetOrder(stationId, item)
+                    continue
+                }
+                val customer = if (item.isNull("targetCustomerId")) null else item.optLong("targetCustomerId").takeIf { it != 0L }
+                val result = SelfHostedManager.addBuffetOrderEvent(
                     stationId = stationId,
                     productName = item.optString("productName"),
                     quantity = item.optInt("quantity", 1),
                     price = item.optLong("price", 0L),
                     targetCustomerId = customer,
-                    idempotencyKey = "station-order:" + operationId
+                    targetCustomerName = item.optString("targetCustomerName").takeIf { it.isNotBlank() },
+                    idempotencyKey = "station-order:" + operationId,
+                    sessionId = sessionId
                 )
-                if (!ok) remaining.put(item)
+                when {
+                    result.accepted -> Unit
+                    result.retryable -> remaining.put(item)
+                    else -> {
+                        android.util.Log.w("GameNetViewModel", "Discarding rejected buffet order: " + result.errorMessage)
+                        removeRejectedBuffetOrder(stationId, item)
+                    }
+                }
             }
             repository.saveSetting(setting.key, remaining.toString())
         }
@@ -3515,40 +4201,71 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     fun addBuffetOrderWithCustomer(stationId: Int, productName: String, targetCustomerId: Long? = null, targetCustomerName: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
-            val orderId = if (targetCustomerId != null) "${stationId}_${productName}_${targetCustomerId}" else "${stationId}_${productName}"
-            val existingOrders = repository.getOrdersForStationSync(stationId)
-            val matched = existingOrders.find { it.productName == productName && it.targetCustomerId == targetCustomerId }
-
-            val updatedOrder = if (matched != null) {
-                matched.copy(quantity = matched.quantity + 1)
-            } else {
-                StationOrder(
-                    id = orderId,
+            try {
+                val station = repository.getStationStateByIdLocal(stationId)
+                    ?: stationStates.value.find { it.id == stationId }
+                    ?: run {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(getApplication(), "ایستگاه پیدا نشد؛ سفارش ثبت نشد.", Toast.LENGTH_LONG).show()
+                        }
+                        return@launch
+                    }
+                if (station.status !in setOf("RUNNING", "PAUSED")) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "برای ثبت سفارش بوفه، نشست ایستگاه باید فعال یا متوقف موقت باشد.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+                val sessionId = repository.getSetting("active_session_" + stationId)?.takeIf { it.isNotBlank() }
+                if (sessionId == null) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "شناسه نشست فعال موجود نیست؛ سفارش بوفه ثبت نشد.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+                val product = repository.getProductByName(productName)
+                    ?: (repository.allProducts.firstOrNull() ?: emptyList()).find { it.name.trim().equals(productName.trim(), ignoreCase = true) }
+                if (product == null || product.price < 0L) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "محصول یا قیمت معتبر پیدا نشد.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+                val acceptedOrQueued = sendOrQueueBuffetOrder(
                     stationId = stationId,
                     productName = productName,
                     quantity = 1,
+                    price = product.price,
                     targetCustomerId = targetCustomerId,
-                    targetCustomerName = targetCustomerName
+                    targetCustomerName = targetCustomerName,
+                    sessionId = sessionId
                 )
-            }
+                if (!acceptedOrQueued) return@launch
 
-            repository.insertStationOrder(updatedOrder)
-            refreshOrdersForStation(stationId)
-
-            val p = repository.getProductByName(productName)
-            val productPrice = p?.price ?: 0L
-            sendOrQueueBuffetOrder(
-                stationId = stationId,
-                productName = productName,
-                quantity = 1,
-                price = productPrice,
-                targetCustomerId = targetCustomerId
-            )
-
-            // Immediately sync updated orders with station to cloud
-            val st = repository.getStationStateByIdLocal(stationId)
-            if (st != null) {
-                saveAndSyncStationState(st)
+                val orderId = if (targetCustomerId != null) stationId.toString() + "_" + productName + "_" + targetCustomerId else stationId.toString() + "_" + productName
+                val existingOrders = repository.getOrdersForStationSync(stationId)
+                val matched = existingOrders.find { it.productName == productName && it.targetCustomerId == targetCustomerId }
+                val updatedOrder = if (matched != null) {
+                    matched.copy(quantity = matched.quantity + 1, targetCustomerName = targetCustomerName ?: matched.targetCustomerName)
+                } else {
+                    StationOrder(
+                        id = orderId,
+                        stationId = stationId,
+                        productName = productName,
+                        quantity = 1,
+                        targetCustomerId = targetCustomerId,
+                        targetCustomerName = targetCustomerName
+                    )
+                }
+                repository.insertStationOrder(updatedOrder)
+                refreshOrdersForStation(stationId)
+                val latestState = repository.getStationStateByIdLocal(stationId)
+                if (latestState != null) saveAndSyncStationState(latestState)
+            } catch (t: Throwable) {
+                android.util.Log.e("GameNetViewModel", "BUFFET_ORDER_GUARD station=" + stationId, t)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "ثبت سفارش بوفه انجام نشد؛ وضعیت ایستگاه حفظ شد.", Toast.LENGTH_LONG).show()
+                }
             }
         }
     }
@@ -3585,9 +4302,16 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 repository.insertCustomer(customer.copy(debt = newDebt))
             }
 
-            val updated = transaction.copy(status = newStatus, amount = finalAmount)
+            val normalizedStatus = when {
+                finalAmount <= 0L -> "REVIEWED"
+                transaction.paidAmount >= finalAmount -> "REVIEWED"
+                newStatus == "UNREVIEWED" -> "UNREVIEWED"
+                else -> "DEBTOR"
+            }
+            val updated = transaction.copy(status = normalizedStatus, amount = finalAmount)
             repository.updateCustomerTransaction(updated)
-            queueOrSyncCustomerTransaction(updated)
+            val serverUpdated = SelfHostedManager.updateManagerCustomerTransaction(updated)
+            if (!serverUpdated) queueOrSyncCustomerTransaction(updated)
         }
     }
 
@@ -3596,16 +4320,16 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             val transactions = customerTransactions.value
             val unreviewed = transactions.filter { it.status == "UNREVIEWED" }.sumOf { it.amount - it.paidAmount }
-            val paid = transactions.filter { it.status == "REVIEWED" }.sumOf { it.paidAmount }
+            val paid = transactions.filter { (it.status == "REVIEWED" || it.status == "ARCHIVED") && it.paidAmount >= it.amount }.sumOf { it.paidAmount }
             val total = unreviewed + paid
-            
+
             // Log it
             logOperatorActivity("تسویه شیفت سالن", "تسویه مبلغ: %,d تومان (پرداختی: %,d | بررسی نشده: %,d)".format(java.util.Locale.US, total, paid, unreviewed))
-            
-            // Delete REVIEWED and UNREVIEWED
-            val toDelete = transactions.filter { it.status == "REVIEWED" || it.status == "UNREVIEWED" }
-            for (t in toDelete) {
-                repository.deleteCustomerTransaction(t)
+
+            // Financial history is server-owned and must survive reinstall.
+            // Shift settlement is an audit event, not physical deletion of invoices.
+            for (t in transactions.filter { it.status == "REVIEWED" || it.status == "ARCHIVED" || it.status == "UNREVIEWED" }) {
+                queueOrSyncCustomerTransaction(t)
             }
         }
     }
@@ -3614,9 +4338,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             val transactions = repository.allCustomerTransactions.firstOrNull() ?: emptyList()
             var totalCash = 0L
-            
+
             transactions.forEach { trans ->
-                if (trans.status == "REVIEWED" || trans.status == "UNREVIEWED") {
+                if (trans.status == "REVIEWED" || trans.status == "ARCHIVED" || trans.status == "UNREVIEWED") {
                     val finalStatus = if (trans.paidAmount < trans.amount && trans.status == "UNREVIEWED") "DEBTOR" else "ARCHIVED"
                     val updated = trans.copy(status = finalStatus)
                     repository.updateCustomerTransaction(updated)
@@ -3624,13 +4348,13 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         queueOrSyncCustomerTransaction(updated)
                     }
                     totalCash += trans.paidAmount
-                    
-                    // If marked as DEBTOR, we must update the customer debt since it wasn't done yet! 
-                    // Wait, UNREVIEWED already added debt at finishStation! 
+
+                    // If marked as DEBTOR, we must update the customer debt since it wasn't done yet!
+                    // Wait, UNREVIEWED already added debt at finishStation!
                     // So DEBTOR just keeps the debt. We don't need to add to debt again.
                 }
             }
-            
+
             // Log it
             logOperatorActivity("تسویه سالن", "تسویه شیفت سالن با مجموع دریافتی ${totalCash.toLong()} تومان")
         }
@@ -3638,116 +4362,203 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     fun updateCustomerTransactionPayment(transaction: CustomerTransaction, paidAmount: Long, newStatus: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val custs = repository.allCustomers.firstOrNull() ?: emptyList()
+            try {
+                val custs = repository.allCustomers.firstOrNull() ?: emptyList()
             val cust = custs.find { it.id == transaction.customerId }
-            
+
             var finalTxAmount = transaction.amount
             var discountDiff = 0L
-            
+
             if (cust != null && transaction.status == "UNREVIEWED" && newStatus != "UNREVIEWED") {
                 val clubLevelsVal = _clubLevels.value
                 val sortedLevels = clubLevelsVal.sortedByDescending { it.requiredPoints }
                 val activeLevel = sortedLevels.find { cust.points >= it.requiredPoints } ?: clubLevelsVal.firstOrNull()
-                
+
                 val gameDiscPct = activeLevel?.gameDiscountPercent ?: 0L
                 val buffetDiscPct = activeLevel?.buffetDiscountPercent ?: 0L
                 val fixedDiscTom = activeLevel?.fixedDiscountToman ?: 0L
-                
+
                 val origGameCost = if (transaction.gameCost > 0L) transaction.gameCost else (transaction.amount - transaction.foodCost)
                 val origFoodCost = transaction.foodCost
                 val origTotal = if (transaction.amount > 0L) transaction.amount else (origGameCost + origFoodCost)
-                
-                val discountedGameCost = origGameCost * (1L - gameDiscPct / 100L)
-                val discountedFoodCost = origFoodCost * (1L - buffetDiscPct / 100L)
+
+                val safeGamePct = gameDiscPct.coerceIn(0L, 100L)
+                val safeBuffetPct = buffetDiscPct.coerceIn(0L, 100L)
+                val discountedGameCost = origGameCost - (origGameCost * safeGamePct / 100L)
+                val discountedFoodCost = origFoodCost - (origFoodCost * safeBuffetPct / 100L)
                 finalTxAmount = ((discountedGameCost + discountedFoodCost) - fixedDiscTom).coerceAtLeast(0L)
-                
+
                 discountDiff = origTotal - finalTxAmount
             }
 
-            val updated = transaction.copy(paidAmount = paidAmount, status = newStatus, amount = finalTxAmount)
-            repository.updateCustomerTransaction(updated)
-            queueOrSyncCustomerTransaction(updated)
-
+            val normalizedStatus = when {
+                finalTxAmount <= 0L -> "REVIEWED"
+                paidAmount >= finalTxAmount -> "REVIEWED"
+                newStatus == "UNREVIEWED" -> "UNREVIEWED"
+                else -> "DEBTOR"
+            }
+            val normalizedPaidAmount = paidAmount.coerceIn(0L, finalTxAmount)
             if (cust != null) {
-                val newDebt = if (newStatus == "REVIEWED") {
-                    val remainingUnpaid = transaction.amount - transaction.paidAmount
-                    (cust.debt - remainingUnpaid).coerceAtLeast(0L)
-                } else {
-                    (cust.debt - (paidAmount - transaction.paidAmount) - discountDiff).coerceAtLeast(0L)
-                }
-                
+                val oldOutstanding = (transaction.amount - transaction.paidAmount).coerceAtLeast(0L)
+                val newOutstanding = (finalTxAmount - normalizedPaidAmount).coerceAtLeast(0L)
+                val newDebt = (cust.debt - oldOutstanding + newOutstanding).coerceAtLeast(0L)
                 var updatedCust = cust.copy(debt = newDebt)
+                var earnedGn = 0L
+                var earnedLp = 0L
 
-                if (newStatus == "REVIEWED" && transaction.status != "REVIEWED") {
-                    val refId = "SESSION_${transaction.timestamp}_CUST_${transaction.customerId}"
-                    val pendingEntry = repository.getGnLedgerEntryByRef(refId)
-                    if (pendingEntry != null && pendingEntry.status == "PENDING") {
-                        val gnAmt = pendingEntry.gnAmount
-                        if (gnAmt > 0) {
-                            updatedCust = updatedCust.copy(
-                                availableGn = updatedCust.availableGn + gnAmt,
-                                pendingGn = (updatedCust.pendingGn - gnAmt).coerceAtLeast(0L)
+                if (normalizedStatus == "REVIEWED" && transaction.status != "REVIEWED") {
+                    val gameGnReward = (transaction.gameCost * _gameRewardRate.value / 10_000L).coerceAtLeast(0L)
+                    val buffetGnReward = (transaction.foodCost * _buffetRewardRate.value / 10_000L).coerceAtLeast(0L)
+                    earnedGn = gameGnReward + buffetGnReward
+                    val gameLpReward = if (_lpTomanRate.value > 0L) (transaction.gameCost / _lpTomanRate.value).coerceAtLeast(0L) else 0L
+                    val buffetLpReward = (transaction.foodCost * _buffetLpPer10000.value / 10_000L).coerceAtLeast(0L)
+                    earnedLp = gameLpReward + buffetLpReward
+                    if (earnedGn > 0L) {
+                        updatedCust = updatedCust.copy(availableGn = updatedCust.availableGn + earnedGn)
+                        repository.addGnLedgerEntry(
+                            GnLedgerEntry(
+                                customerId = transaction.customerId,
+                                customerName = transaction.customerName,
+                                gnAmount = earnedGn,
+                                transactionType = if (transaction.gameCost > 0L && transaction.foodCost > 0L) "GAME_AND_BUFFET_REWARD" else if (transaction.gameCost > 0L) "GAME_REWARD" else "BUFFET_REWARD",
+                                source = "REWARD",
+                                status = "AVAILABLE",
+                                timestamp = System.currentTimeMillis(),
+                                referenceId = "SESSION_REVIEW_" + transaction.sessionId.ifBlank { transaction.timestamp.toString() } + "_CUST_" + transaction.customerId,
+                                description = buildString {
+                                    if (gameGnReward > 0L) append("بابت بازی: " + String.format(Locale.US, "%,d", gameGnReward) + " GN")
+                                    if (buffetGnReward > 0L) {
+                                        if (isNotEmpty()) append(" | ")
+                                        append("بابت بوفه: " + String.format(Locale.US, "%,d", buffetGnReward) + " GN")
+                                    }
+                                }
                             )
-                            val availableEntry = pendingEntry.copy(status = "AVAILABLE")
-                            repository.updateGnLedgerEntry(availableEntry)
-                        }
+                        )
+                    }
+                    if (earnedLp > 0L) {
+                        updatedCust = updatedCust.copy(lp = updatedCust.lp + earnedLp)
+                        SelfHostedManager.addLpLedgerEntry(transaction.customerId, earnedLp, transaction.sessionId.ifBlank { transaction.timestamp.toString() })
                     }
                 }
-                
+
+                val updated = transaction.copy(
+                    paidAmount = normalizedPaidAmount,
+                    status = normalizedStatus,
+                    amount = finalTxAmount,
+                    earnedGn = earnedGn,
+                    earnedLp = earnedLp
+                )
+                repository.updateCustomerTransaction(updated)
+                val serverUpdated = SelfHostedManager.updateManagerCustomerTransaction(updated)
+                if (serverUpdated) {
+                    repository.saveSetting("customer_transaction_outbox_${transaction.id}", "")
+                    // PATCH returned the authoritative server result; keep Room stable immediately.
+                } else {
+                    queueOrSyncCustomerTransaction(updated)
+                }
                 repository.insertCustomer(updatedCust)
+            } else {
+                val updated = transaction.copy(
+                    paidAmount = normalizedPaidAmount,
+                    status = normalizedStatus,
+                    amount = finalTxAmount
+                )
+                repository.updateCustomerTransaction(updated)
+                val serverUpdated = SelfHostedManager.updateManagerCustomerTransaction(updated)
+                if (serverUpdated) {
+                    repository.saveSetting("customer_transaction_outbox_${transaction.id}", "")
+                    // PATCH returned the authoritative server result; keep Room stable immediately.
+                } else {
+                    queueOrSyncCustomerTransaction(updated)
+                }
+            }
+            } catch (e: Exception) {
+                android.util.Log.e("GameNexa", "Customer transaction settlement failed", e)
             }
         }
     }
 
     fun deleteCustomerTransaction(transaction: CustomerTransaction) {
         viewModelScope.launch(Dispatchers.IO) {
-            repository.deleteCustomerTransaction(transaction)
-        }
-    }
+            // Optimistic local acknowledgement: the invoice disappears from the Manager UI
+            // immediately. Server deletion is durable and manager-scoped; a definitive rejection
+            // restores the exact previous row instead of silently losing it.
+            repository.deleteCustomerTransactionLocal(transaction)
+            if (NetworkClient.isTrialMode || transaction.id <= 0L) return@launch
 
+            val deleted = SelfHostedManager.deleteManagerCustomerTransaction(transaction.id)
+            if (deleted) return@launch
 
-    fun incrementBuffetOrder(stationId: Int, productName: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val existingId = "${stationId}_${productName}"
-            val orders = repository.getOrdersForStationSync(stationId)
-            val matched = orders.find { it.productName == productName }
-            if (matched != null) {
-                val updated = matched.copy(quantity = matched.quantity + 1)
-
-                val currentMap = _stationOrdersMap.value.toMutableMap()
-                val stationOrders = (currentMap[stationId] ?: emptyList()).toMutableList()
-                val idx = stationOrders.indexOfFirst { it.productName == productName }
-                if (idx >= 0) {
-                    stationOrders[idx] = updated
-                    currentMap[stationId] = stationOrders
-                    _stationOrdersMap.value = currentMap
-                }
-
-                repository.insertStationOrder(updated)
-                refreshOrdersForStation(stationId)
-
-                val p = repository.getProductByName(productName)
-                sendOrQueueBuffetOrder(
-                    stationId = stationId,
-                    productName = productName,
-                    quantity = 1,
-                    price = p?.price ?: 0L,
-                    targetCustomerId = matched.targetCustomerId
+            val code = SelfHostedManager.lastTransactionDeleteHttpCode
+            if (code == 0 || code == 408 || code == 429 || code >= 500) {
+                repository.saveSetting(
+                    "customer_transaction_delete_outbox_" + transaction.id,
+                    customerTransactionJson(transaction).toString()
                 )
-
-                val st = repository.getStationStateByIdLocal(stationId)
-                if (st != null) {
-                    saveAndSyncStationState(st)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "فاکتور از صفحه حذف شد؛ حذف نهایی روی سرور در انتظار اتصال است. اتصال را بررسی کنید و رفرش بزنید.", Toast.LENGTH_LONG).show()
+                }
+            } else {
+                repository.restoreCustomerTransactionLocal(transaction)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "سرور حذف فاکتور را نپذیرفت؛ فاکتور به فهرست بازگردانده شد.", Toast.LENGTH_LONG).show()
                 }
             }
         }
     }
 
-    fun decrementBuffetOrder(stationId: Int, productName: String) {
+
+    fun incrementBuffetOrder(stationId: Int, productName: String, targetCustomerId: Long? = null, targetCustomerName: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
-            val existingId = "${stationId}_${productName}"
+            try {
+                val matched = repository.getOrdersForStationSync(stationId).find {
+                    it.productName == productName && it.targetCustomerId == targetCustomerId &&
+                        (targetCustomerName.isNullOrBlank() || it.targetCustomerName == targetCustomerName)
+                } ?: return@launch
+                val sessionId = repository.getSetting("active_session_" + stationId)?.takeIf { it.isNotBlank() }
+                if (sessionId == null) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "شناسه نشست فعال موجود نیست؛ سفارش افزایش نیافت.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+                val product = repository.getProductByName(productName)
+                    ?: (repository.allProducts.firstOrNull() ?: emptyList()).find { it.name.trim().equals(productName.trim(), ignoreCase = true) }
+                if (product == null) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "محصول بوفه پیدا نشد.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+                val acceptedOrQueued = sendOrQueueBuffetOrder(
+                    stationId = stationId,
+                    productName = productName,
+                    quantity = 1,
+                    price = product.price,
+                    targetCustomerId = targetCustomerId,
+                    targetCustomerName = targetCustomerName,
+                    sessionId = sessionId
+                )
+                if (!acceptedOrQueued) return@launch
+                repository.insertStationOrder(matched.copy(quantity = matched.quantity + 1))
+                refreshOrdersForStation(stationId)
+                val st = repository.getStationStateByIdLocal(stationId)
+                if (st != null) saveAndSyncStationState(st)
+            } catch (t: Throwable) {
+                android.util.Log.e("GameNetViewModel", "BUFFET_INCREMENT_GUARD station=" + stationId, t)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "افزایش سفارش بوفه انجام نشد.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    fun decrementBuffetOrder(stationId: Int, productName: String, targetCustomerId: Long? = null, targetCustomerName: String? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val existingId = if (targetCustomerId != null) "${stationId}_${productName}_${targetCustomerId}" else "${stationId}_${productName}"
             val orders = repository.getOrdersForStationSync(stationId)
-            val matched = orders.find { it.productName == productName }
+            val matched = orders.find { it.productName == productName && it.targetCustomerId == targetCustomerId &&
+                (targetCustomerName.isNullOrBlank() || it.targetCustomerName == targetCustomerName) }
             if (matched != null) {
                 val currentMap = _stationOrdersMap.value.toMutableMap()
                 val stationOrders = (currentMap[stationId] ?: emptyList()).toMutableList()
@@ -3787,39 +4598,74 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     fun saveStationCountSetting(count: Int) {
         viewModelScope.launch(Dispatchers.IO) {
-            repository.saveSetting("station_count", count.toString())
-            _stationCount.value = count
+            val safeCount = count.coerceAtLeast(1)
+            val currentStates = repository.allStationStates.firstOrNull() ?: emptyList()
+            val serverSyncAvailable = !NetworkClient.isTrialMode && SelfHostedManager.currentManagerId.isNotBlank() && _serverSyncMode.value
 
-            // Get a default console type to assign to any new stations
+            // Server-first when connected: never hide an active station locally before the
+            // canonical server has accepted the resize. This prevents an active overflow station
+            // from becoming orphaned when the Manager lowers the configured count.
+            if (serverSyncAvailable) {
+                try {
+                    val reqBody = "{\"stationCount\": $safeCount}".toRequestBody("application/json".toMediaType())
+                    val req = okhttp3.Request.Builder()
+                        .url("${_serverUrl.value}/api/v1/manager/stations/purge-extra")
+                        .headers(com.example.data.network.SelfHostedManager.getBaseHeaders())
+                        .post(reqBody)
+                        .build()
+                    com.example.data.network.SelfHostedManager.client.newCall(req).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            val body = response.body?.string().orEmpty()
+                            val code = runCatching { org.json.JSONObject(body).optString("code") }.getOrDefault("")
+                            if (response.code == 409 && code == "STATIONS_HAVE_ACTIVE_SESSIONS") {
+                                val ids = runCatching {
+                                    org.json.JSONObject(body).optJSONArray("stationIds")?.let { a ->
+                                        (0 until a.length()).map { a.optInt(it) }.filter { it > 0 }.joinToString(", ")
+                                    }
+                                }.getOrNull().orEmpty()
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(
+                                        getApplication(),
+                                        "تغییر تعداد جایگاه انجام نشد؛ جایگاه فعال وجود دارد${if (ids.isNotBlank()) ": $ids" else ""}. ابتدا آن نشست‌ها را تسویه کنید.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            } else {
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(getApplication(), "ذخیره تعداد جایگاه روی سرور انجام نشد؛ تغییر محلی اعمال نشد.", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                            return@launch
+                        }
+                    }
+                } catch (e: Exception) {
+                    // If the server is unreachable, retain the existing offline Manager behavior:
+                    // the local configuration may be edited and will be reconciled on reconnect.
+                    android.util.Log.w("GameNetViewModel", "Station-count server sync unavailable; applying local offline change", e)
+                }
+            }
+
+            repository.saveSetting("station_count", safeCount.toString())
+            _stationCount.value = safeCount
+            if (!NetworkClient.isTrialMode && SelfHostedManager.currentManagerId.isNotBlank()) {
+                SelfHostedManager.saveManagerSetting("station_count", safeCount.toString())
+            }
+
             val consoleList = consoleTypes.value
             val defaultConsole = if (consoleList.isNotEmpty()) consoleList.first().name else "PS5"
-            repository.recreateStations(count, defaultConsole)
-            
-            // Sync with Server immediately
-            try {
-                if (_serverSyncMode.value) {
-                    val api = com.example.data.network.NetworkClient.getApi(_serverUrl.value)
-                    
-                    // 1. Purge stations > count
-                    try {
-                        val reqBody = "{\"stationCount\": $count}".toRequestBody("application/json".toMediaType())
-                        val req = okhttp3.Request.Builder()
-                            .url("${_serverUrl.value}/api/v1/manager/stations/purge-extra")
-                            .headers(com.example.data.network.SelfHostedManager.getBaseHeaders())
-                            .post(reqBody)
-                            .build()
-                        com.example.data.network.SelfHostedManager.client.newCall(req).execute()
-                    } catch (e: Exception) {
-                        android.util.Log.e("GameNetViewModel", "Failed to purge extra stations", e)
-                    }
+            repository.recreateStations(safeCount, defaultConsole)
 
-                    // 2. Upload all current stations
+            // When online, the server has already accepted the resize. Upload the resulting
+            // canonical station configuration; do not overwrite any protected active overflow.
+            if (serverSyncAvailable) {
+                try {
+                    val api = com.example.data.network.NetworkClient.getApi(_serverUrl.value)
                     val newStations = repository.allStationStates.firstOrNull() ?: emptyList()
                     for (st in newStations) {
-                        try { api.saveStation(st) } catch (e: Exception) {}
+                        try { api.saveStation(st) } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in station config upload", e) }
                     }
-                }
-            } catch (e: Exception) {}
+                } catch (e: Exception) { android.util.Log.e("GameNetViewModel", "Station configuration upload failed", e) }
+            }
         }
     }
 
@@ -3957,8 +4803,20 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     // Helper Methods
 
+    private fun canonicalConsoleKey(name: String): String {
+        val key = name.trim().uppercase(Locale.US).replace(Regex("[^A-Z0-9]"), "")
+        return when {
+            key == "PS5" || key == "PLAYSTATION5" || key == "PLAYSTATION5CONSOLE" -> "PS5"
+            key == "PS4" || key == "PLAYSTATION4" || key == "PLAYSTATION4CONSOLE" -> "PS4"
+            key == "SIMD" || key == "SIMULATOR" || key.contains("DRIVINGSIMULATOR") || key.contains("SHABIHSAZ") -> "SIMD"
+            key == "XBOX" || key == "XBOXSERIES" || key == "XBOXSERIESX" -> "XBOX"
+            else -> key
+        }
+    }
+
     suspend fun getHourlyRate(consoleName: String, controllerCount: Int): Long {
-        val console = repository.getConsoleTypeByName(consoleName) ?: return 0L
+        val wanted = canonicalConsoleKey(consoleName)
+        val console = repository.allConsoleTypes.firstOrNull()?.firstOrNull { canonicalConsoleKey(it.name) == wanted } ?: return 0L
         return when (controllerCount) {
             1 -> console.price1
             2 -> console.price2
@@ -3969,7 +4827,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun getHourlyRateSync(consoleName: String, controllerCount: Int): Long {
-        val console = consoleTypes.value.find { it.name == consoleName } ?: return 0L
+        val wanted = canonicalConsoleKey(consoleName)
+        val console = consoleTypes.value.find { canonicalConsoleKey(it.name) == wanted } ?: return 0L
         return when (controllerCount) {
             1 -> console.price1
             2 -> console.price2
@@ -4040,7 +4899,6 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     inviteCode = existing.inviteCode
                     existingPoints = existing.points
                     invitePointsAwarded = existing.invitePointsAwarded
-                    if (finalPassword.isBlank()) finalPassword = existing.password
                 }
             }
 
@@ -4064,7 +4922,6 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 id = id,
                 fullName = trimmedName,
                 phoneNumber = trimmedPhone,
-                password = finalPassword,
                 debt = debt,
                 credit = credit,
                 description = description,
@@ -4083,7 +4940,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             // Real-time Cloud sync to self-hosted server
             try {
                 SelfHostedManager.upsertCustomer(customer.copy(id = finalCustomerId))
-            } catch (ignored: Exception) {}
+            } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
 
             logOperatorActivity(
                 actionTitle = if (id == 0L) "افزودن مشتری جدید" else "ویرایش اطلاعات مشتری",
@@ -4122,7 +4979,6 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 id = 0L,
                 fullName = trimmedName,
                 phoneNumber = trimmedPhone,
-                password = cleanPass,
                 debt = debt,
                 credit = credit,
                 description = description.trim(),
@@ -4140,7 +4996,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             // Real-time Cloud sync to self-hosted server
             try {
                 SelfHostedManager.upsertCustomer(newCustomer.copy(id = newId))
-            } catch (ignored: Exception) {}
+            } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
 
             logOperatorActivity("تبدیل مهمان به مشتری", "نام: $trimmedName | تلفن: $trimmedPhone")
 
@@ -4163,48 +5019,88 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     fun deleteCustomer(customer: Customer) {
         viewModelScope.launch(Dispatchers.IO) {
-            // Server is authoritative for customer deletion/archival. Do not remove the local
-            // row first: a failed server write would otherwise be resurrected by the next sync.
-            val cloudDeleted = runCatching {
-                com.example.data.network.SelfHostedManager.deleteCustomer(customer.id, customer.phoneNumber)
-            }.getOrDefault(false)
-            if (!cloudDeleted) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(getApplication(), "حذف مشتری از سرور انجام نشد؛ اطلاعات محلی حفظ شد.", Toast.LENGTH_LONG).show()
-                }
-                return@launch
-            }
             repository.deleteCustomer(customer)
-            logOperatorActivity(
-                actionTitle = "حذف مشتری",
-                details = "مشتری ${customer.fullName} با شماره ${customer.phoneNumber} از فهرست فعال مشتریان حذف شد و سوابق مالی حفظ شد."
-            )
+            repository.saveSetting("local_archived_customer_" + customer.id, customerToJson(customer).toString())
+            repository.saveSetting("customer_archive_outbox_" + customer.id, customerToJson(customer).toString())
+            SelfHostedManager.publishArchivedCustomerLocally(customer)
+            withContext(Dispatchers.Main) {
+                Toast.makeText(getApplication(), "مشتری فوراً به آرشیو منتقل شد؛ همگام‌سازی با سرور در پس‌زمینه انجام می‌شود.", Toast.LENGTH_SHORT).show()
+            }
+            val cloudDeleted = runCatching { SelfHostedManager.deleteCustomer(customer.id, customer.phoneNumber) }.getOrDefault(false)
+            if (cloudDeleted) {
+                repository.saveSetting("customer_archive_outbox_" + customer.id, "")
+                repository.saveSetting("local_archived_customer_" + customer.id, "")
+                SelfHostedManager.fetchArchivedCustomersFromCloud()
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "آرشیو با سرور همگام شد. سوابق مالی حفظ شد.", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "آرشیو محلی انجام شد؛ همگام‌سازی سرور در انتظار اتصال است.", Toast.LENGTH_LONG).show()
+                }
+            }
+            logOperatorActivity("حذف مشتری", "مشتری " + customer.fullName + " فوراً آرشیو شد و سوابق مالی حفظ شد.")
         }
     }
 
     fun deleteCustomersBatch(customersToDelete: List<Customer>) {
         if (customersToDelete.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
-            val ids = customersToDelete.map { it.id }
-            val cloudDeleted = runCatching {
-                com.example.data.network.SelfHostedManager.deleteCustomersBatch(ids)
-            }.getOrDefault(false)
-            if (!cloudDeleted) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(getApplication(), "حذف مشتریان از سرور انجام نشد؛ اطلاعات محلی حفظ شد.", Toast.LENGTH_LONG).show()
-                }
-                return@launch
+            customersToDelete.forEach { customer ->
+                repository.deleteCustomer(customer)
+                repository.saveSetting("local_archived_customer_" + customer.id, customerToJson(customer).toString())
+                repository.saveSetting("customer_archive_outbox_" + customer.id, customerToJson(customer).toString())
+                SelfHostedManager.publishArchivedCustomerLocally(customer)
             }
-            repository.deleteCustomersBatch(customersToDelete)
-            logOperatorActivity(
-                actionTitle = "حذف دسته‌جمعی مخاطبان",
-                details = "تعداد ${customersToDelete.size} مخاطب از فهرست فعال حذف شدند و سوابق مالی حفظ شدند."
-            )
+            flushPendingCustomerArchives()
+            withContext(Dispatchers.Main) {
+                Toast.makeText(getApplication(), "مشتریان فوراً به آرشیو منتقل شدند؛ همگام‌سازی سرور در پس‌زمینه انجام می‌شود.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    fun restoreArchivedCustomer(customer: Customer) {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.insertCustomer(customer)
+            SelfHostedManager.removeArchivedCustomerLocally(customer.id)
+            repository.saveSetting("local_archived_customer_" + customer.id, "")
+            repository.saveSetting("customer_restore_outbox_" + customer.id, customerToJson(customer).toString())
+            withContext(Dispatchers.Main) {
+                Toast.makeText(getApplication(), "بازگردانی فوری انجام شد؛ همگام‌سازی با سرور در پس‌زمینه انجام می‌شود.", Toast.LENGTH_SHORT).show()
+            }
+            val ok = runCatching { SelfHostedManager.restoreCustomer(customer.id, customer.phoneNumber) }.getOrDefault(false)
+            if (ok) {
+                repository.saveSetting("customer_restore_outbox_" + customer.id, "")
+                SelfHostedManager.fetchArchivedCustomersFromCloud()
+                withContext(Dispatchers.Main) { Toast.makeText(getApplication(), "بازگردانی با سرور همگام شد.", Toast.LENGTH_SHORT).show() }
+            } else {
+                withContext(Dispatchers.Main) { Toast.makeText(getApplication(), "بازگردانی محلی است؛ با برقراری اتصال با سرور همگام می‌شود.", Toast.LENGTH_LONG).show() }
+            }
+        }
+    }
+
+    fun purgeArchivedCustomer(customer: Customer, onResult: ((Boolean) -> Unit)? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.purgeCustomerLocally(customer)
+            SelfHostedManager.removeArchivedCustomerLocally(customer.id)
+            repository.saveSetting("local_archived_customer_" + customer.id, "")
+            repository.saveSetting("customer_purge_outbox_" + customer.id, customerToJson(customer).toString())
+            withContext(Dispatchers.Main) {
+                Toast.makeText(getApplication(), "حذف کامل محلی انجام شد؛ حذف نهایی سرور در پس‌زمینه همگام می‌شود.", Toast.LENGTH_SHORT).show()
+                onResult?.invoke(true)
+            }
+            val ok = runCatching { SelfHostedManager.purgeArchivedCustomer(customer.id, customer.phoneNumber) }.getOrDefault(false)
+            if (ok || SelfHostedManager.lastCustomerMutationHttpCode == 404) {
+                repository.saveSetting("customer_purge_outbox_" + customer.id, "")
+                withContext(Dispatchers.Main) { Toast.makeText(getApplication(), "حذف کامل با سرور همگام شد و قابل بازگشت نیست.", Toast.LENGTH_SHORT).show() }
+            } else {
+                withContext(Dispatchers.Main) { Toast.makeText(getApplication(), "حذف کامل محلی انجام شد؛ سرور پس از اتصال حذف می‌شود.", Toast.LENGTH_LONG).show() }
+            }
         }
     }
 
     // Reservations Operations
-    fun addReservation(fullName: String, phoneNumber: String, reservationTimeMillis: Long, durationMinutes: Int, stationId: Long, isVip: Boolean = false, onResult: ((Boolean, String?) -> Unit)? = null) {
+    fun addReservation(fullName: String, phoneNumber: String, reservationTimeMillis: Long, durationMinutes: Int, stationId: Long, isVip: Boolean = false, paidAmount: Long = 0L, onResult: ((Boolean, String?) -> Unit)? = null) {
         viewModelScope.launch(Dispatchers.IO) {
             val reservation = Reservation(
                 fullName = fullName,
@@ -4213,7 +5109,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 durationMinutes = durationMinutes
             )
             try {
-                val synced = SelfHostedManager.syncReservationToCloud(reservation, stationId, isVip)
+                val synced = SelfHostedManager.syncReservationToCloud(reservation, stationId, isVip, paidAmount)
                 if (synced) {
                     val generatedId = repository.insertReservation(reservation)
                     val savedReservation = reservation.copy(id = generatedId)
@@ -4236,7 +5132,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     reservation.id,
                     "manager-cancel:" + reservation.id
                 )
-            } catch (ignored: Exception) {}
+            } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
         }
     }
 
@@ -4362,7 +5258,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         val currentRole = _currentAdminRole.value
         val isSuper = savedRole == "SUPER_MANAGER" || currentRole == "SUPER_MANAGER"
 
-        val isManager = savedRole == "MANAGER" || currentRole == "MANAGER" || 
+        val isManager = savedRole == "MANAGER" || currentRole == "MANAGER" ||
                         savedRole == "GAMENET_MANAGER" || currentRole == "GAMENET_MANAGER"
 
         if (isManager) {
@@ -4406,7 +5302,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
         val deviceId = getDeviceId()
         val trialDeviceId = getTrialDeviceId()
-        
+
         if (isTrial) {
             _currentAdminRole.value = "TRIAL_USER"
             com.example.data.network.NetworkClient.isTrialMode = true
@@ -4423,7 +5319,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     _serverUrl.value = candidateUrl
                     SelfHostedManager.setCustomServerUrl(candidateUrl)
                     break
-                } catch (_: Exception) {}
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
 
             if (trialCheck != null) {
@@ -4434,7 +5330,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     encryptSetting("enc_license_status", "EXPIRED")
                     return
                 }
-                
+
                 val serverNow = trialCheck.serverTime ?: now
                 val remainingMs = when {
                     trialCheck.expiresAt != null && trialCheck.expiresAt > 0L -> (trialCheck.expiresAt - serverNow).coerceAtLeast(0L)
@@ -4442,10 +5338,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     else -> 0L
                 }
                 val expiresAt = trialCheck.expiresAt ?: (serverNow + remainingMs)
-                
+
                 // Schedule local kill-switch timer
                 scheduleExpiration(expiresAt)
-                
+
                 _isTrialUsed.value = true
                 _isSubscribed.value = true
                 _isAdminAuthenticated.value = true
@@ -4475,12 +5371,12 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 return
             }
         }
-        
+
         loadPurchasedLicenses()
         val deviceFingerprint = getDeviceFingerprint()
         val userId = decryptSetting("enc_user_id").ifBlank { null }
         val savedPhone = decryptSetting("enc_user_phone").ifBlank { null }
-        
+
         // Check if there is a pending purchased license to auto-activate
         val pendingPurchasedCode = decryptSetting("enc_pending_purchased_license")
         if (pendingPurchasedCode.isNotBlank()) {
@@ -4500,13 +5396,13 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     val nowElapsed = android.os.SystemClock.elapsedRealtime()
                     saveLicenseLocal(activeCode, actRes.type ?: "", actRes.realExpiresAt, serverTime, true)
                     encryptSetting("enc_pending_purchased_license", "")
-                    
+
                     encryptSetting("enc_last_server_validation_time", serverTime.toString())
                     encryptSetting("enc_last_validation_elapsed", nowElapsed.toString())
                     encryptSetting("enc_license_status", "ACTIVE")
                     encryptSetting("enc_plan_type", actRes.type ?: "ACTIVE")
                     encryptSetting("enc_expire_time", actRes.realExpiresAt.toString())
-                    
+
                     repository.saveLicenseCache(LicenseCacheEntity(
                         id = 1,
                         userId = userId ?: "",
@@ -4531,7 +5427,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         // Try primary online verification with server
         try {
             val api = NetworkClient.getApi(_serverUrl.value)
-            
+
             val checkRes: SubscriptionCheckResponse = try {
                 api.checkSubscriptionStatus(userId = userId, deviceId = deviceId, deviceFingerprint = deviceFingerprint)
             } catch (eCheck: Exception) {
@@ -4586,11 +5482,38 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 if (checkRes.realExpireTime in 1..serverTime) {
                     // Subscription expired on server
                     _isSubscribed.value = false
+                    _isAdminAuthenticated.value = false
                     _licenseState.value = LicenseState.Expired("اشتراک شما به پایان رسیده است.")
                 } else {
                     val code = checkRes.licenseCode ?: decryptSetting("enc_license_code")
                     saveLicenseLocal(code, checkRes.realPlanType, checkRes.realExpireTime, serverTime, true)
                     _isSubscribed.value = true
+                    // An active subscription is entitlement, not authentication. Never route a
+                    // fresh install (or a corrupted/legacy role marker) into the Manager UI just
+                    // because the device has a valid license. Only restore an explicit server-issued
+                    // Manager session; Trial is handled by its separate server-authoritative flow.
+                    val persistedSessionType = decryptSetting("enc_session_type")
+                    val persistedRole = decryptSetting("enc_admin_role")
+                    val persistedManagerId = decryptSetting("enc_manager_id").ifBlank { decryptSetting("enc_user_id") }
+                    val persistedToken = decryptSetting("enc_auth_token")
+                    val hasServerManagerSession = persistedSessionType == "ADMIN" &&
+                        persistedManagerId.isNotBlank() && persistedToken.isNotBlank() &&
+                        persistedRole in setOf("MANAGER", "GAMENET_MANAGER", "SUPER_MANAGER")
+                    if (hasServerManagerSession && !_isCustomerAuthenticated.value) {
+                        _currentAdminRole.value = persistedRole
+                        SelfHostedManager.setManagerId(persistedManagerId)
+                        NetworkClient.managerAuthToken = persistedToken
+                        NetworkClient.authToken = persistedToken
+                        _isAdminAuthenticated.value = true
+                    } else {
+                        _currentAdminRole.value = "UNAUTHENTICATED"
+                        _isAdminAuthenticated.value = false
+                        if (!_isCustomerAuthenticated.value) {
+                            SelfHostedManager.setManagerId("")
+                            NetworkClient.managerAuthToken = null
+                            NetworkClient.authToken = null
+                        }
+                    }
                     _licenseState.value = LicenseState.Active(
                         planType = checkRes.realPlanType,
                         expiresAt = checkRes.realExpireTime,
@@ -4601,13 +5524,14 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 }
             } else {
                 _isSubscribed.value = false
+                _isAdminAuthenticated.value = false
                 val msg = checkRes.message.ifBlank { "نیاز به فعال‌سازی اشتراک یا تست رایگان می‌باشد." }
                 _licenseState.value = LicenseState.Unactivated(msg)
             }
         } catch (e: Exception) {
             // Offline verification -> 100% Stable and Active Offline Mode
             _isServerConnected.value = false
-            
+
             val roomCache = repository.getLicenseCache()
             val lastServerValTime = roomCache?.lastServerValidationTime ?: (decryptSetting("enc_last_server_validation_time").toLongOrNull() ?: 0L)
             val lastElapsed = decryptSetting("enc_last_validation_elapsed").toLongOrNull() ?: 0L
@@ -4615,7 +5539,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             val cachedExpireTime = roomCache?.expireTime ?: (decryptSetting("enc_expire_time").toLongOrNull() ?: 0L)
             val now = System.currentTimeMillis()
             val activeCode = decryptSetting("enc_license_code")
-            
+
             val currentElapsed = android.os.SystemClock.elapsedRealtime()
             val estimatedCurrentServerTime = if (lastServerValTime > 0 && lastElapsed > 0) {
                 if (currentElapsed >= lastElapsed) {
@@ -4637,7 +5561,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 android.util.Log.e("OfflineCheck", "Offline for more than 24 hours. Forcing logout.")
                 _isSubscribed.value = false
                 _licenseState.value = LicenseState.ConnectionRequired("بیش از 24 ساعت است که ارتباط با سرور قطع است. جهت حفظ امنیت سیستم، باید مجددا لاگین کنید.")
-                
+
                 // Clear credentials to force relogin
                 encryptSetting("enc_auth_token", "")
                 encryptSetting("enc_user_id", "")
@@ -4649,7 +5573,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 return
             }
 
-            
+
             if (cachedPlan.isBlank() || (cachedPlan == "TRIAL" && (cachedExpireTime <= 0 || estimatedCurrentServerTime >= cachedExpireTime))) {
                 _isSubscribed.value = false
                 if (cachedPlan == "TRIAL" && cachedExpireTime > 0 && estimatedCurrentServerTime >= cachedExpireTime) {
@@ -4663,8 +5587,15 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 if (cachedPlan == "TRIAL" || savedRole == "TRIAL_USER") {
                     _currentAdminRole.value = "TRIAL_USER"
                     encryptSetting("enc_admin_role", "TRIAL_USER")
-                } else if (savedRole.isNotBlank()) {
+                } else if (savedRole in setOf("MANAGER", "GAMENET_MANAGER", "SUPER_MANAGER")) {
                     _currentAdminRole.value = savedRole
+                } else {
+                    // Never restore a local operator/deputy/unknown role as the authenticated
+                    // Manager after a cold start. Role switching is an explicit in-session action.
+                    _currentAdminRole.value = "UNAUTHENTICATED"
+                    _isAdminAuthenticated.value = false
+                    _isCustomerAuthenticated.value = false
+                    encryptSetting("enc_admin_role", "")
                 }
                 _licenseState.value = LicenseState.Active(
                     planType = cachedPlan,
@@ -4707,7 +5638,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             try {
                 val deviceId = getTrialDeviceId()
                 val now = System.currentTimeMillis()
-                
+
                 var serverTrialStatus: com.example.data.network.CheckTrialResponse? = null
                 val urls = (listOf(_serverUrl.value, SelfHostedManager.SERVER_URL) + SelfHostedManager.candidateUrls).filter { it.isNotBlank() }.distinct()
                 for (u in urls) {
@@ -4731,7 +5662,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         SelfHostedManager.setCustomServerUrl(u)
                         repository.saveSetting("server_url", u)
                         break
-                    } catch (_: Throwable) {}
+                    } catch (e: Throwable) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
                 }
 
                 if (serverTrialStatus != null) {
@@ -4762,13 +5693,13 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         encryptSetting("enc_expire_time", effectiveExpire.toString())
                         encryptSetting("enc_last_server_validation_time", (serverTrialStatus.serverTime ?: now).toString())
                         encryptSetting("enc_last_validation_elapsed", android.os.SystemClock.elapsedRealtime().toString())
-                        
+
                         try {
                             repository.ensureTrialDataExists()
                         } catch (repoErr: Throwable) {
                             Log.e("GameNetViewModel", "ensureTrialDataExists error: ${repoErr.message}")
                         }
-                        
+
                         _licenseState.value = LicenseState.Active("TRIAL", effectiveExpire, serverTrialStatus.serverTime ?: now, "TRIAL_24H", true, serverTrialStatus.serverTime ?: now)
                         withContext(Dispatchers.Main) {
                             onResult(true, serverTrialStatus.responseMessage)
@@ -4865,10 +5796,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             val extType = decryptSetting("enc_pending_extension_type")
             val extExpiresAtStr = decryptSetting("enc_pending_extension_expiresAt")
             val extMaxDevicesStr = decryptSetting("enc_pending_extension_maxDevices")
-            
+
             val req = LicenseActivateRequest(
-                deviceId = deviceId, 
-                licenseCode = code, 
+                deviceId = deviceId,
+                licenseCode = code,
                 userPhone = phoneToUse.ifBlank { null },
                 extensionType = extType.ifBlank { null },
                 extensionExpiresAt = extExpiresAtStr.toLongOrNull(),
@@ -4876,7 +5807,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 transactionId = txnId.ifBlank { null },
                 activationSecret = decryptSetting("enc_pending_activation_secret").ifBlank { null }
             )
-            
+
             try {
                 val api = NetworkClient.getApi(_serverUrl.value)
                 val response = api.activateLicense(req)
@@ -4888,7 +5819,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     saveLicenseLocal(activeCode, response.type ?: "", response.expiresAt, response.serverTime, true)
                     _isSubscribed.value = true
                     _licenseState.value = LicenseState.Active(response.type ?: "", response.expiresAt, response.activatedAt, activeCode, response.hasPassword)
-                    
+
                     if (!response.hasPassword) {
                         _showSetPasswordForCode.value = activeCode
                     }
@@ -5067,7 +5998,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         fetched = true
                         break
                     }
-                } catch (e: Exception) {}
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
             if (!fetched && _subscriptionPlans.value.isEmpty()) {
                 _subscriptionPlans.value = sanitizeAndOrderPlans(emptyList())
@@ -5112,7 +6043,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         try {
                             api.checkSubscription(deviceId = getDeviceId())
                             connected = true
-                        } catch (e3: Exception) {}
+                        } catch (e3: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e3) }
                     }
                 }
                 if (connected) {
@@ -5124,11 +6055,11 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                         if (plans.isNotEmpty()) {
                             _subscriptionPlans.value = sanitizeAndOrderPlans(plans)
                         }
-                    } catch (ignored: Exception) {}
+                    } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
                     verifyLicenseStatus()
                     return
                 }
-            } catch (e: Exception) {}
+            } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
         }
         if (_subscriptionPlans.value.isEmpty()) {
             _subscriptionPlans.value = sanitizeAndOrderPlans(emptyList())
@@ -5179,7 +6110,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    
+
 
     // ==============================================================
     // USER AUTHENTICATION & DEVICE BINDING
@@ -5251,12 +6182,27 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 // A paid Manager session may be restored only when the persisted server
                 // credentials are present. Subscription/entitlement validation follows.
                 _currentAdminRole.value = savedRole
+                // A persisted Manager JWT is itself a server-issued credential. Restore the
+                // authenticated UI immediately; subscription/device validation continues in the
+                // same cold-start coroutine and may revoke this state if the server rejects it.
+                // This removes the artificial "three-option screen -> delayed hall" gate after
+                // force-close/reopen while preserving server authority.
                 _isAdminAuthenticated.value = true
                 _isCustomerAuthenticated.value = false
+                _isSubscribed.value = true
+                _accessState.value = AppAccessState.Allowed(null, savedRole)
+                val cachedExpiry = decryptSetting("enc_expire_time").toLongOrNull() ?: Long.MAX_VALUE
+                val cachedPlan = planType.ifBlank { "ACTIVE" }
+                _licenseState.value = LicenseState.Active(cachedPlan, cachedExpiry, 0L, "CACHED_SESSION", true, decryptSetting("enc_last_server_validation_time").toLongOrNull() ?: 0L)
                 SelfHostedManager.setManagerId(savedManagerId)
-                SelfHostedManager.fetchAllFromCloud()
-                repository.syncAllWithServer()
+                _isAuthRestoring.value = false
+                // Full cloud synchronization is deliberately not part of auth restoration.
+                // It runs after authentication so a cold start can publish the Manager session quickly.
             } else {
+                // Never treat a partial/corrupt local session — including legacy OPERATOR/DEPUTY
+                // role markers — as an authenticated Manager. A deputy must enter through the
+                // explicit role-switch flow after a valid Manager session exists.
+                _currentAdminRole.value = "UNAUTHENTICATED"
                 // Never treat a partial/corrupt local session as an authenticated Manager.
                 _isAdminAuthenticated.value = false
                 _isCustomerAuthenticated.value = false
@@ -5273,14 +6219,14 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         val userId = decryptSetting("enc_user_id")
         val username = decryptSetting("enc_auth_username")
         val phone = decryptSetting("enc_auth_phone")
-        val role = decryptSetting("enc_auth_role").ifBlank { "OPERATOR" }
+        val role = decryptSetting("enc_auth_role")
         val email = decryptSetting("enc_auth_email")
 
         if (token.isNotBlank()) {
             if (sessionType == "CUSTOMER") {
                 NetworkClient.customerAuthToken = token
                 _authState.value = AuthState.Unauthenticated
-            } else if (userId.isNotBlank()) {
+            } else if (userId.isNotBlank() && role in setOf("MANAGER", "GAMENET_MANAGER", "SUPER_MANAGER")) {
                 NetworkClient.managerAuthToken = token
                 _authState.value = AuthState.Authenticated(
                     userId = userId,
@@ -5290,7 +6236,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     email = email,
                     token = token
                 )
-                checkAuthStatusOnServer()
+                // Entitlement/auth validation is handled by verifyLicenseStatus() during cold start.
+                // Do not launch a second asynchronous auth check here: an older validation can
+                // race a fresh login and log the newly authenticated Manager out one frame later.
                 bindDeviceToUser(userId)
             } else {
                 _authState.value = AuthState.Unauthenticated
@@ -5307,98 +6255,24 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         email: String? = null,
         onResult: (Boolean, String) -> Unit
     ) {
-        val cleanUsername = username.trim()
+        val cleanName = username.trim()
         val cleanPassword = password.trim()
         val cleanPhone = phone?.trim()?.ifBlank { null }
-        val cleanEmail = email?.trim()?.ifBlank { null }
-
-        if (cleanUsername.length < 3) {
-            onResult(false, "نام کاربری باید حداقل 3 کاراکتر باشد.")
-            return
-        }
-        if (cleanPhone.isNullOrBlank() || cleanPhone.length < 10) {
-            onResult(false, "لطفاً شماره موبایل معتبر (مثال: 09123456789) وارد کنید.")
-            return
-        }
-        if (cleanEmail.isNullOrBlank() || !cleanEmail.contains("@") || !cleanEmail.contains(".")) {
-            onResult(false, "لطفاً آدرس ایمیل معتبر (مثال: name@domain.com) وارد کنید.")
-            return
-        }
-        if (cleanPassword.length < 4) {
-            onResult(false, "رمز عبور باید حداقل 4 کاراکتر باشد.")
-            return
-        }
+        if (cleanName.length < 3) { onResult(false, "نام و نام خانوادگی باید حداقل 3 کاراکتر باشد."); return }
+        if (cleanPhone.isNullOrBlank() || cleanPhone.length < 10) { onResult(false, "لطفاً شماره موبایل معتبر (مثال: 09123456789) وارد کنید."); return }
+        if (cleanPassword.length < 8) { onResult(false, "رمز عبور باید حداقل 8 کاراکتر باشد."); return }
+        if (password != cleanPassword) { onResult(false, "رمز عبور نمی‌تواند با فاصله ابتدا یا انتها ذخیره شود."); return }
 
         _authState.value = AuthState.Authenticating
-
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                NetworkClient.authToken = null
-                val api = NetworkClient.getApi(_serverUrl.value)
-                val req = UserRegisterRequest(
-                    username = cleanUsername,
-                    password = cleanPassword,
-                    phone = cleanPhone,
-                    email = cleanEmail,
-                    role = "OPERATOR"
-                )
-                val response = api.registerUser(req)
-                val token = response.token
-                val user = response.user
-
-                if (response.success && !token.isNullOrBlank() && user != null && user.realId.isNotBlank()) {
-                    val userId = user.realId
-                    val effectiveUsername = user.username ?: cleanUsername
-                    val effectivePhone = user.phone ?: cleanPhone
-                    val effectiveRole = user.role ?: "OPERATOR"
-                    val effectiveEmail = user.email ?: cleanEmail
-
-                    // Encrypted local session storage
-                    encryptSetting("enc_auth_token", token)
-                    encryptSetting("enc_user_id", userId)
-                    encryptSetting("enc_auth_username", effectiveUsername)
-                    encryptSetting("enc_auth_phone", effectivePhone)
-                    encryptSetting("enc_auth_role", effectiveRole)
-                    encryptSetting("enc_auth_email", effectiveEmail)
-                    encryptSetting("enc_auth_password", "")
-                    if (effectivePhone.isNotBlank()) {
-                        encryptSetting("enc_user_phone", effectivePhone)
-                    }
-
-                    NetworkClient.authToken = token
-
-                    _authState.value = AuthState.Authenticated(
-                        userId = userId,
-                        username = effectiveUsername,
-                        phone = effectivePhone,
-                        role = effectiveRole,
-                        email = effectiveEmail,
-                        token = token
-                    )
-                    _showAuthDialog.value = false
-
-                    // Idempotent device binding with real backend users.id
-                    bindDeviceToUser(userId)
-
-                    withContext(Dispatchers.Main) {
-                        onResult(true, "ثبت‌نام با موفقیت انجام شد. خوش آمدید!")
-                    }
+            val result = SelfHostedManager.registerCustomer(cleanName, cleanPhone, cleanPassword)
+            withContext(Dispatchers.Main) {
+                if (result.isSuccess) {
+                    _authState.value = AuthState.Unauthenticated
+                    onResult(true, "ثبت‌نام مشتری با موفقیت انجام شد.")
                 } else {
-                    val errorMsg = response.error.ifBlank { response.message }.ifBlank { "ثبت‌نام در سرور ناموفق بود." }
-                    _authState.value = AuthState.AuthenticationError(errorMsg)
-                    withContext(Dispatchers.Main) { onResult(false, errorMsg) }
-                }
-            } catch (e: Exception) {
-                if (e is retrofit2.HttpException && e.code() == 409) {
-                    val errorMsg = "این نام کاربری، شماره موبایل یا ایمیل قبلاً در سامانه ثبت شده است. لطفاً از تب «ورود» استفاده کنید."
-                    _authState.value = AuthState.AuthenticationError(errorMsg)
-                    withContext(Dispatchers.Main) {
-                        onResult(false, errorMsg)
-                    }
-                } else {
-                    val errorMsg = "ثبت‌نام نیازمند اتصال موفق به سرور است."
-                    _authState.value = AuthState.AuthenticationError(errorMsg)
-                    withContext(Dispatchers.Main) { onResult(false, errorMsg) }
+                    _authState.value = AuthState.Unauthenticated
+                    onResult(false, result.exceptionOrNull()?.message ?: "ثبت‌نام ناموفق بود.")
                 }
             }
         }
@@ -5423,7 +6297,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             try {
                 val api = NetworkClient.getApi(_serverUrl.value)
                 val req = UserLoginRequest(
-                    username = cleanUsername, 
+                    username = cleanUsername,
                     password = cleanPassword,
                     deviceId = getDeviceId(),
                     deviceFingerprint = android.os.Build.FINGERPRINT,
@@ -5468,7 +6342,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
                     // Idempotent device binding with real backend users.id
                     bindDeviceToUser(userId)
-                    
+
                     // Sync with Self-Hosted server immediately upon login
                     com.example.data.network.SelfHostedManager.setManagerId(userId)
                     com.example.data.network.SelfHostedManager.fetchAllFromCloud()
@@ -5542,6 +6416,24 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private suspend fun ensureDeviceBoundForManager(userId: String): Boolean = withContext(Dispatchers.IO) {
+        if (userId.isBlank()) return@withContext false
+        val lastBoundUser = decryptSetting("enc_device_bound_user_id")
+        if (lastBoundUser == userId) return@withContext true
+        return@withContext try {
+            val api = NetworkClient.getApi(_serverUrl.value)
+            val payload = mapOf(
+                "user_id" to userId,
+                "device_id" to getDeviceId(),
+                "device_name" to "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
+                "os_version" to "Android ${Build.VERSION.RELEASE}"
+            )
+            api.addUserDevice(payload)
+            encryptSetting("enc_device_bound_user_id", userId)
+            true
+        } catch (_: Exception) { false }
+    }
+
     fun bindDeviceToUser(userId: String, onResult: ((Boolean) -> Unit)? = null) {
         if (userId.isBlank()) {
             onResult?.invoke(false)
@@ -5584,6 +6476,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     fun logout(onComplete: (() -> Unit)? = null) {
         viewModelScope.launch(Dispatchers.IO) {
+            try { NetworkClient.getApi(_serverUrl.value).logoutSession() } catch (_: Exception) { /* local logout still completes */ }
             encryptSetting("enc_auth_token", "")
             encryptSetting("enc_user_id", "")
             encryptSetting("enc_auth_username", "")
@@ -5735,7 +6628,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     totalGnPen = obj.optLong("totalGnPenalized", 0L)
                     totalLpPen = obj.optLong("totalLpPenalized", 0L)
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
         }
 
         return AbsenceStatusInfo(
@@ -5797,7 +6690,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     } else {
                         prefs.edit().remove(statePrefKey).apply()
                     }
-                } catch (_: Exception) {}
+                } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", e) }
             }
 
             if (absentDays < 21) {
@@ -5920,6 +6813,69 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 logOperatorActivity("تغییر دستی LP", "تغییر LP برای کاربر ${cust.fullName} به میزان $delta")
             }
         }
+    }
+
+    suspend fun fetchManagerCustomerActivity(customerId: Long): com.example.data.network.ManagerCustomerActivity {
+        return com.example.data.network.SelfHostedManager.fetchManagerCustomerActivity(customerId)
+    }
+    suspend fun fetchSettlementReview(
+        sessionId: String,
+        customerId: Long? = null,
+        participantName: String? = null,
+        transaction: CustomerTransaction? = null
+    ): com.example.data.network.SettlementReview? {
+        if (transaction != null && transaction.status != "DELETED") {
+            val transactionForSession = if (transaction.sessionId == sessionId) transaction else transaction.copy(sessionId = sessionId)
+            val synced = com.example.data.network.SelfHostedManager.syncCustomerTransactionToCloud(transactionForSession)
+            if (!synced) android.util.Log.w("GameNetViewModel", "Settlement review transaction pre-sync failed for localId=" + transaction.id)
+        }
+        return com.example.data.network.SelfHostedManager.fetchSettlementReview(sessionId, customerId, participantName)
+    }
+
+    suspend fun finalizeSettlementReview(sessionId: String, decisions: List<org.json.JSONObject>): Boolean = withContext(Dispatchers.IO) {
+        // A successful HTTP response means the server committed the decision. Never make the
+        // dialog depend on a second GET/sync: that GET may fail or return a temporarily stale
+        // list, leaving the Manager trapped in the dialog even though finalization succeeded.
+        val result = SelfHostedManager.finalizeSettlementReview(sessionId, decisions) ?: return@withContext false
+        val results = result.optJSONArray("results") ?: org.json.JSONArray()
+        val all = repository.allCustomerTransactions.firstOrNull() ?: emptyList()
+        for (i in 0 until results.length()) {
+            val r = results.optJSONObject(i) ?: continue
+            val cid = r.optLong("customerId", 0L)
+            val customerName = r.optString("customerName", "")
+            val status = r.optString("status", "REVIEWED").uppercase()
+            val localTransactionId = decisions.firstOrNull { d -> d.optLong("customerId", 0L) == cid }
+                ?.optLong("transactionId", 0L) ?: 0L
+            val targets = all.filter { tx ->
+                tx.status != "DELETED" &&
+                    (tx.sessionId == sessionId || (localTransactionId > 0L && tx.id == localTransactionId)) &&
+                    if (cid > 0L) tx.customerId == cid
+                    else tx.customerId <= 0L && customerName.isNotBlank() && tx.customerName == customerName
+            }.distinctBy { it.id }
+            targets.forEach { tx ->
+                val paid = if (status == "REVIEWED") tx.amount else r.optLong("paidAmount", tx.paidAmount)
+                repository.upsertCustomerTransactionLocal(tx.copy(status=status, paidAmount=paid,
+                    earnedGn=r.optLong("earnedGn", 0L), earnedLp=r.optLong("earnedLp", 0L)))
+            }
+        }
+        // Reconcile Room with the authoritative server in the background. The dialog can close
+        // immediately and the StateFlow is updated optimistically even if this request times out.
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { repository.syncCustomerTransactionsFromServer() }
+                .onFailure { android.util.Log.w("GameNetViewModel", "Post-finalize refresh deferred: ${it.message}") }
+        }
+        true
+    }
+
+    suspend fun refundUnusedPrepayment(sessionId: String, allocations: Map<Long, Long>): Boolean {
+        val ok = com.example.data.network.SelfHostedManager.refundSessionPrepayment(sessionId, allocations)
+        if (ok) {
+            allocations.filter { it.key > 0L && it.value > 0L }.forEach { (customerId, amount) ->
+                val customer = repository.allCustomers.firstOrNull()?.firstOrNull { it.id == customerId }
+                if (customer != null) repository.insertCustomer(customer.copy(credit = customer.credit + amount))
+            }
+        }
+        return ok
     }
 
     fun getPointLogs(customerId: Long): Flow<List<PointLog>> {
@@ -6169,7 +7125,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             }
         }
     }
-    
+
     fun approveManagerPayment(
         managerId: String,
         onSuccess: () -> Unit,
@@ -6228,7 +7184,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             }
         }
     }
-    
+
     fun deleteDeviceTrial(deviceId: String) {}
 
     fun handlePaymentCallback(txn: String, licenseCode: String, status: String, onResult: (Boolean, String) -> Unit) {
@@ -6245,10 +7201,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             onResult(false, "پرداخت ناموفق بود یا لغو شد")
         }
     }
-    
-    
-    
-    
+
+
+
+
 }
 data class NonFinancialPerk(
     val id: String = java.util.UUID.randomUUID().toString(),
@@ -6323,7 +7279,7 @@ data class ClubLevel(
     val rewardsText: String = "",
     val validityDays: Int = 30,
     val graceDays: Int = 7,
-    
+
     // New Loyalty Level Parameters
     val reachGnBonus: Long = 0L,
     val gameGnPercent: Long = 0L,
@@ -6334,7 +7290,7 @@ data class ClubLevel(
     val minVisitDays: Int = 0,
     val retainLpPoints: Long = 0L,
     val maxAbsenceWithoutPenaltyDays: Int = 20,
-    
+
     val nonFinancialPerks: List<NonFinancialPerk> = emptyList()
 )
 
@@ -6499,7 +7455,7 @@ fun GameNetViewModel.generateCustomerPassword(): String {
     return "$p1$p2$p3$p4$p5$p6$p7$p8"
 }
 
-    
+
     suspend fun GameNetViewModel.pushOfflineChangesToCloud() {
         try {
             val localStations = stationStates.value
@@ -6558,17 +7514,15 @@ fun GameNetViewModel.generateCustomerPassword(): String {
                 })
             }
             val hourlyRate = getHourlyRate(state.consoleType, state.controllerCount)
-            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
-                try {
-                    com.example.data.network.SelfHostedManager.syncStationToCloud(
-                        station = state,
-                        ordersJsonStr = ordersArray.toString(),
-                        hourlyRate = hourlyRate,
-                        buffetCost = buffetSum
-                    )
-                } catch(e: Exception) {
-                    e.printStackTrace()
-                }
+            try {
+                com.example.data.network.SelfHostedManager.syncStationToCloud(
+                    station = state,
+                    ordersJsonStr = ordersArray.toString(),
+                    hourlyRate = hourlyRate,
+                    buffetCost = buffetSum
+                )
+            } catch(e: Exception) {
+                android.util.Log.e("GameNetViewModel", "Station state sync failed", e)
             }
         } catch(e: Exception) {
             e.printStackTrace()

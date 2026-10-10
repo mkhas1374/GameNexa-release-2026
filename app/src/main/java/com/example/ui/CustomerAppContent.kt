@@ -53,6 +53,7 @@ fun CustomerDashboardTab(
 
     val clubLevels by viewModel.clubLevels.collectAsState()
     val lpTomanRate by viewModel.lpTomanRate.collectAsState()
+    val buffetLpPer10000 by viewModel.buffetLpPer10000.collectAsState()
     var showProgressDetailsDialog by remember { mutableStateOf(false) }
 
     val currentCustomerAuth by SelfHostedManager.currentLoggedInCustomer.collectAsState()
@@ -131,7 +132,7 @@ fun CustomerDashboardTab(
                 SelfHostedManager.fetchLiveStationsFromCloud()
                 // Refresh the authenticated customer with the server token; never re-login with a locally stored password.
                 SelfHostedManager.refreshCurrentCustomerProfile()
-            } catch (_: Exception) {}
+            } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in CustomerAppContent.kt", e) }
             delay(3000L) // Polling every 3s for Real-Time Experience
         }
     }
@@ -554,7 +555,7 @@ fun CustomerDashboardTab(
                         try {
                             val txs = com.example.data.network.SelfHostedManager.fetchCustomerTransactionsForCustomer(customer.id)
                             value = txs.maxByOrNull { if (it.id > 0) it.id else it.timestamp }
-                        } catch (e: Exception) {}
+                        } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in CustomerAppContent.kt", e) }
                     }
                 }
                 if (lastSession != null) {
@@ -839,6 +840,7 @@ fun CustomerDashboardTab(
             neededToman = neededToman,
             progressFraction = progressFraction,
             lpTomanRate = effectiveLpRate,
+            buffetLpPer10000 = buffetLpPer10000,
             customerLedger = customerLedger,
             onDismiss = { showProgressDetailsDialog = false }
         )
@@ -855,6 +857,7 @@ fun CustomerLoyaltyProgressDialog(
     neededToman: Long,
     progressFraction: Float,
     lpTomanRate: Long,
+    buffetLpPer10000: Long,
     customerLedger: List<GnLedgerEntry>,
     onDismiss: () -> Unit
 ) {
@@ -989,7 +992,7 @@ fun CustomerLoyaltyProgressDialog(
                                 Text("${numberFormat.format(neededToman)} تومان", fontSize = 12.sp, fontWeight = FontWeight.Black, color = Color(0xFF2E7D32))
                             }
                             Text(
-                                text = "* بر اساس محاسبه 1 LP به ازای هر ${numberFormat.format(lpTomanRate)} تومان پرداخت",
+                                text = "* بازی: 1 LP به ازای هر ${numberFormat.format(lpTomanRate)} تومان | بوفه: ${numberFormat.format(buffetLpPer10000)} LP به ازای هر 10,000 تومان",
                                 fontSize = 9.sp,
                                 color = MaterialTheme.colorScheme.outline
                             )

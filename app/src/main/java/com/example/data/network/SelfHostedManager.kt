@@ -10,6 +10,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.delay
 import okhttp3.*
 import okhttp3.logging.HttpLoggingInterceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -38,6 +41,52 @@ data class CloudLiveStation(
     val splitMode: String = "ALL", // "ALL", "SINGLE", "CUSTOM"
     val payerCustomerIdsStr: String = "",
     val payerCustomerNamesStr: String = ""
+)
+
+data class ManagerLpHistory(
+    val id: Long,
+    val customerId: Long,
+    val amount: Long,
+    val type: String,
+    val referenceType: String,
+    val referenceId: String,
+    val timestamp: Long
+)
+
+data class SettlementPayer(
+    val customerId: Long,
+    val name: String,
+    val prepaymentAmount: Long,
+    val gameCost: Long = 0L,
+    val buffetCost: Long = 0L,
+    val invoiceTotal: Long = 0L,
+    val unusedPrepayment: Long = 0L
+)
+
+data class BuffetOrderSyncResult(
+    val accepted: Boolean,
+    val retryable: Boolean,
+    val errorMessage: String = ""
+)
+
+data class SettlementReview(
+    val sessionId: String,
+    val totalPrepayment: Long,
+    val sessionTotalPrepayment: Long = 0L,
+    val refundedPrepayment: Long,
+    val remainingRefundable: Long,
+    val gameCost: Long = 0L,
+    val buffetCost: Long = 0L,
+    val sessionGameCost: Long = 0L,
+    val sessionBuffetCost: Long = 0L,
+    val sessionTotalCost: Long = 0L,
+    val payers: List<SettlementPayer> = emptyList()
+)
+
+data class ManagerCustomerActivity(
+    val transactions: List<CustomerTransaction> = emptyList(),
+    val gnLedger: List<GnLedgerEntry> = emptyList(),
+    val lpLedger: List<ManagerLpHistory> = emptyList()
 )
 
 data class CloudPaymentRecord(
@@ -81,8 +130,18 @@ data class CloudAuditLog(
 )
 
 object SelfHostedManager {
+    // Serialize and pace settings writes so concurrent startup/config hydration cannot
+    // burst through the Nginx API rate limit and turn healthy requests into HTTP 503s.
+    private val managerSettingsWriteMutex = Mutex()
+    private var lastManagerSettingsWriteAtMs = 0L
+    private const val MIN_MANAGER_SETTINGS_WRITE_INTERVAL_MS = 125L
+
     @Volatile var lastStationStartWasTransportFailure: Boolean = false
     @Volatile var lastStationStartError: String = ""
+    @Volatile var lastSettlementHttpCode: Int = 0
+    @Volatile var lastTransactionDeleteHttpCode: Int = 0
+    @Volatile var lastCustomerMutationHttpCode: Int = 0
+    @Volatile var lastSettlementErrorBody: String = ""
     private const val TAG = "SelfHostedManager"
     
     // Dedicated Production Backend Server
@@ -157,6 +216,8 @@ object SelfHostedManager {
 
     val client = OkHttpClient.Builder()
         .dns(GameNexaDns)
+        // Respect Android's active system proxy/VPN routing instead of forcing a direct path.
+        .proxySelector(java.net.ProxySelector.getDefault())
         .connectTimeout(60, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
@@ -180,6 +241,8 @@ object SelfHostedManager {
 
     private val _allCloudCustomers = MutableStateFlow<List<Customer>>(emptyList())
     val allCloudCustomers: StateFlow<List<Customer>> = _allCloudCustomers.asStateFlow()
+    private val _archivedCloudCustomers = MutableStateFlow<List<Customer>>(emptyList())
+    val archivedCloudCustomers: StateFlow<List<Customer>> = _archivedCloudCustomers.asStateFlow()
 
     private val _recentPayments = MutableStateFlow<List<CloudPaymentRecord>>(emptyList())
     val recentPayments: StateFlow<List<CloudPaymentRecord>> = _recentPayments.asStateFlow()
@@ -433,7 +496,7 @@ object SelfHostedManager {
                 return@withContext Result.failure(Exception("دریافت اطلاعات مشتری پس از ورود ناموفق بود."))
             }
 
-            val cust = parseCustomerObject(JSONObject(profileBody)).copy(password = cleanPass)
+            val cust = parseCustomerObject(JSONObject(profileBody))
             setManagerId(managerId)
             _currentLoggedInCustomer.value = cust
             _isConnected.value = true
@@ -498,7 +561,7 @@ object SelfHostedManager {
                 val jsonObj = JSONObject(body)
                 if (jsonObj.optBoolean("success", true)) {
                     val cObj = if (jsonObj.has("customer")) jsonObj.getJSONObject("customer") else jsonObj
-                    val newCust = parseCustomerObject(cObj).copy(password = passwordText.trim())
+                    val newCust = parseCustomerObject(cObj)
                     val authToken = jsonObj.optString("token", "")
                     if (authToken.isNotBlank()) NetworkClient.customerAuthToken = authToken
                     setManagerId(managerId)
@@ -542,30 +605,71 @@ object SelfHostedManager {
         _allCloudCustomers.value.any { it.id == customerId || (normPhone.isNotBlank() && normalizePhone(it.phoneNumber) == normPhone) }
     }
 
-    suspend fun upsertCustomer(customer: Customer): Boolean = withContext(Dispatchers.IO) {
+    suspend fun upsertCustomerCanonical(customer: Customer): Customer? = withContext(Dispatchers.IO) {
         try {
             val json=JSONObject().apply {
-                put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber); if (customer.password.isNotBlank()) put("password",customer.password)
-                put("debt",customer.debt); put("credit",customer.credit); put("tier",customer.tier); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
+                put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber)
+                put("debt",customer.debt); put("credit",customer.credit); put("tier",customer.tier)
+                if (customer.lp > 0L) put("lp", customer.lp)
+                put("availableGn",customer.availableGn); put("pendingGn",customer.pendingGn); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
             }
             val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
             client.newCall(req).execute().use { resp ->
-                if(!resp.isSuccessful) return@withContext false
-                val list=_allCloudCustomers.value.toMutableList(); val idx=list.indexOfFirst{it.id==customer.id || it.phoneNumber==customer.phoneNumber}; if(idx>=0) list[idx]=customer else list.add(0,customer); _allCloudCustomers.value=list; true
+                if(!resp.isSuccessful) return@withContext null
+                val body=resp.body?.string().orEmpty()
+                val root=runCatching { JSONObject(body) }.getOrNull() ?: return@withContext null
+                val canonical=parseCustomerObject(root.optJSONObject("customer") ?: root)
+                val list=_allCloudCustomers.value.toMutableList()
+                val idx=list.indexOfFirst{it.id==customer.id || it.id==canonical.id || normalizePhone(it.phoneNumber)==normalizePhone(customer.phoneNumber)}
+                if(idx>=0) list[idx]=canonical else list.add(0,canonical)
+                _allCloudCustomers.value=list
+                canonical
             }
-        } catch(e:Exception){Log.e(TAG,"upsertCustomer error: ${e.message}",e);false}
+        } catch(e:Exception){Log.e(TAG,"upsertCustomerCanonical error: \${e.message}",e);null}
+    }
+
+    suspend fun upsertCustomer(customer: Customer): Boolean = withContext(Dispatchers.IO) {
+        upsertCustomerCanonical(customer) != null
     }
 
     suspend fun deleteCustomer(customerId: Long, phoneNumber: String = ""): Boolean = withContext(Dispatchers.IO) {
         try {
-            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers/$customerId").headers(getBaseHeaders()).delete().build()
+            lastCustomerMutationHttpCode = 0
+            var canonicalId = customerId
+            var req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers/$canonicalId" + if(phoneNumber.isNotBlank()) "?phone=" + java.net.URLEncoder.encode(phoneNumber, "UTF-8") else "").headers(getBaseHeaders()).delete().build()
             client.newCall(req).execute().use { resp ->
-                if(!resp.isSuccessful) return@withContext false
-                _allCloudCustomers.value=_allCloudCustomers.value.filterNot{it.id==customerId || (phoneNumber.isNotBlank() && normalizePhone(it.phoneNumber)==normalizePhone(phoneNumber))}
-                if(_currentLoggedInCustomer.value?.id==customerId){_currentLoggedInCustomer.value=null;_isCustomerKickedOut.value=true}
-                true
+                lastCustomerMutationHttpCode = resp.code
+                if (resp.isSuccessful) {
+                    _allCloudCustomers.value=_allCloudCustomers.value.filterNot{it.id==canonicalId || (phoneNumber.isNotBlank() && normalizePhone(it.phoneNumber)==normalizePhone(phoneNumber))}
+                    return@withContext true
+                }
             }
-        } catch(e:Exception){Log.e(TAG,"deleteCustomer error: ${e.message}",e);false}
+            if (lastCustomerMutationHttpCode == 404 && phoneNumber.isNotBlank()) {
+                val listReq=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).get().build()
+                client.newCall(listReq).execute().use { resp ->
+                    if(resp.isSuccessful){
+                        val body=resp.body?.string().orEmpty()
+                        val arr=if(body.trim().startsWith("[")) JSONArray(body) else JSONObject(body).optJSONArray("data") ?: JSONArray()
+                        for(i in 0 until arr.length()){
+                            val o=arr.optJSONObject(i) ?: continue
+                            val p=normalizePhone(o.optString("phoneNumber",o.optString("phone_number","")))
+                            if(p==normalizePhone(phoneNumber)){ canonicalId=o.optLong("id",0L); break }
+                        }
+                    }
+                }
+                if(canonicalId>0L && canonicalId!=customerId){
+                    req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers/$canonicalId" + if(phoneNumber.isNotBlank()) "?phone=" + java.net.URLEncoder.encode(phoneNumber, "UTF-8") else "").headers(getBaseHeaders()).delete().build()
+                    client.newCall(req).execute().use { resp ->
+                        lastCustomerMutationHttpCode=resp.code
+                        if(resp.isSuccessful){
+                            _allCloudCustomers.value=_allCloudCustomers.value.filterNot{it.id==canonicalId || (phoneNumber.isNotBlank() && normalizePhone(it.phoneNumber)==normalizePhone(phoneNumber))}
+                            return@withContext true
+                        }
+                    }
+                }
+            }
+            false
+        } catch(e:Exception){lastCustomerMutationHttpCode=0;Log.e(TAG,"deleteCustomer error: \${e.message}",e);false}
     }
 
     suspend fun deleteCustomersBatch(customerIds: List<Long>): Boolean = withContext(Dispatchers.IO) {
@@ -594,6 +698,77 @@ object SelfHostedManager {
     }
 
 
+    suspend fun restoreCustomer(customerId: Long, phoneNumber: String = ""): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers/$customerId/restore" + if(phoneNumber.isNotBlank()) "?phone=" + java.net.URLEncoder.encode(phoneNumber, "UTF-8") else "").headers(getBaseHeaders()).post("{}".toRequestBody(JSON_MEDIA)).build()
+            client.newCall(req).execute().use { resp ->
+                lastCustomerMutationHttpCode = resp.code
+                resp.isSuccessful
+            }
+        } catch(e:Exception) {
+            lastCustomerMutationHttpCode = 0
+            Log.w(TAG,"restoreCustomer error: \${e.message}")
+            false
+        }
+    }
+
+    suspend fun purgeArchivedCustomer(customerId: Long, phoneNumber: String = ""): Boolean = withContext(Dispatchers.IO) {
+        try {
+            lastCustomerMutationHttpCode = 0
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/customers/$customerId/purge" + if(phoneNumber.isNotBlank()) "?phone=" + java.net.URLEncoder.encode(phoneNumber, "UTF-8") else "")
+                .headers(getBaseHeaders())
+                .delete()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                lastCustomerMutationHttpCode = resp.code
+                if (!resp.isSuccessful) return@withContext false
+                _archivedCloudCustomers.value = _archivedCloudCustomers.value.filterNot { it.id == customerId }
+                _allCloudCustomers.value = _allCloudCustomers.value.filterNot { it.id == customerId }
+                if (_currentLoggedInCustomer.value?.id == customerId) {
+                    _currentLoggedInCustomer.value = null
+                    _isCustomerKickedOut.value = true
+                }
+                true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "purgeArchivedCustomer error: ${e.message}", e)
+            false
+        }
+    }
+
+    fun removeArchivedCustomerLocally(customerId: Long) {
+        _archivedCloudCustomers.value = _archivedCloudCustomers.value.filterNot { it.id == customerId }
+    }
+
+    fun publishArchivedCustomerLocally(customer: Customer) {
+        _archivedCloudCustomers.value = (_archivedCloudCustomers.value.filterNot { it.id == customer.id } + customer)
+            .sortedByDescending { it.id }
+    }
+
+    suspend fun fetchArchivedCustomersFromCloud(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/customers/archived")
+                .headers(getBaseHeaders())
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext false
+                val body = resp.body?.string().orEmpty()
+                val list = ArrayList<Customer>()
+                if (body.isNotBlank()) {
+                    extractCustomerObjects(if (body.trim().startsWith("[")) JSONArray(body) else JSONObject(body).opt("data") ?: JSONArray(), list)
+                }
+                _archivedCloudCustomers.value = list
+                true
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchArchivedCustomersFromCloud error: " + e.message)
+            false
+        }
+    }
+
     suspend fun fetchAllFromCloud(): Boolean = withContext(Dispatchers.IO) {
         try {
             val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).get().build()
@@ -601,7 +776,7 @@ object SelfHostedManager {
                 val body=resp.body?.string().orEmpty(); if(!resp.isSuccessful||body.isBlank()){_isConnected.value=false;return@withContext false}
                 val list=ArrayList<Customer>(); extractCustomerObjects(if(body.trim().startsWith("[")) JSONArray(body) else JSONObject(body).opt("data")?:JSONArray(),list)
                 _allCloudCustomers.value=list; _isConnected.value=true
-                try{fetchRecentPaymentsFromCloud();fetchAllReservationsFromCloud()}catch(_:Exception){}
+                try{fetchRecentPaymentsFromCloud();fetchAllReservationsFromCloud()}catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in SelfHostedManager.kt", e) }
                 true
             }
         }catch(e:Exception){_isConnected.value=false;Log.w(TAG,"fetchAllFromCloud error: ${e.message}");false}
@@ -760,13 +935,12 @@ object SelfHostedManager {
             id = if (resolvedId > 0) resolvedId else System.currentTimeMillis(),
             fullName = name,
             phoneNumber = phone,
-            password = obj.optString("password", ""),
             debt = obj.optLong("debt", 0L),
-            credit = obj.optLong("credit", 0L),
+            credit = obj.optLong("wallet_balance", obj.optLong("credit", 0L)),
             points = obj.optLong("points", 0L),
             availableGn = obj.optLong("availableGn", obj.optLong("available_gn", 0L)),
             pendingGn = obj.optLong("pendingGn", obj.optLong("pending_gn", 0L)),
-            lp = obj.optLong("lp", 0L),
+            lp = obj.optLong("lp", obj.optLong("lp_balance", 0L)),
             tier = obj.optString("tier", "BRONZE"),
             inviteCode = obj.optString("inviteCode", obj.optString("invite_code", "")),
             invitedByCode = obj.optString("invitedByCode", obj.optString("invited_by_code", "")),
@@ -907,6 +1081,39 @@ object SelfHostedManager {
         }
     }
 
+    suspend fun saveManagerSetting(key: String, value: String): Boolean = withContext(Dispatchers.IO) {
+        managerSettingsWriteMutex.withLock {
+            try {
+                val now = System.currentTimeMillis()
+                val waitMs = (MIN_MANAGER_SETTINGS_WRITE_INTERVAL_MS - (now - lastManagerSettingsWriteAtMs)).coerceAtLeast(0L)
+                if (waitMs > 0L) delay(waitMs)
+
+                val body = JSONObject().apply { put("key", key); put("value", value) }
+                    .toString().toRequestBody(JSON_MEDIA)
+                val request = Request.Builder()
+                    .url("$SERVER_URL/api/v1/manager/settings")
+                    .headers(getBaseHeaders())
+                    .post(body)
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    lastManagerSettingsWriteAtMs = System.currentTimeMillis()
+                    val responseBody = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        Log.w(TAG, "Manager setting sync failed: HTTP " + response.code + " " + responseBody)
+                        return@withLock false
+                    }
+                    val updated = _cloudAppConfigs.value.toMutableMap()
+                    updated[key] = value
+                    _cloudAppConfigs.value = updated
+                    true
+                }
+            } catch (_: Exception) {
+                Log.w(TAG, "saveManagerSetting failed")
+                false
+            }
+        }
+    }
+
     suspend fun fetchAppConfig(key: String): String? = withContext(Dispatchers.IO) {
         _cloudAppConfigs.value[key]?.let { return@withContext it }
         try {
@@ -1019,6 +1226,180 @@ object SelfHostedManager {
             resp.isSuccessful
         } catch (e: Exception) {
             Log.w(TAG, "addGnLedgerEntry error: ${e.message}")
+            false
+        }
+    }
+
+    suspend fun fetchManagerCustomerActivity(customerId: Long): ManagerCustomerActivity = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/customers/$customerId/activity")
+                .headers(getBaseHeaders())
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext ManagerCustomerActivity()
+                val body = resp.body?.string().orEmpty()
+                val root = JSONObject(body)
+                val txArray = root.optJSONArray("transactions") ?: JSONArray()
+                val gnArray = root.optJSONArray("gnLedger") ?: JSONArray()
+                val lpArray = root.optJSONArray("lpLedger") ?: JSONArray()
+                val tx = mutableListOf<CustomerTransaction>()
+                for (i in 0 until txArray.length()) {
+                    val o = txArray.optJSONObject(i) ?: continue
+                    tx += CustomerTransaction(
+                        id = o.optLong("id", 0L),
+                        customerId = o.optLong("customer_id", o.optLong("customerId", 0L)),
+                        customerName = o.optString("customer_name", o.optString("customerName", "")),
+                        stationName = o.optString("station_name", o.optString("stationName", "")),
+                        title = o.optString("title", ""),
+                        amount = o.optLong("amount", 0L),
+                        paidAmount = o.optLong("paid_amount", o.optLong("paidAmount", 0L)),
+                        status = o.optString("status", "UNREVIEWED"),
+                        dateStr = o.optString("date_str", o.optString("dateStr", "")),
+                        timeStr = o.optString("time_str", o.optString("timeStr", "")),
+                        segmentDetails = o.optString("segment_details", o.optString("segmentDetails", "")),
+                        buffetDetails = o.optString("buffet_details", o.optString("buffetDetails", "")),
+                        timestamp = o.optLong("event_timestamp", o.optLong("timestamp", 0L)),
+                        playMinutes = o.optInt("play_minutes", o.optInt("playMinutes", 0)),
+                        gameCost = o.optLong("game_cost", o.optLong("gameCost", 0L)),
+                        foodCost = o.optLong("food_cost", o.optLong("foodCost", 0L)),
+                        sessionId = o.optString("session_id", o.optString("sessionId", "")),
+                        earnedGn = o.optLong("earned_gn", o.optLong("earnedGn", 0L)),
+                        earnedLp = o.optLong("earned_lp", o.optLong("earnedLp", 0L))
+                    )
+                }
+                val gn = mutableListOf<GnLedgerEntry>()
+                for (i in 0 until gnArray.length()) {
+                    val o = gnArray.optJSONObject(i) ?: continue
+                    gn += GnLedgerEntry(
+                        id = o.optLong("id",0L),
+                        customerId = o.optLong("customer_id",o.optLong("customerId",0L)),
+                        customerName = "",
+                        gnAmount = o.optLong("amount",o.optLong("gnAmount",0L)),
+                        transactionType = o.optString("type",o.optString("transactionType","")),
+                        source = o.optString("reference_type","EARNED"),
+                        status = "AVAILABLE",
+                        timestamp = o.optString("created_at","").let { 0L },
+                        referenceId = o.optString("reference_id",o.optString("referenceId","")),
+                        description = o.optString("reference_type",o.optString("type",""))
+                    )
+                }
+                val lp = mutableListOf<ManagerLpHistory>()
+                for (i in 0 until lpArray.length()) {
+                    val o = lpArray.optJSONObject(i) ?: continue
+                    lp += ManagerLpHistory(
+                        id=o.optLong("id",0L),
+                        customerId=o.optLong("customer_id",o.optLong("customerId",0L)),
+                        amount=o.optLong("amount",0L),
+                        type=o.optString("type",""),
+                        referenceType=o.optString("reference_type",""),
+                        referenceId=o.optString("reference_id",""),
+                        timestamp=0L
+                    )
+                }
+                return@withContext ManagerCustomerActivity(tx,gn,lp)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchManagerCustomerActivity error: \${e.message}")
+            ManagerCustomerActivity()
+        }
+    }
+
+    suspend fun fetchSettlementReview(sessionId: String, customerId: Long? = null, participantName: String? = null): SettlementReview? = withContext(Dispatchers.IO) {
+        try {
+            val selectedCustomerId = customerId
+            val encodedParticipantName = participantName?.takeIf { it.isNotBlank() }?.let { java.net.URLEncoder.encode(it, "UTF-8") }
+            val query = when {
+                selectedCustomerId != null && selectedCustomerId <= 0L && encodedParticipantName != null ->
+                    "?customerId=$selectedCustomerId&participantName=$encodedParticipantName"
+                selectedCustomerId != null -> "?customerId=$selectedCustomerId"
+                else -> ""
+            }
+            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/sessions/$sessionId/settlement-review$query").headers(getBaseHeaders()).get().build()
+            client.newCall(req).execute().use { resp ->
+                if(!resp.isSuccessful) return@withContext null
+                val root=JSONObject(resp.body?.string().orEmpty())
+                val arr=root.optJSONArray("participants") ?: JSONArray()
+                val payers=mutableListOf<SettlementPayer>()
+                for(i in 0 until arr.length()){
+                    val o=arr.optJSONObject(i) ?: continue
+                    val cid=o.optLong("billing_customer_id",o.optLong("customer_id",o.optLong("customerId",0L)))
+                    if(o.optBoolean("is_payer",o.optBoolean("isPayer",true)) && (cid>0L || o.optBoolean("is_guest",o.optBoolean("isGuest",false)))) {
+                        payers += SettlementPayer(
+                            cid,
+                            o.optString("participant_name",o.optString("participantName","مشتری گذری (بدون اشتراک)")),
+                            o.optLong("prepayment_amount",o.optLong("prepaymentAmount",0L)),
+                            o.optString("game_cost",o.optString("gameCost","0")).toLongOrNull() ?: o.optLong("gameCost",0L),
+                            o.optString("buffet_cost",o.optString("buffetCost","0")).toLongOrNull() ?: o.optLong("buffetCost",0L),
+                            o.optString("invoice_total",o.optString("invoiceTotal","0")).toLongOrNull() ?: o.optLong("invoiceTotal",0L),
+                            o.optString("unused_prepayment",o.optString("unusedPrepayment","0")).toLongOrNull() ?: o.optLong("unusedPrepayment",0L)
+                        )
+                    }
+                }
+                val sessionJson = root.optJSONObject("session") ?: JSONObject()
+                SettlementReview(
+                    sessionId=sessionId,
+                    totalPrepayment=root.optString("totalPrepayment","0").toLongOrNull() ?: root.optLong("totalPrepayment",0L),
+                    sessionTotalPrepayment=root.optString("sessionTotalPrepayment","0").toLongOrNull() ?: root.optLong("sessionTotalPrepayment",0L),
+                    refundedPrepayment=root.optString("refundedPrepayment","0").toLongOrNull() ?: root.optLong("refundedPrepayment",0L),
+                    remainingRefundable=root.optString("remainingRefundable","0").toLongOrNull() ?: root.optLong("remainingRefundable",0L),
+                    gameCost=root.optString("gameCost","0").toLongOrNull() ?: root.optLong("gameCost",0L),
+                    buffetCost=root.optString("buffetCost","0").toLongOrNull() ?: root.optLong("buffetCost",0L),
+                    sessionGameCost=sessionJson.optString("game_cost","0").toLongOrNull() ?: sessionJson.optLong("game_cost",0L),
+                    sessionBuffetCost=sessionJson.optString("buffet_cost","0").toLongOrNull() ?: sessionJson.optLong("buffet_cost",0L),
+                    sessionTotalCost=sessionJson.optString("total_cost","0").toLongOrNull() ?: sessionJson.optLong("total_cost",0L),
+                    payers=payers
+                )
+            }
+        }catch(e:Exception){Log.w(TAG,"fetchSettlementReview error: \${e.message}");null}
+    }
+
+    suspend fun finalizeSettlementReview(sessionId: String, decisions: List<JSONObject>): JSONObject? = withContext(Dispatchers.IO) {
+        try {
+            val arr=JSONArray(); decisions.forEach { arr.put(it) }
+            val body=JSONObject().apply { put("decisions",arr) }
+            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/sessions/$sessionId/review-finalize").headers(getBaseHeaders()).post(body.toString().toRequestBody(JSON_MEDIA)).build()
+            client.newCall(req).execute().use { resp ->
+                val raw=resp.body?.string().orEmpty()
+                if(!resp.isSuccessful) { Log.w(TAG,"finalizeSettlementReview HTTP ${resp.code}: $raw"); return@withContext null }
+                JSONObject(raw)
+            }
+        } catch(e:Exception){ Log.w(TAG,"finalizeSettlementReview error: ${e.message}"); null }
+    }
+
+    suspend fun refundSessionPrepayment(sessionId: String, allocations: Map<Long,Long>): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val arr=JSONArray()
+            allocations.filter { it.key>0L && it.value>0L }.forEach { (cid,amount) ->
+                arr.put(JSONObject().apply{put("customerId",cid);put("amount",amount)})
+            }
+            if(arr.length()==0) return@withContext false
+            val body=JSONObject().apply{put("allocations",arr)}
+            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/sessions/$sessionId/prepayment-refund").headers(getBaseHeaders()).post(body.toString().toRequestBody(JSON_MEDIA)).build()
+            client.newCall(req).execute().use { it.isSuccessful }
+        }catch(e:Exception){Log.w(TAG,"refundSessionPrepayment error: \${e.message}");false}
+    }
+
+    suspend fun addLpLedgerEntry(customerId: Long, amount: Long, referenceId: String): Boolean = withContext(Dispatchers.IO) {
+        if (customerId <= 0L || amount <= 0L || referenceId.isBlank()) return@withContext false
+        try {
+            val idem = "lp-session-review:" + referenceId + ":" + customerId
+            val json = JSONObject().apply {
+                put("customerId", customerId)
+                put("lpAmount", amount)
+                put("referenceType", "SESSION_PAYMENT")
+                put("referenceId", referenceId)
+                put("idempotencyKey", idem)
+            }
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/club/lp-ledger")
+                .headers(getBaseHeaders().newBuilder().add("Idempotency-Key", idem).build())
+                .post(json.toString().toRequestBody(JSON_MEDIA))
+                .build()
+            client.newCall(req).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.w(TAG, "addLpLedgerEntry error: \${e.message}")
             false
         }
     }
@@ -1185,6 +1566,7 @@ object SelfHostedManager {
                 put("game_cost", transaction.gameCost)
                 put("foodCost", transaction.foodCost)
                 put("food_cost", transaction.foodCost)
+                put("sessionId", transaction.sessionId)
             }
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/manager/customer-transactions")
@@ -1196,6 +1578,111 @@ object SelfHostedManager {
         } catch (e: Exception) {
             Log.e(TAG, "syncCustomerTransactionToCloud error: ${e.message}", e)
             false
+        }
+    }
+
+    suspend fun updateManagerCustomerTransaction(transaction: CustomerTransaction): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("amount", transaction.amount)
+                put("paidAmount", transaction.paidAmount)
+                put("status", transaction.status)
+            }
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/customer-transactions/${transaction.id}")
+                .headers(getBaseHeaders())
+                .patch(json.toString().toRequestBody(JSON_MEDIA))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    Log.w(TAG, "updateManagerCustomerTransaction HTTP ${resp.code}: ${resp.body?.string().orEmpty()}")
+                }
+                resp.isSuccessful
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "updateManagerCustomerTransaction error: ${e.message}", e)
+            false
+        }
+    }
+
+    suspend fun deleteManagerCustomerTransaction(transactionId: Long): Boolean = withContext(Dispatchers.IO) {
+        lastTransactionDeleteHttpCode = 0
+        try {
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/customer-transactions/$transactionId")
+                .headers(getBaseHeaders())
+                .delete()
+                .build()
+            client.newCall(req).execute().use {
+                lastTransactionDeleteHttpCode = it.code
+                it.isSuccessful
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "deleteManagerCustomerTransaction error: " + e.message, e)
+            false
+        }
+    }
+
+    /** Manager-scoped financial history. A successful empty response is authoritative. */
+    suspend fun fetchManagerCustomerTransactions(): List<CustomerTransaction>? = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/customer-transactions")
+                .headers(getBaseHeaders())
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext null
+                val body = resp.body?.string().orEmpty()
+                if (body.isBlank()) return@withContext emptyList()
+                val data = if (body.trim().startsWith("[")) JSONArray(body)
+                else JSONObject(body).optJSONArray("data") ?: JSONArray()
+                val list = mutableListOf<CustomerTransaction>()
+                for (i in 0 until data.length()) {
+                    val o = data.optJSONObject(i) ?: continue
+                    // Keep Room identity stable across server hydration. `id` is the
+                    // server primary key; `local_id` is the Android Room ID sent during sync.
+                    // Using server `id` here causes every refresh to POST a new local_id and
+                    // create duplicate transaction/invoice rows.
+                    val id = if (o.has("local_id") && !o.isNull("local_id")) {
+                        o.optLong("local_id", 0L)
+                    } else {
+                        o.optLong("localId", o.optLong("id", 0L))
+                    }
+                    val rawCustomerId = o.optLong("customerId", o.optLong("customer_id", 0L))
+                    val customerName = o.optString("customerName", o.optString("customer_name", ""))
+                    // A NULL customer_id is the canonical server representation of a true walk-in.
+                    // Keep a stable negative local ID so it cannot be confused with a real customer.
+                    val customerId = if (rawCustomerId == 0L && customerName == "مشتری گذری (بدون اشتراک)") -1L else rawCustomerId
+                    val ts = o.optLong("timestamp", o.optLong("event_timestamp", 0L))
+                    if (id <= 0L) continue
+                    list += CustomerTransaction(
+                        id = id,
+                        customerId = customerId,
+                        customerName = customerName,
+                        stationName = o.optString("stationName", o.optString("station_name", "")),
+                        title = o.optString("title", ""),
+                        amount = o.optLong("amount", 0L),
+                        paidAmount = o.optLong("paidAmount", o.optLong("paid_amount", 0L)),
+                        status = o.optString("status", "UNREVIEWED"),
+                        dateStr = o.optString("dateStr", o.optString("date_str", "")),
+                        timeStr = o.optString("timeStr", o.optString("time_str", "")),
+                        segmentDetails = o.optString("segmentDetails", o.optString("segment_details", "")),
+                        buffetDetails = o.optString("buffetDetails", o.optString("buffet_details", "")),
+                        timestamp = ts,
+                        playMinutes = o.optInt("playMinutes", o.optInt("play_minutes", 0)),
+                        gameCost = o.optLong("gameCost", o.optLong("game_cost", 0L)),
+                        foodCost = o.optLong("foodCost", o.optLong("food_cost", 0L)),
+                        sessionId = o.optString("sessionId", o.optString("session_id", "")),
+                        earnedGn = o.optLong("earnedGn", o.optLong("earned_gn", 0L)),
+                        earnedLp = o.optLong("earnedLp", o.optLong("earned_lp", 0L))
+                    )
+                }
+                list.sortedByDescending { it.timestamp }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchManagerCustomerTransactions error: " + e.message, e)
+            null
         }
     }
 
@@ -1270,7 +1757,7 @@ object SelfHostedManager {
         }
     }
 
-    suspend fun syncReservationToCloud(reservation: Reservation, stationId: Long, isVip: Boolean = false): Boolean = withContext(Dispatchers.IO) {
+    suspend fun syncReservationToCloud(reservation: Reservation, stationId: Long, isVip: Boolean = false, paidAmount: Long = 0L): Boolean = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
                 put("id", if (reservation.id > 0) reservation.id else System.currentTimeMillis())
@@ -1282,6 +1769,7 @@ object SelfHostedManager {
                 put("stationId", stationId)
                 put("type", if (isVip) "FULL_HALL" else "NORMAL_RESERVATION")
                 put("isVip", isVip)
+                put("paidAmount", paidAmount.coerceAtLeast(0L))
                 put("idempotencyKey", "manager-reservation:" + reservation.phoneNumber + ":" + stationId + ":" + reservation.reservationTimeMillis + ":" + reservation.durationMinutes)
             }
             val req = Request.Builder()
@@ -1384,6 +1872,21 @@ object SelfHostedManager {
         } catch (e: Exception) {
             Log.w(TAG, "fetchCustomerStations error: ${e.message}")
             null
+        }
+    }
+
+    suspend fun fetchCustomerStationReservations(stationId: Long): List<JSONObject> = withContext(Dispatchers.IO) {
+        if (stationId <= 0L) return@withContext emptyList()
+        try {
+            val request = Request.Builder().url("$SERVER_URL/api/v1/customer/stations/$stationId/reservations").headers(getCustomerHeaders()).get().build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext emptyList()
+                val arr = JSONObject(response.body?.string() ?: "{}").optJSONArray("reservations") ?: JSONArray()
+                buildList { for (i in 0 until arr.length()) arr.optJSONObject(i)?.let(::add) }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchCustomerStationReservations error: ${e.message}")
+            emptyList()
         }
     }
 
@@ -1753,40 +2256,29 @@ object SelfHostedManager {
         gameCost: Long = 0L,
         buffetCost: Long = 0L
     ): Boolean = withContext(Dispatchers.IO) {
+        if (station.id <= 0) {
+            Log.w(TAG, "Ignoring invalid station id ${station.id} during canonical station sync")
+            return@withContext false
+        }
         try {
             val json = JSONObject().apply {
-                if (false) {
-                    put("manager_id", _currentManagerId)
-                    put("managerId", _currentManagerId)
-                }
-                put("stationId", station.id)
+                put("id", station.id)
+                put("name", "ایستگاه ${station.id}")
                 put("status", station.status)
-                put("consoleType", station.consoleType)
-                put("controllerCount", station.controllerCount)
-                put("startTimeMillis", station.startTimeMillis)
-                put("lastStateChangeMillis", station.lastStateChangeTimeMillis)
-                put("elapsedPlayingTimeMillis", station.elapsedPlayingTimeMillis)
-                put("prepaymentAmount", station.prepaymentAmount)
-                put("durationLimitMinutes", station.durationLimitMinutes)
-                put("selectedCustomerIdsStr", station.selectedCustomerIdsStr)
-                put("selectedCustomerNamesStr", station.selectedCustomerNamesStr)
-                put("customerIdsStr", station.selectedCustomerIdsStr)
-                put("customerNamesStr", station.selectedCustomerNamesStr)
-                put("ordersJson", ordersJsonStr)
-                put("hourlyRate", hourlyRate)
-                put("currentGameCost", gameCost)
-                put("currentBuffetCost", buffetCost)
-                put("splitMode", station.splitMode)
-                put("payerCustomerIdsStr", station.payerCustomerIdsStr)
-                put("payerCustomerNamesStr", station.payerCustomerNamesStr)
+                put("consoleType", station.consoleType.ifBlank { "PS5" })
+                put("controllerCount", station.controllerCount.coerceAtLeast(1))
+                put("reservable", true)
             }
             val request = Request.Builder()
-                .url("$SERVER_URL/api/v1/manager/live-stations")
+                .url("$SERVER_URL/api/v1/manager/stations")
                 .headers(getBaseHeaders())
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            val response = client.newCall(request).execute()
-            response.isSuccessful
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) Log.w(TAG, "Canonical station sync failed: HTTP ${response.code} $body")
+                response.isSuccessful
+            }
         } catch (e: Exception) {
             Log.e(TAG, "syncStationToCloud error: ${e.message}", e)
             false
@@ -1805,10 +2297,12 @@ object SelfHostedManager {
         controllerCount: Int = 1,
         prepaymentAmount: Long = 0L,
         durationLimitMinutes: Int = 0,
-        customerPrepayments: Map<Long, Long> = emptyMap()
+        customerPrepayments: Map<Long, Long> = emptyMap(),
+        idempotencyKey: String = ""
     ): Pair<String, Long>? = withContext(Dispatchers.IO) {
         lastStationStartWasTransportFailure = false
         lastStationStartError = ""
+        val stableIdempotencyKey = idempotencyKey.trim().ifBlank { "station-start:${stationId}:${startTimeMillis}:${java.util.UUID.randomUUID()}" }
         try {
             if (_currentManagerId.isBlank()) {
                 lastStationStartError = "MANAGER_ID_MISSING"
@@ -1832,7 +2326,7 @@ object SelfHostedManager {
                 put("durationLimitMinutes", durationLimitMinutes.coerceAtLeast(0))
                 put("customerPrepayments", JSONObject().apply {
                     customerPrepayments.forEach { (id, amount) ->
-                        if (id > 0L && amount > 0L) put(id.toString(), amount)
+                        if (amount > 0L) put(id.toString(), amount)
                     }
                 })
                 put("participants", participants)
@@ -1840,7 +2334,7 @@ object SelfHostedManager {
             val request = Request.Builder()
                 .url("$SERVER_URL/api/station/start")
                 .headers(getBaseHeaders())
-                .header("Idempotency-Key", "station-start:${stationId}:${startTimeMillis}")
+                .header("Idempotency-Key", stableIdempotencyKey)
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
             client.newCall(request).execute().use { response ->
@@ -1857,13 +2351,86 @@ object SelfHostedManager {
                 sessionId to JSONObject(body).optLong("serverStartedAt", System.currentTimeMillis())
             }
         } catch (e: Exception) {
-            // Only an actual transport-layer failure may fall back to an offline session.
-            // HTTP 4xx/5xx and malformed server responses must never be mistaken for Offline.
+            // A lost response is ambiguous: the server may already have committed the session.
+            // Resolve the same idempotency key before allowing any offline fallback.
+            if (e is java.io.IOException) {
+                val recovered = recoverStationStart(stableIdempotencyKey)
+                if (recovered != null) {
+                    lastStationStartWasTransportFailure = false
+                    lastStationStartError = ""
+                    return@withContext recovered
+                }
+            }
+            // Only a confirmed transport failure with no committed server session may fall back offline.
             lastStationStartWasTransportFailure = e is java.io.IOException
             lastStationStartError = (e.message ?: e.javaClass.simpleName).take(500)
             Log.e(TAG, "startStationSession error: " + e.message, e)
             null
         }
+    }
+
+    suspend fun getActiveStationSession(stationId: Int): JSONObject? = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url("$SERVER_URL/api/station/active?stationId=$stationId")
+                .headers(getBaseHeaders())
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) return@withContext null
+                JSONObject(body).optJSONObject("session")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "getActiveStationSession failed: ${e.message}")
+            null
+        }
+    }
+
+    suspend fun fetchLiveSessionsSnapshot(): JSONObject? = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url("$SERVER_URL/api/v1/manager/live-sessions")
+                .headers(getBaseHeaders())
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful || body.isBlank()) {
+                    Log.w(TAG, "fetchLiveSessionsSnapshot HTTP ${response.code}: $body")
+                    return@withContext null
+                }
+                JSONObject(body)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchLiveSessionsSnapshot failed: ${e.message}")
+            null
+        }
+    }
+
+    private suspend fun recoverStationStart(idempotencyKey: String): Pair<String, Long>? = withContext(Dispatchers.IO) {
+        repeat(3) { attempt ->
+            try {
+                val request = Request.Builder()
+                    .url("$SERVER_URL/api/station/start/status")
+                    .headers(getBaseHeaders())
+                    .header("Idempotency-Key", idempotencyKey)
+                    .get()
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (response.isSuccessful) {
+                        val json = JSONObject(body)
+                        val sessionId = json.optString("sessionId").takeIf { it.isNotBlank() }
+                        if (sessionId != null) return@withContext sessionId to json.optLong("serverStartedAt", System.currentTimeMillis())
+                    }
+                }
+            } catch (recoveryError: Exception) {
+                Log.w(TAG, "recoverStationStart attempt ${attempt + 1} failed: ${recoveryError.message}")
+            }
+            if (attempt < 2) kotlinx.coroutines.delay(150L * (attempt + 1))
+        }
+        null
     }
 
     suspend fun syncOfflineSessionStart(
@@ -1891,7 +2458,7 @@ object SelfHostedManager {
                 put("durationLimitMinutes", durationLimitMinutes.coerceAtLeast(0))
                 put("customerPrepayments", JSONObject().apply {
                     customerPrepayments.forEach { (id, amount) ->
-                        if (id > 0L && amount > 0L) put(id.toString(), amount)
+                        if (amount > 0L) put(id.toString(), amount)
                     }
                 })
                 put("participants", participants)
@@ -1918,31 +2485,45 @@ object SelfHostedManager {
         quantity: Int,
         price: Long,
         targetCustomerId: Long? = null,
-        idempotencyKey: String? = null
-    ): Boolean = withContext(Dispatchers.IO) {
+        idempotencyKey: String? = null,
+        sessionId: String? = null,
+        targetCustomerName: String? = null
+    ): BuffetOrderSyncResult = withContext(Dispatchers.IO) {
         try {
-            if (_currentManagerId.isBlank()) return@withContext false
+            if (_currentManagerId.isBlank()) return@withContext BuffetOrderSyncResult(false, true, "شناسه مدیر در دسترس نیست.")
             val json = JSONObject().apply {
                 put("managerId", _currentManagerId)
                 put("stationId", stationId.toString())
                 put("productName", productName)
                 put("quantity", quantity)
                 put("price", price)
-                put("targetCustomerId", targetCustomerId ?: 0)
+                put("targetCustomerId", targetCustomerId?.takeIf { it > 0L } ?: 0L)
+                if (targetCustomerId != null && targetCustomerId < 0L) put("targetParticipantKey", "guest:" + targetCustomerId)
+                targetCustomerName?.takeIf { it.isNotBlank() }?.let { put("targetCustomerName", it) }
+                sessionId?.takeIf { it.isNotBlank() }?.let { put("sessionId", it) }
             }
             val requestIdempotencyKey = idempotencyKey?.trim().takeIf { !it.isNullOrBlank() }
-                ?: "station-order:${stationId}:${productName}:${targetCustomerId ?: 0}:${java.util.UUID.randomUUID()}"
+                ?: ("station-order:" + stationId + ":" + productName + ":" + (targetCustomerId ?: 0) + ":" + java.util.UUID.randomUUID())
             val request = Request.Builder()
-                .url("$SERVER_URL/api/station/order")
+                .url(SERVER_URL + "/api/station/order")
                 .headers(getBaseHeaders())
                 .header("Idempotency-Key", requestIdempotencyKey)
                 .post(json.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            val response = client.newCall(request).execute()
-            response.isSuccessful
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (response.isSuccessful) {
+                    BuffetOrderSyncResult(true, false)
+                } else {
+                    val message = runCatching { JSONObject(body).optString("error", body) }.getOrDefault(body)
+                    val retryable = response.code == 408 || response.code == 429 || response.code >= 500
+                    Log.w(TAG, "addBuffetOrderEvent HTTP " + response.code + ": " + message.take(300))
+                    BuffetOrderSyncResult(false, retryable, message)
+                }
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "addBuffetOrderEvent error: ${e.message}", e)
-            false
+            Log.e(TAG, "addBuffetOrderEvent error: " + e.message, e)
+            BuffetOrderSyncResult(false, true, e.message.orEmpty())
         }
     }
 
@@ -1981,6 +2562,8 @@ object SelfHostedManager {
         sessionId: String,
         endedAtMillis: Long
     ): Boolean = withContext(Dispatchers.IO) {
+        lastSettlementHttpCode = 0
+        lastSettlementErrorBody = ""
         try {
             if (_currentManagerId.isBlank()) return@withContext false
             val json = JSONObject().apply { put("sessionId", sessionId); put("endedAt", endedAtMillis) }
@@ -1991,6 +2574,8 @@ object SelfHostedManager {
                 .build()
             client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
+                lastSettlementHttpCode = response.code
+                lastSettlementErrorBody = if (response.isSuccessful) "" else body.take(1000)
                 if (!response.isSuccessful) Log.e(TAG, "settleStationSession HTTP " + response.code + ": " + body)
                 response.isSuccessful
             }

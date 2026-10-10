@@ -73,8 +73,9 @@ const requireSuperManagerAuth = async (req, res, next) => {
     try {
         const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
         if (decoded.role !== 'SUPER_MANAGER' || !decoded.id || !decoded.managerId || String(decoded.id) !== String(decoded.managerId)) return res.status(403).json({ error: 'Forbidden' });
-        const account = await pool.query("SELECT id, role FROM managers WHERE id = $1 AND role = 'SUPER_MANAGER' LIMIT 1", [decoded.id]);
+        const account = await pool.query("SELECT id, role, token_version FROM managers WHERE id = $1 AND role = 'SUPER_MANAGER' LIMIT 1", [decoded.id]);
         if (!account.rows.length) return res.status(401).json({ error: 'Manager account no longer exists' });
+        if (Number(account.rows[0].token_version || 1) !== Number(decoded.tv)) return res.status(401).json({ error: 'Session has been revoked', code: 'TOKEN_REVOKED' });
         const entitlement = await pool.query("SELECT 1 FROM manager_entitlements WHERE manager_id=$1 AND entitlement_type='SUPER_MANAGER_LIFETIME' AND status='ACTIVE' AND starts_at<=NOW() AND expires_at>NOW() LIMIT 1", [decoded.id]);
         if (!entitlement.rows.length) return res.status(403).json({ error: 'Active Super Manager entitlement required', code: 'SUPER_MANAGER_ENTITLEMENT_REQUIRED' });
         req.user = decoded;
@@ -92,15 +93,16 @@ const requireManagerAuth = async (req, res, next) => {
     const token = authHeader.slice(7).trim();
     try {
         const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
-        if (!['MANAGER', 'SUPER_MANAGER'].includes(decoded.role) || !decoded.id || !decoded.managerId || String(decoded.id) !== String(decoded.managerId)) {
+        if (!['MANAGER', 'SUPER_MANAGER'].includes(decoded.role) || !decoded.id || !decoded.managerId || String(decoded.id) !== String(decoded.managerId) || !Number.isInteger(Number(decoded.tv))) {
             return res.status(403).json({ error: 'Forbidden' });
         }
         const managerHeader = String(req.headers['x-manager-id'] || '').trim();
         if (!managerHeader || managerHeader !== String(decoded.managerId)) {
             return res.status(403).json({ error: 'Manager identity header mismatch' });
         }
-        const account = await pool.query("SELECT id, role FROM managers WHERE id = $1 AND role = ANY($2::text[]) LIMIT 1", [decoded.id, ['MANAGER', 'SUPER_MANAGER']]);
+        const account = await pool.query("SELECT id, role, token_version FROM managers WHERE id = $1 AND role = ANY($2::text[]) LIMIT 1", [decoded.id, ['MANAGER', 'SUPER_MANAGER']]);
         if (!account.rows.length) return res.status(401).json({ error: 'Manager account no longer exists' });
+        if (Number(account.rows[0].token_version || 1) !== Number(decoded.tv)) return res.status(401).json({ error: 'Session has been revoked', code: 'TOKEN_REVOKED' });
         req.user = decoded;
         next();
     } catch (e) {
@@ -117,11 +119,12 @@ const requireCustomerAuth = async (req, res, next) => {
     const token = authHeader.slice(7).trim();
     try {
         const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
-        if (decoded.role !== 'CUSTOMER' || !decoded.id || !decoded.managerId) {
+        if (decoded.role !== 'CUSTOMER' || !decoded.id || !decoded.managerId || !Number.isInteger(Number(decoded.tv))) {
             return res.status(403).json({ error: 'Forbidden' });
         }
-        const account = await pool.query("SELECT id, manager_id FROM customers WHERE id = $1 AND manager_id = $2 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' LIMIT 1",[decoded.id, decoded.managerId]);
+        const account = await pool.query("SELECT id, manager_id, token_version FROM customers WHERE id = $1 AND manager_id = $2 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' LIMIT 1",[decoded.id, decoded.managerId]);
         if (!account.rows.length) return res.status(401).json({ error: 'Customer account no longer exists' });
+        if (Number(account.rows[0].token_version || 1) !== Number(decoded.tv)) return res.status(401).json({ error: 'Session has been revoked', code: 'TOKEN_REVOKED' });
         req.user = decoded;
         next();
     } catch (e) {
@@ -239,8 +242,14 @@ app.post('/api/auth/manager/login', rateLimit({ windowMs: 60_000, max: 10 }), as
             }
         }
 
-        const token = jwt.sign({ id: manager.id, managerId: manager.id, role: manager.role || 'MANAGER' }, JWT_SECRET, { expiresIn: '24h' });
-        res.json({ token, managerId: manager.id, role: manager.role || 'MANAGER' });
+        const role = String(manager.role || '').toUpperCase();
+        // Only real Manager/Super-Manager accounts may establish the management session.
+        // Never downgrade/upgrade an unknown or deputy/operator record on the client.
+        if (role !== 'MANAGER' && role !== 'SUPER_MANAGER') {
+            return res.status(403).json({ error: 'Management login requires an authorized Manager account', code: 'MANAGER_ROLE_REQUIRED' });
+        }
+        const token = jwt.sign({ id: manager.id, managerId: manager.id, role, tv: Number(manager.token_version || 1) }, JWT_SECRET, { expiresIn: '24h' });
+        res.json({ token, managerId: manager.id, role });
     } catch (e) {
         console.error('Manager login error:', e);
         res.status(500).json({ error: 'Internal server error' });
@@ -253,8 +262,8 @@ app.post('/api/auth/customer/register', rateLimit({ windowMs: 60_000, max: 5 }),
     const managerId = String(req.body?.manager_id || req.body?.managerId || '').trim();
     const fullName = String(req.body?.full_name || req.body?.fullName || '').trim();
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
-    if (!phoneNumber || !managerId || !fullName || password.length < 4) {
-        return res.status(400).json({ error: 'phone_number, manager_id, full_name and a password of at least 4 characters are required' });
+    if (!phoneNumber || !managerId || !fullName || password.length < 8) {
+        return res.status(400).json({ error: 'phone_number, manager_id, full_name and a password of at least 8 characters is required' });
     }
     try {
         const manager = await pool.query("SELECT id FROM managers WHERE id = $1 AND role = 'MANAGER' LIMIT 1", [managerId]);
@@ -267,8 +276,8 @@ app.post('/api/auth/customer/register', rateLimit({ windowMs: 60_000, max: 5 }),
             RETURNING id, manager_id, phone_number, full_name, club_tier, wallet_balance, gn_balance, lp_balance, created_at, updated_at`,
             [managerId, phoneNumber, fullName, hash]);
         const customer = created.rows[0];
-        const token = jwt.sign({ id: customer.id, managerId, role: 'CUSTOMER' }, JWT_SECRET, { expiresIn: '24h' });
-        res.status(201).json({ success: true, token, customerId: customer.id, customer });
+        const token = jwt.sign({ id: customer.id, managerId, role: 'CUSTOMER', tv: 1 }, JWT_SECRET, { expiresIn: '24h' });
+        res.status(201).json({ success: true, token, customerId: customer.id, customer, user: { id: customer.id, username: customer.phone_number, phone: customer.phone_number, role: 'CUSTOMER', email: null } });
     } catch (e) {
         console.error('Customer registration error:', e);
         res.status(500).json({ error: 'Internal server error' });
@@ -283,12 +292,11 @@ app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), a
     try {
         const result = await pool.query("SELECT * FROM customers WHERE phone_number = $1 AND manager_id = $2 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%'", [phone_number, manager_id]);
         const customer = result.rows[0];
-        if (!customer) return res.status(401).json({ error: 'Customer not found' });
-        if (!customer.password_hash) return res.status(401).json({ error: 'Customer password is not configured' });
+        if (!customer || !customer.password_hash) return res.status(401).json({ error: 'Invalid credentials' });
         const valid = await bcrypt.compare(password, customer.password_hash);
         if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
-        const token = jwt.sign({ id: customer.id, managerId: customer.manager_id, role: 'CUSTOMER' }, JWT_SECRET, { expiresIn: '24h' });
+        const token = jwt.sign({ id: customer.id, managerId: customer.manager_id, role: 'CUSTOMER', tv: Number(customer.token_version || 1) }, JWT_SECRET, { expiresIn: '24h' });
         res.json({ token, customerId: customer.id });
     } catch (e) {
         res.status(500).json({ error: 'Internal server error' });
@@ -296,6 +304,19 @@ app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), a
 });
 
 
+app.post('/api/auth/logout', async (req,res) => {
+    const authHeader=String(req.headers.authorization||'');
+    if(!/^Bearer\s+\S+$/i.test(authHeader)) return res.status(401).json({error:'No token provided'});
+    try {
+      const decoded=jwt.verify(authHeader.slice(7).trim(),JWT_SECRET,{algorithms:['HS256']});
+      if(decoded.role==='CUSTOMER') {
+        await pool.query('UPDATE customers SET token_version=token_version+1,updated_at=NOW() WHERE id=$1 AND manager_id=$2',[decoded.id,decoded.managerId]);
+      } else if(decoded.role==='MANAGER'||decoded.role==='SUPER_MANAGER') {
+        await pool.query('UPDATE managers SET token_version=token_version+1,updated_at=NOW() WHERE id=$1 AND role=$2',[decoded.id,decoded.role]);
+      } else return res.status(403).json({error:'Forbidden'});
+      res.json({success:true});
+    } catch(e) { res.status(401).json({error:'Invalid token'}); }
+});
 
 // Canonical server clock. Clients use this only as a reference/display clock;
 // financial lifecycle timestamps remain server-authoritative.
@@ -310,7 +331,7 @@ app.get('/api/v1/time', rateLimit({ windowMs: 60_000, max: 60 }), (req, res) => 
 // --- TRIAL 24H CANONICAL PUBLIC FLOW ---
 const normalizeTrialIdentity = (value) => String(value || '').trim().slice(0, 255);
 
-app.post('/api/v1/trial/start', rateLimit({ windowMs: 60_000, max: 5 }), async (req, res) => {
+app.post('/api/v1/trial/start', rateLimit({ windowMs: 60_000, max: 10 }), async (req, res) => {
     const authHeader = String(req.headers.authorization || '');
     if (/^Bearer\s+\S+$/i.test(authHeader)) {
         try {
@@ -318,7 +339,9 @@ app.post('/api/v1/trial/start', rateLimit({ windowMs: 60_000, max: 5 }), async (
             if (['MANAGER', 'SUPER_MANAGER'].includes(decoded?.role)) {
                 return res.status(403).json({ success:false, trialActive:false, isExpired:false, code:'MANAGER_TRIAL_FORBIDDEN', message:'Authenticated Manager cannot activate Trial.' });
             }
-        } catch (_) {}
+        } catch (e) {
+            console.warn('Trial bearer token validation failed:', e?.message || e);
+        }
     }
     const deviceId = normalizeTrialIdentity(req.body?.deviceId || req.body?.device_id);
     const deviceFingerprint = normalizeTrialIdentity(req.body?.deviceFingerprint || req.body?.device_fingerprint);
@@ -665,6 +688,7 @@ app.put('/api/v1/super-manager/managers/:id', requireSuperManagerAuth, async (re
             const bcrypt = require('bcrypt');
             fields.push(`password_hash = $${i++}`);
             values.push(await bcrypt.hash(String(password), 10));
+            fields.push('token_version = token_version + 1');
         }
         if (!fields.length) return res.status(400).json({ error: 'No editable fields supplied' });
         values.push(managerId);
@@ -765,14 +789,13 @@ const defaultManagerConfiguration = () => deepMerge(DEFAULT_RESERVATION_CONFIGUR
     policies: {
         reservation: {
             depositPercent: 30
-        },
-        loyalty: {
-            gameSettlement: {
-                gnPer10000: 10,
-                lpPer10000: 5
-            }
         }
-    }
+    },
+    // Session loyalty defaults: points per 10,000 Toman. Manager-editable.
+    policy_game_reward_rate: 10,
+    policy_buffet_reward_rate: 5,
+    policy_lp_toman_rate: 1000,
+    policy_buffet_lp_per_10000: 5
 });
 
 async function getManagerConfiguration(client, managerId) {
@@ -800,6 +823,25 @@ function normalizeConsoleType(value) {
     if (["SIMD", "SIMULATOR", "DRIVINGSIMULATOR", "DRIVING", "SHABIHSAZRAHANDEGI"].includes(key)) return "SimD";
     if (["XBOX", "XBOXSERIESX", "XBOXSERIES"].includes(key)) return "Xbox Series X";
     return raw;
+}
+
+function configuredProduct(configuration, productName) {
+    const settings = configuration?.settings || {};
+    const name = String(productName || '').trim();
+    const sources = [settings?.pricing?.products, settings?.products];
+    for (const source of sources) {
+        if (!source) continue;
+        if (Array.isArray(source)) {
+            const found = source.find(p => String(p?.name ?? p?.productName ?? '').trim() === name);
+            if (found) return found;
+        } else if (typeof source === 'object') {
+            const direct = source[name];
+            if (direct !== undefined) return direct;
+            const found = Object.entries(source).find(([key, value]) => String(value?.name ?? value?.productName ?? key).trim() === name);
+            if (found) return found[1];
+        }
+    }
+    return null;
 }
 
 function configuredHourlyRate(configuration, consoleType, controllerCount) {
@@ -871,13 +913,50 @@ function sessionEventActiveSeconds(events, startAt, endAt) {
         const t = new Date(event.occurred_at);
         if (t < cursor) continue;
         if (running) activeSeconds += Math.max(0, Math.floor((t.getTime() - cursor.getTime()) / 1000));
-        if (event.event_type === "PAUSE") running = false;
-        if (event.event_type === "RESUME") running = true;
+        if (event.event_type === "PAUSE" || event.event_type === "SEGMENT_PAUSE") running = false;
+        if (event.event_type === "RESUME" || event.event_type === "SEGMENT_CONTINUE") running = true;
         cursor = t;
     }
     if (running) activeSeconds += Math.max(0, Math.floor((new Date(endAt).getTime() - cursor.getTime()) / 1000));
     return activeSeconds;
 }
+
+function sessionEventActiveMillisAfter(events, startAt, endAt, initiallyRunning) {
+    const endMs = new Date(endAt).getTime();
+    let cursorMs = new Date(startAt).getTime();
+    if (!Number.isFinite(cursorMs) || !Number.isFinite(endMs) || endMs < cursorMs) return 0;
+    let running = Boolean(initiallyRunning);
+    let activeMillis = 0;
+    for (const event of events) {
+        const t = new Date(event.occurred_at).getTime();
+        if (!Number.isFinite(t) || t < cursorMs || t > endMs) continue;
+        if (running) activeMillis += Math.max(0, t - cursorMs);
+        if (event.event_type === "PAUSE" || event.event_type === "SEGMENT_PAUSE") running = false;
+        else if (event.event_type === "RESUME" || event.event_type === "SEGMENT_CONTINUE") running = true;
+        cursorMs = t;
+    }
+    if (running) activeMillis += Math.max(0, endMs - cursorMs);
+    return Math.max(0, Math.trunc(activeMillis));
+}
+
+app.get("/api/station/start/status", requireManagerAuth, requireActiveEntitlement, async (req,res) => {
+    const managerId = sessionManagerId(req);
+    const idempotencyKey = String(req.headers["idempotency-key"] || req.query?.idempotencyKey || "").trim();
+    if (!managerId || !idempotencyKey) return res.status(400).json({success:false,code:"IDEMPOTENCY_KEY_REQUIRED"});
+    try {
+        const result = await pool.query(
+            "SELECT e.session_id,s.id,s.manager_id,s.station_id,s.status,s.started_at,s.pricing_snapshot FROM session_events e JOIN game_sessions s ON s.id=e.session_id AND s.manager_id=e.manager_id WHERE e.manager_id=$1 AND e.event_id=$2 AND e.event_type='START' LIMIT 1",
+            [managerId,idempotencyKey]
+        );
+        if (!result.rows[0]) return res.status(404).json({success:false,code:"START_NOT_FOUND"});
+        const row=result.rows[0];
+        return res.json({success:true,found:true,sessionId:row.id,stationId:row.station_id,status:row.status,serverStartedAt:new Date(row.started_at).getTime(),serverTime:Date.now(),pricingSnapshot:row.pricing_snapshot});
+    } catch (e) {
+        res.locals.diagnosticCode='SESSION_START_STATUS_LOOKUP_FAILED';
+        res.locals.diagnosticMessage=String(e?.message||'').slice(0,300);
+        return res.status(500).json({success:false,code:"SESSION_START_STATUS_LOOKUP_FAILED"});
+    }
+});
 
 app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rateLimit({windowMs:60000,max:20}), async (req,res) => {
     const managerId = sessionManagerId(req);
@@ -895,17 +974,104 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
         return res.status(400).json({success:false,error:"Invalid session start payload"});
     }
     const participants = raw.map(normalizeParticipant);
+    // Android historically keeps a local Room customer id when creating a customer and
+    // the self-hosted customer upsert may allocate a different server id. Before rejecting
+    // a start, reconcile that stale id only when the participant name uniquely identifies
+    // an active customer owned by this Manager. Never guess when the name is ambiguous.
+    for (const participant of participants) {
+        if (participant.isGuest || !participant.customerId) continue;
+        const direct = await pool.query(
+            "SELECT id,full_name FROM customers WHERE id=$1 AND manager_id=$2 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' LIMIT 1",
+            [participant.customerId, managerId]
+        );
+        const expectedName = participant.participantName.trim();
+        if (direct.rows[0]) {
+            const serverName = String(direct.rows[0].full_name || '').trim();
+            if (!expectedName || !serverName || serverName.localeCompare(expectedName, undefined, {sensitivity:'base'}) === 0) continue;
+        }
+        if (expectedName) {
+            const byName = await pool.query(
+                "SELECT id FROM customers WHERE manager_id=$1 AND lower(trim(full_name))=lower(trim($2)) AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' ORDER BY id DESC LIMIT 2",
+                [managerId, expectedName]
+            );
+            if (byName.rows.length === 1) {
+                participant.customerId = Number(byName.rows[0].id);
+                participant.participantKey = "customer:" + participant.customerId;
+                continue;
+            }
+        }
+
+        // If the Manager currently has exactly one active customer and Android supplied
+        // a stale local Room id without a usable name, the only safe reconciliation is
+        // that single customer. Never apply this fallback when multiple active customers
+        // exist, because that would turn an identity mismatch into an unsafe guess.
+        if (!expectedName) {
+            const onlyActive = await pool.query(
+                "SELECT id FROM customers WHERE manager_id=$1 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' ORDER BY id LIMIT 2",
+                [managerId]
+            );
+            if (onlyActive.rows.length === 1) {
+                participant.customerId = Number(onlyActive.rows[0].id);
+                participant.participantKey = "customer:" + participant.customerId;
+            }
+        }
+    }
     if (!Number.isSafeInteger(requestedPrepayment) || requestedPrepayment < 0 || !Number.isSafeInteger(durationLimitMinutes) || durationLimitMinutes < 0) {
         res.locals.diagnosticCode='INVALID_START_BILLING_INPUT';
         return res.status(422).json({success:false,code:'INVALID_START_BILLING_INPUT'});
     }
+    // Initial payment belongs to the session first, then is allocated across every payer.
+    // Payers may be registered customers, transient customers, or guests. A Manager must
+    // never be blocked from starting a real session merely because the UI did not manually
+    // enter an allocation map. When no explicit allocation is supplied, split the exact
+    // integer amount equally and put any indivisible remainder on the final payer.
     const normalizedCustomerPrepayments = {};
-    for (const [key, value] of Object.entries(customerPrepayments)) {
-        const customerId = Number(key);
-        const amount = Number(value);
-        if (Number.isSafeInteger(customerId) && customerId > 0 && Number.isSafeInteger(amount) && amount > 0) {
-            normalizedCustomerPrepayments[String(customerId)] = amount;
+    const participantByBillingKey = new Map();
+    participants.forEach((p,index) => {
+        const billingKey = p.isGuest || !p.customerId ? String(-(index + 1)) : String(p.customerId);
+        if (!participantByBillingKey.has(billingKey)) participantByBillingKey.set(billingKey,p);
+        participantByBillingKey.set(String(p.participantKey),p);
+        if (p.isGuest || !p.customerId) {
+            const stableGuestId = String(p.participantKey || '').replace(/^guest:/, '');
+            if (stableGuestId && !participantByBillingKey.has(stableGuestId)) participantByBillingKey.set(stableGuestId,p);
         }
+    });
+    for (const [key, value] of Object.entries(customerPrepayments)) {
+        const billingKey = String(key);
+        const amount = Number(value);
+        if (!Number.isSafeInteger(amount) || amount < 0) {
+            return res.status(422).json({success:false,code:'INVALID_INITIAL_PREPAYMENT_ALLOCATION',error:'Invalid customer initial-payment allocation',customerId:billingKey});
+        }
+        if (amount === 0) continue;
+        if (!participantByBillingKey.has(billingKey)) {
+            return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_PARTICIPANT_NOT_FOUND',error:'Initial-payment allocation does not belong to a participant in this session',customerId:billingKey});
+        }
+        const participant = participantByBillingKey.get(billingKey);
+        const canonicalKey = participant && (participant.isGuest || !participant.customerId)
+            ? String(participant.participantKey || billingKey)
+            : billingKey;
+        normalizedCustomerPrepayments[canonicalKey] = amount;
+    }
+    const payerCount = participants.filter(p => p.is_payer).length;
+    const explicitAllocationTotal = Object.values(normalizedCustomerPrepayments).reduce((sum, amount) => sum + Number(amount || 0), 0);
+    if (explicitAllocationTotal > 0 && explicitAllocationTotal !== requestedPrepayment) {
+        return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_ALLOCATION_MISMATCH',error:'Customer initial-payment allocation must equal the session initial payment',initialPrepaymentAmount:requestedPrepayment,allocatedPrepaymentAmount:explicitAllocationTotal});
+    }
+    if (requestedPrepayment > 0 && payerCount > 0 && explicitAllocationTotal === 0) {
+        const payers = participants.filter(p => p.is_payer);
+        const base = Math.floor(requestedPrepayment / payers.length);
+        const remainder = requestedPrepayment % payers.length;
+        payers.forEach((p) => {
+            const participantIndex = participants.indexOf(p);
+            const key = p.isGuest || !p.customerId
+                ? String(p.participantKey || ("guest:" + String(-(participantIndex + 1))))
+                : String(p.customerId);
+            normalizedCustomerPrepayments[key] = base + (payers.indexOf(p) === payers.length - 1 ? remainder : 0);
+        });
+    }
+    const allocatedPrepaymentTotal = Object.values(normalizedCustomerPrepayments).reduce((sum, amount) => sum + Number(amount || 0), 0);
+    if (requestedPrepayment > 0 && payerCount > 0 && allocatedPrepaymentTotal !== requestedPrepayment) {
+        return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_ALLOCATION_MISMATCH',error:'Initial-payment allocation does not reconcile with the session payment',initialPrepaymentAmount:requestedPrepayment,allocatedPrepaymentAmount:allocatedPrepaymentTotal});
     }
     const client = await pool.connect();
     try {
@@ -1009,12 +1175,20 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
                 "INSERT INTO session_participants(manager_id,session_id,customer_id,participant_key,participant_name,is_guest,is_payer) VALUES($1,$2,$3,$4,$5,$6,TRUE)",
                 [managerId,session.id,p.customerId,p.participantKey,p.participantName,p.isGuest]
             );
+            const participantIndex = participants.indexOf(p);
+            const billingKey = p.isGuest || !p.customerId
+                ? String(p.participantKey || ("guest:" + String(-(participantIndex + 1))))
+                : String(p.customerId);
+            const customerPrepayment = Number(normalizedCustomerPrepayments[billingKey] || normalizedCustomerPrepayments[String(-(participantIndex + 1))] || 0);
+            if (customerPrepayment > 0) {
+                if (!p.isGuest && p.customerId) {
+                    await client.query("UPDATE session_participants SET prepayment_amount=$1::numeric WHERE session_id=$2 AND manager_id=$3 AND customer_id=$4",[customerPrepayment,session.id,managerId,p.customerId]);
+                } else {
+                    await client.query("UPDATE session_participants SET prepayment_amount=$1::numeric WHERE session_id=$2 AND manager_id=$3 AND participant_key=$4",[customerPrepayment,session.id,managerId,p.participantKey]);
+                }
+            }
             if (!p.isGuest) {
                 await client.query("INSERT INTO active_session_customer_claims(customer_id,manager_id,session_id) VALUES($1,$2,$3)",[p.customerId,managerId,session.id]);
-                const customerPrepayment = normalizedCustomerPrepayments[String(p.customerId)] || 0;
-                if (customerPrepayment > 0) {
-                    await client.query("UPDATE session_participants SET prepayment_amount=$1::numeric WHERE session_id=$2 AND manager_id=$3 AND customer_id=$4",[customerPrepayment,session.id,managerId,p.customerId]);
-                }
             }
         }
         await client.query("COMMIT");
@@ -1037,12 +1211,47 @@ app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlem
     const durationLimitMinutes = Number(req.body?.durationLimitMinutes ?? 0);
     const customerPrepayments = req.body?.customerPrepayments && typeof req.body.customerPrepayments === 'object' && !Array.isArray(req.body.customerPrepayments)
         ? req.body.customerPrepayments : {};
-    const normalizedCustomerPrepayments = {};
-    for (const [keyName, value] of Object.entries(customerPrepayments)) {
-        const customerId = Number(keyName), amount = Number(value);
-        if (Number.isSafeInteger(customerId) && customerId > 0 && Number.isSafeInteger(amount) && amount > 0) normalizedCustomerPrepayments[String(customerId)] = amount;
-    }
     const participants = Array.isArray(req.body?.participants) ? req.body.participants : [];
+    const normalizedCustomerPrepayments = {};
+    const participantBillingKeys = new Set();
+    participants.forEach((p,index) => {
+        const cid = Number(p.customerId || 0);
+        if (cid > 0) participantBillingKeys.add(String(cid));
+        else {
+            participantBillingKeys.add(String(-(index + 1)));
+            const stableKey = String(p.participantKey || "guest:" + cid);
+            participantBillingKeys.add(stableKey);
+            participantBillingKeys.add(stableKey.replace(/^guest:/, ""));
+        }
+    });
+    for (const [keyName, value] of Object.entries(customerPrepayments)) {
+        const billingKey = String(keyName), amount = Number(value);
+        if (!Number.isSafeInteger(amount) || amount < 0) {
+            return res.status(422).json({success:false,code:'INVALID_INITIAL_PREPAYMENT_ALLOCATION',error:'Invalid customer initial-payment allocation',customerId:billingKey});
+        }
+        if (amount > 0 && !participantBillingKeys.has(billingKey)) {
+            return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_PARTICIPANT_NOT_FOUND',error:'Initial-payment allocation does not belong to a participant in this session',customerId:billingKey});
+        }
+        if (amount > 0) {
+            const participant = participants.find((p,index) => String(p.customerId || 0) === billingKey || String(p.participantKey || "") === billingKey || String(-(index + 1)) === billingKey);
+            const canonicalKey = participant && Number(participant.customerId || 0) <= 0 ? String(participant.participantKey || billingKey) : billingKey;
+            normalizedCustomerPrepayments[canonicalKey] = amount;
+        }
+    }
+    const payers = participants;
+    const explicitAllocationTotal = Object.values(normalizedCustomerPrepayments).reduce((sum, amount) => sum + Number(amount || 0), 0);
+    if (explicitAllocationTotal > 0 && explicitAllocationTotal !== requestedPrepayment) {
+        return res.status(422).json({success:false,code:'INITIAL_PREPAYMENT_ALLOCATION_MISMATCH',error:'Customer initial-payment allocation must equal the session initial payment',initialPrepaymentAmount:requestedPrepayment,allocatedPrepaymentAmount:explicitAllocationTotal});
+    }
+    if (requestedPrepayment > 0 && payers.length > 0 && explicitAllocationTotal === 0) {
+        const base = Math.floor(requestedPrepayment / payers.length);
+        const remainder = requestedPrepayment % payers.length;
+        payers.forEach((p,index) => {
+            const cid = Number(p.customerId || 0);
+            const key = cid > 0 ? String(cid) : String(p.participantKey || "guest:" + cid);
+            normalizedCustomerPrepayments[key] = base + (index === payers.length - 1 ? remainder : 0);
+        });
+    }
     const key = String(req.headers["idempotency-key"] || "").trim();
     if (!managerId || !sessionId || !isUuid || !key || !Number.isInteger(stationId) || stationId <= 0 || !Number.isFinite(startTimeMillis) || !consoleType || controllerCount < 1 || controllerCount > 4 || !Number.isSafeInteger(requestedPrepayment) || requestedPrepayment < 0 || !Number.isSafeInteger(durationLimitMinutes) || durationLimitMinutes < 0) return res.status(400).json({success:false,error:"Invalid offline session start payload"});
     const client = await pool.connect();
@@ -1074,7 +1283,7 @@ app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlem
         const pricingSnapshot = {source:"MANAGER_CONFIGURATION_REVISION",configurationRevisionId:configuration.id,configurationVersion:configuration.version_number,currency:configuration.settings?.currency || "IRT",consoleType:canonicalConsoleType,controllerCount,hourlyRate:configuredRate,initialPrepaymentAmount:requestedPrepayment,durationLimitMinutes,customerPrepayments:normalizedCustomerPrepayments,capturedAt:new Date().toISOString(),offlineReconciled:true};
         await client.query("INSERT INTO game_sessions(id,manager_id,station_id,status,console_type,controller_count,started_at,pricing_snapshot) VALUES($1,$2,$3,'ACTIVE',$4,$5,$6,$7::jsonb)",[sessionId,managerId,stationId,canonicalConsoleType,controllerCount,startedAt.toISOString(),JSON.stringify(pricingSnapshot)]);
         await client.query("INSERT INTO session_events(manager_id,session_id,event_id,event_type,occurred_at,payload,sequence_no) VALUES($1,$2,$3,'START',$4,$5::jsonb,1)",[managerId,sessionId,key,startedAt.toISOString(),JSON.stringify({consoleType:canonicalConsoleType,controllerCount,offlineReconciled:true})]);
-        for (const part of participants) {
+        for (const [participantIndex, part] of participants.entries()) {
             const cid = Number(part.customerId || 0), isGuest = !(cid > 0);
             const participantKey = String(part.participantKey || (isGuest ? "guest:"+cid : "customer:"+cid));
             const participantName = String(part.name || part.participantName || "");
@@ -1083,10 +1292,19 @@ app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlem
                 if (!c.rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({success:false,code:"CUSTOMER_NOT_FOUND"}); }
             }
             await client.query("INSERT INTO session_participants(manager_id,session_id,customer_id,participant_key,participant_name,is_guest,is_payer) VALUES($1,$2,$3,$4,$5,$6,TRUE) ON CONFLICT DO NOTHING",[managerId,sessionId,isGuest?null:cid,participantKey,participantName,isGuest]);
+            const billingKey = cid > 0 ? String(cid) : String(participantKey);
+            const guestLegacyKey = String(-(participantIndex + 1));
+            const guestStableNumericKey = participantKey.replace(/^guest:/, '');
+            const customerPrepayment = Number(normalizedCustomerPrepayments[billingKey] || normalizedCustomerPrepayments[guestStableNumericKey] || normalizedCustomerPrepayments[guestLegacyKey] || 0);
+            if (customerPrepayment > 0) {
+                if (!isGuest) {
+                    await client.query("UPDATE session_participants SET prepayment_amount=$1::numeric WHERE session_id=$2 AND manager_id=$3 AND customer_id=$4",[customerPrepayment,sessionId,managerId,cid]);
+                } else {
+                    await client.query("UPDATE session_participants SET prepayment_amount=$1::numeric WHERE session_id=$2 AND manager_id=$3 AND participant_key=$4",[customerPrepayment,sessionId,managerId,participantKey]);
+                }
+            }
             if (!isGuest) {
                 await client.query("INSERT INTO active_session_customer_claims(customer_id,manager_id,session_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",[cid,managerId,sessionId]);
-                const customerPrepayment = normalizedCustomerPrepayments[String(cid)] || 0;
-                if (customerPrepayment > 0) await client.query("UPDATE session_participants SET prepayment_amount=$1::numeric WHERE session_id=$2 AND manager_id=$3 AND customer_id=$4",[customerPrepayment,sessionId,managerId,cid]);
             }
         }
         await client.query("COMMIT");
@@ -1100,15 +1318,28 @@ app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlem
 
 app.post("/api/station/order", requireManagerAuth, requireActiveEntitlement, rateLimit({windowMs:60000,max:60}), async (req,res) => {
     const managerId = sessionManagerId(req), stationId = Number(req.body?.stationId);
+    const requestedSessionId = String(req.body?.sessionId || "").trim();
     const productName = String(req.body?.productName || "").trim(), quantity = Number(req.body?.quantity || 0);
-    const targetCustomerId = Number(req.body?.targetCustomerId || 0);
+    const rawTargetCustomerId = Number(req.body?.targetCustomerId || 0);
+    const targetCustomerId = rawTargetCustomerId > 0 ? rawTargetCustomerId : 0;
+    const targetParticipantKey = String(req.body?.targetParticipantKey || (rawTargetCustomerId < 0 ? "guest:" + rawTargetCustomerId : "")).trim();
+    const targetCustomerName = String(req.body?.targetCustomerName || "").trim();
     const idempotencyKey = String(req.headers["idempotency-key"] || req.body?.idempotencyKey || "").trim();
     if (!managerId || !stationId || !productName || !Number.isInteger(quantity) || quantity <= 0 || !idempotencyKey) return res.status(400).json({success:false,error:"Invalid order payload"});
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
-        const session = await client.query("SELECT id FROM game_sessions WHERE manager_id=$1 AND station_id=$2 AND status IN ('ACTIVE','PAUSED') ORDER BY started_at DESC LIMIT 1 FOR UPDATE",[managerId,stationId]);
-        if (!session.rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({success:false,error:"Active session not found"}); }
+        const session = requestedSessionId
+          ? await client.query("SELECT id FROM game_sessions WHERE id=$1 AND manager_id=$2 AND station_id=$3 AND status IN ('ACTIVE','PAUSED') FOR UPDATE",[requestedSessionId,managerId,stationId])
+          : await client.query("SELECT id FROM game_sessions WHERE manager_id=$1 AND station_id=$2 AND status IN ('ACTIVE','PAUSED') ORDER BY started_at DESC LIMIT 1 FOR UPDATE",[managerId,stationId]);
+        if (!session.rows[0]) {
+            await client.query("ROLLBACK");
+            if (requestedSessionId) {
+                const ended = await pool.query("SELECT status FROM game_sessions WHERE id=$1 AND manager_id=$2 AND station_id=$3",[requestedSessionId,managerId,stationId]);
+                if (ended.rows[0]) return res.status(409).json({success:false,code:"SESSION_NOT_ACTIVE",error:"This session is no longer active; the order was not added."});
+            }
+            return res.status(404).json({success:false,error:"Active session not found"});
+        }
         const sid=session.rows[0].id;
         const duplicate=await client.query("SELECT id,session_id FROM session_events WHERE manager_id=$1 AND event_id=$2 LIMIT 1",[managerId,idempotencyKey]);
         if(duplicate.rows[0]){
@@ -1120,19 +1351,28 @@ app.post("/api/station/order", requireManagerAuth, requireActiveEntitlement, rat
             return res.json({success:true,duplicate:true,sessionId:sid});
         }
         const cfg=await getManagerConfiguration(client,managerId);
-        const product=cfg.settings?.pricing?.products?.[productName] ?? cfg.settings?.products?.[productName];
+        const product=configuredProduct(cfg,productName);
         const unitPrice=Number(product?.price ?? product ?? 0);
         if(!Number.isFinite(unitPrice) || unitPrice < 0) { await client.query("ROLLBACK"); return res.status(422).json({success:false,error:"Product pricing not configured"}); }
         const unitPriceWhole = Math.trunc(unitPrice);
-        if(targetCustomerId){
-            const target=await client.query("SELECT id FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND customer_id=$3",[sid,managerId,targetCustomerId]);
-            if(!target.rows[0]){
+        let resolvedTargetParticipant = null;
+        if(targetCustomerId > 0){
+            const target=await client.query("SELECT participant_key,participant_name FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND customer_id=$3 AND is_payer=TRUE LIMIT 1",[sid,managerId,targetCustomerId]);
+            resolvedTargetParticipant=target.rows[0]||null;
+            if(!resolvedTargetParticipant){
+                await client.query("ROLLBACK");
+                return res.status(409).json({success:false,code:"ORDER_CUSTOMER_NOT_IN_SESSION"});
+            }
+        } else if(targetParticipantKey || targetCustomerName){
+            const target=await client.query("SELECT participant_key,participant_name FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND customer_id IS NULL AND is_payer=TRUE AND ((($3<>'') AND participant_key=$3) OR (($4<>'') AND participant_name=$4)) ORDER BY CASE WHEN participant_key=$3 THEN 0 ELSE 1 END,id LIMIT 1",[sid,managerId,targetParticipantKey,targetCustomerName]);
+            resolvedTargetParticipant=target.rows[0]||null;
+            if(!resolvedTargetParticipant){
                 await client.query("ROLLBACK");
                 return res.status(409).json({success:false,code:"ORDER_CUSTOMER_NOT_IN_SESSION"});
             }
         }
         const lineTotal=unitPriceWhole*quantity;
-        await client.query("INSERT INTO session_orders(manager_id,session_id,product_name,quantity,unit_price,target_customer_id,line_total,product_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)",[managerId,sid,productName,quantity,unitPriceWhole,targetCustomerId||null,lineTotal,JSON.stringify({productName,unitPrice:unitPriceWhole,capturedAt:new Date().toISOString()})]);
+        await client.query("INSERT INTO session_orders(manager_id,session_id,product_name,quantity,unit_price,target_customer_id,line_total,product_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)",[managerId,sid,productName,quantity,unitPriceWhole,targetCustomerId||null,lineTotal,JSON.stringify({productName,unitPrice:unitPriceWhole,capturedAt:new Date().toISOString(),targetParticipantKey:resolvedTargetParticipant?.participant_key||null,targetCustomerName:resolvedTargetParticipant?.participant_name||null})]);
         const last=await client.query("SELECT COALESCE(MAX(sequence_no),0)+1 seq FROM session_events WHERE session_id=$1 AND manager_id=$2",[sid,managerId]);
         await client.query("INSERT INTO session_events(manager_id,session_id,event_id,event_type,occurred_at,payload,sequence_no) VALUES($1,$2,$3,'ORDER',NOW(),$4::jsonb,$5)",[managerId,sid,idempotencyKey,JSON.stringify({productName,quantity,unitPrice,targetCustomerId:targetCustomerId||null}),Number(last.rows[0].seq)]);
         await client.query("COMMIT");
@@ -1147,7 +1387,7 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
     const eventId = String(req.body?.eventId || "").trim();
     const eventType = String(req.body?.eventType || "").trim().toUpperCase();
     const occurredAtMs = Number(req.body?.occurredAt);
-    const allowed = new Set(["PAUSE","RESUME","ADD_PARTICIPANT","REMOVE_PARTICIPANT","ORDER"]);
+    const allowed = new Set(["PAUSE","RESUME","SEGMENT_PAUSE","SEGMENT_CONTINUE","ADD_PARTICIPANT","REMOVE_PARTICIPANT","ORDER"]);
     if (!managerId || !sessionId || !eventId || !allowed.has(eventType) || !Number.isFinite(occurredAtMs)) return res.status(400).json({success:false,error:"Invalid session event payload"});
     const client = await pool.connect();
     try {
@@ -1177,8 +1417,9 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
             await client.query("ROLLBACK");
             return res.status(409).json({success:false,code:"EVENT_ORDER_CONFLICT"});
         }
-        if (eventType === "PAUSE" && session.rows[0].status !== "ACTIVE") { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"SESSION_NOT_RUNNING"}); }
+        if ((eventType === "PAUSE" || eventType === "SEGMENT_PAUSE") && session.rows[0].status !== "ACTIVE") { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"SESSION_NOT_RUNNING"}); }
         if (eventType === "RESUME" && session.rows[0].status !== "PAUSED") { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"SESSION_NOT_PAUSED"}); }
+        if (eventType === "SEGMENT_CONTINUE" && !["ACTIVE","PAUSED"].includes(session.rows[0].status)) { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"SESSION_NOT_CONTINUABLE"}); }
         const payload = req.body?.payload && typeof req.body.payload === "object" ? req.body.payload : {};
         if (eventType === "ADD_PARTICIPANT") {
             const participant = normalizeParticipant(payload, 0);
@@ -1208,7 +1449,7 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
                 if (!target.rows.length) { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"ORDER_CUSTOMER_NOT_IN_SESSION"}); }
             }
             const cfg=await getManagerConfiguration(client,managerId);
-            const product=cfg.settings?.pricing?.products?.[productName] ?? cfg.settings?.products?.[productName];
+            const product=configuredProduct(cfg,productName);
             const unitPriceWhole=normalizeMoneyInteger(product?.price ?? product ?? "");
             if (unitPriceWhole === null) { await client.query("ROLLBACK"); return res.status(422).json({success:false,error:"Product pricing not configured"}); }
             await client.query("INSERT INTO session_orders(manager_id,session_id,product_name,quantity,unit_price,target_customer_id,line_total,product_snapshot) VALUES($1,$2,$3,$4,$5::numeric,$6,FLOOR($4::numeric*$5::numeric),$7::jsonb)", [managerId,sessionId,productName,quantity,unitPriceWhole,targetCustomerId,JSON.stringify({name:productName,unitPrice:unitPriceWhole,capturedAt:new Date().toISOString()})]);
@@ -1217,8 +1458,9 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
             "INSERT INTO session_events(manager_id,session_id,event_id,event_type,occurred_at,payload,sequence_no) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7)",
             [managerId,sessionId,eventId,eventType,occurredAt.toISOString(),JSON.stringify(payload),sequenceNo]
         );
-        if (eventType === "PAUSE" || eventType === "RESUME") {
-            await client.query("UPDATE game_sessions SET status=$1::varchar,paused_at=CASE WHEN $1::varchar='PAUSED' THEN $2 ELSE paused_at END,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[eventType==="PAUSE"?"PAUSED":"ACTIVE",occurredAt.toISOString(),sessionId,managerId]);
+        if (["PAUSE","RESUME","SEGMENT_PAUSE","SEGMENT_CONTINUE"].includes(eventType)) {
+            const nextStatus = (eventType === "PAUSE" || eventType === "SEGMENT_PAUSE") ? "PAUSED" : "ACTIVE";
+            await client.query("UPDATE game_sessions SET status=$1::varchar,paused_at=CASE WHEN $1::varchar='PAUSED' THEN $2 ELSE NULL END,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[nextStatus,occurredAt.toISOString(),sessionId,managerId]);
         }
         await client.query("COMMIT");
         return res.json({success:true,sessionId,sequenceNo,serverTime:Date.now()});
@@ -1263,40 +1505,9 @@ app.post("/api/station/invoice/pay", requireManagerAuth, requireActiveEntitlemen
             [requestedAmountText,invoiceId,managerId]
         );
         await client.query("INSERT INTO financial_audit_logs(manager_id,customer_id,invoice_id,payment_id,event_type,amount,currency,actor,idempotency_key,metadata) VALUES($1,$2,$3,$4,'INVOICE_PAYMENT',$5,$6,'MANAGER',$7,$8::jsonb)", [managerId,invoice.customer_id,invoiceId,payment.rows[0].id,requestedAmountText,invoice.currency || "IRT",idempotencyKey,JSON.stringify({invoiceStatus:updated.rows[0].status,paidAmount:String(updated.rows[0].paid_amount),totalAmount:String(updated.rows[0].total_amount),provider:"MANAGER_CONFIRMATION"})]);
-        const config = await getManagerConfiguration(client, managerId);
-        const policy = config.settings?.policies?.loyalty?.gameSettlement || {};
-        const gnPer10000 = String(policy.gnPer10000 ?? "0").trim();
-        const lpPer10000 = String(policy.lpPer10000 ?? "0").trim();
-        const nonNegativeRate = /^(?:0|[1-9][0-9]*)(?:[.][0-9]+)?$/;
-        if (!nonNegativeRate.test(gnPer10000) || !nonNegativeRate.test(lpPer10000)) {
-            await client.query("ROLLBACK");
-            return res.status(422).json({success:false,code:"LOYALTY_POLICY_INVALID"});
-        }
-        const loyaltyConfigured = Number(gnPer10000) > 0 || Number(lpPer10000) > 0;
-        if (updated.rows[0].status === 'PAID' && loyaltyConfigured) {
-            const paidGameEligible = await client.query("SELECT game_cost FROM invoices WHERE id=$1 AND manager_id=$2", [invoiceId,managerId]);
-            const eligibleText = String(paidGameEligible.rows[0]?.game_cost || "0");
-            const loyaltyAmounts = await client.query("SELECT FLOOR(($1::numeric / 10000::numeric) * $2::numeric)::bigint AS gn_amount, FLOOR(($1::numeric / 10000::numeric) * $3::numeric)::bigint AS lp_amount", [eligibleText,gnPer10000,lpPer10000]);
-            const gnAmount = Number(loyaltyAmounts.rows[0].gn_amount || 0);
-            const lpAmount = Number(loyaltyAmounts.rows[0].lp_amount || 0);
-            if (invoice.customer_id == null) {
-                if (gnAmount > 0 || lpAmount > 0) { await client.query("ROLLBACK"); return res.status(422).json({success:false,code:"LOYALTY_REQUIRES_REGISTERED_CUSTOMER"}); }
-            }
-            if (gnAmount > 0) {
-                const ins = await client.query("INSERT INTO gn_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_PAYMENT',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id", [managerId,invoice.customer_id,gnAmount,invoiceId,"invoice_gn_"+invoiceId]);
-                if (ins.rowCount) await client.query("UPDATE customers SET gn_balance=gn_balance+$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3", [gnAmount,invoice.customer_id,managerId]);
-            }
-            if (lpAmount > 0) {
-                const ins = await client.query("INSERT INTO lp_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,'CREDIT','SESSION_PAYMENT',$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id", [managerId,invoice.customer_id,lpAmount,invoiceId,"invoice_lp_"+invoiceId]);
-                if (ins.rowCount) await client.query("UPDATE customers SET lp_balance=lp_balance+$1,updated_at=NOW() WHERE id=$2 AND manager_id=$3", [lpAmount,invoice.customer_id,managerId]);
-            }
-            if (gnAmount > 0 || lpAmount > 0) {
-                await client.query(
-                    "INSERT INTO financial_audit_logs(manager_id,customer_id,invoice_id,event_type,amount,currency,actor,idempotency_key,metadata) VALUES($1,$2,$3,'INVOICE_LOYALTY_SETTLEMENT',$4,$5,'SYSTEM',$6,$7::jsonb)",
-                    [managerId,invoice.customer_id,invoiceId,String(gnAmount),invoice.currency || "IRT","invoice_loyalty_"+invoiceId,JSON.stringify({gnAmount,lpAmount,gameCost:eligibleText,gnRatePer10000:gnPer10000,lpRatePer10000:lpPer10000})]
-                );
-            }
-        }
+        // Loyalty is deliberately NOT awarded at invoice payment time. Station settlement
+        // creates an UNREVIEWED transaction; the Manager reviews/approves it first, and only
+        // that review action awards GN/LP. This prevents automatic financial determination.
         await client.query("COMMIT");
         return res.json({success:true,payment:payment.rows[0],invoice:{id:invoiceId,paidAmount:updated.rows[0].paid_amount,totalAmount:updated.rows[0].total_amount,status:updated.rows[0].status}});
     } catch(e) {
@@ -1318,6 +1529,61 @@ app.get("/api/station/active", requireManagerAuth, requireActiveEntitlement, asy
         if (!result.rows[0]) return res.status(404).json({success:false,code:"NO_ACTIVE_SESSION"});
         return res.json({success:true,session:result.rows[0],serverTime:Date.now()});
     } catch(e) { return res.status(500).json({success:false,error:"Active session lookup failed"}); }
+});
+
+app.get("/api/v1/manager/live-sessions", requireManagerAuth, requireActiveEntitlement, async (req,res) => {
+    const managerId = sessionManagerId(req);
+    if (!managerId) return res.status(401).json({success:false,error:"Manager identity missing"});
+    try {
+        const result = await pool.query(`
+            SELECT gs.id,gs.station_id,gs.status,gs.console_type,gs.controller_count,gs.started_at,gs.paused_at,
+                   gs.pricing_snapshot,
+                   COALESCE((SELECT json_agg(json_build_object(
+                       'customerId',sp.customer_id,'participantKey',sp.participant_key,
+                       'participantName',sp.participant_name,'isGuest',sp.is_guest,
+                       'isPayer',sp.is_payer,'prepaymentAmount',sp.prepayment_amount
+                   ) ORDER BY sp.id) FROM session_participants sp
+                     WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id),'[]'::json) AS participants,
+                   COALESCE((SELECT json_agg(json_build_object(
+                       'productName',so.product_name,'quantity',so.quantity,
+                       'unitPrice',so.unit_price,'targetCustomerId',CASE WHEN so.target_customer_id IS NOT NULL THEN so.target_customer_id WHEN so.product_snapshot->>'targetParticipantKey' ~ '^guest:-[0-9]+$' THEN substring(so.product_snapshot->>'targetParticipantKey' from 7)::integer ELSE NULL END,
+                       'targetParticipantKey',so.product_snapshot->>'targetParticipantKey',
+                       'targetCustomerName',so.product_snapshot->>'targetCustomerName',
+                       'lineTotal',so.line_total,'createdAt',so.created_at
+                   ) ORDER BY so.created_at,so.id) FROM session_orders so
+                     WHERE so.session_id=gs.id AND so.manager_id=gs.manager_id),'[]'::json) AS orders,
+                   COALESCE((SELECT json_agg(json_build_object(
+                       'eventType',se.event_type,'occurredAt',se.occurred_at,
+                       'sequenceNo',se.sequence_no,'payload',se.payload
+                   ) ORDER BY se.sequence_no) FROM session_events se
+                     WHERE se.session_id=gs.id AND se.manager_id=gs.manager_id),'[]'::json) AS events
+            FROM game_sessions gs
+            WHERE gs.manager_id=$1 AND gs.status IN ('ACTIVE','PAUSED')
+            ORDER BY gs.station_id,gs.started_at DESC
+        `,[managerId]);
+        const serverTime=Date.now();
+        const sessions=result.rows.map(row=>{
+            const events=Array.isArray(row.events)?row.events:[];
+            let activeSeconds=0;
+            let cursor=new Date(row.started_at).getTime();
+            let running=true;
+            for(const event of events){
+                const t=new Date(event.occurredAt).getTime();
+                if(!Number.isFinite(t) || t<cursor) continue;
+                if(running) activeSeconds += Math.max(0,Math.floor((t-cursor)/1000));
+                if(event.eventType==='PAUSE' || event.eventType==='SEGMENT_PAUSE') running=false;
+                else if(event.eventType==='RESUME' || event.eventType==='SEGMENT_CONTINUE') running=true;
+                cursor=t;
+            }
+            if(running) activeSeconds += Math.max(0,Math.floor((serverTime-cursor)/1000));
+            return {...row,activeSeconds,serverTime};
+        });
+        return res.json({success:true,serverTime,sessions});
+    } catch(e) {
+        res.locals.diagnosticCode='LIVE_SESSION_SNAPSHOT_FAILED';
+        res.locals.diagnosticMessage=String(e?.message||'').slice(0,300);
+        return res.status(500).json({success:false,code:'LIVE_SESSION_SNAPSHOT_FAILED'});
+    }
 });
 
 app.get("/api/customer/live-session", requireCustomerAuth, async (req,res) => {
@@ -1352,8 +1618,16 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
             await client.query("COMMIT");
             return res.json({success:true,duplicate:true,sessionId,serverTime:Date.now(),durationSeconds:Number(session.duration_seconds || 0),gameCost:String(session.game_cost || "0"),buffetCost:String(session.buffet_cost || "0"),totalCost:String(session.total_cost || "0"),invoices:invoices.rows});
         }
-        const endedAt = new Date(Math.min(endedAtMs,Date.now()));
-        if (endedAt.getTime() < new Date(session.started_at).getTime()) { await client.query("ROLLBACK"); return res.status(422).json({success:false,error:"Invalid end time"}); }
+        let endedAt = new Date(Math.min(endedAtMs,Date.now()));
+        const startedAt = new Date(session.started_at);
+        if (endedAt.getTime() < startedAt.getTime()) {
+            // A persisted client-side pending settlement can contain an obsolete device clock
+            // after an app update/restart. Do not leave the session permanently un-settleable.
+            // Server time is authoritative and can never precede the session start.
+            endedAt = new Date(Date.now());
+            res.locals.diagnosticCode = "SETTLEMENT_END_BEFORE_START_REPAIRED";
+            res.locals.diagnosticMessage = "Client end time preceded server session start; repaired to server time.";
+        }
         const events = await client.query("SELECT event_type,occurred_at,sequence_no,payload FROM session_events WHERE session_id=$1 AND manager_id=$2 ORDER BY sequence_no ASC",[sessionId,managerId]);
         const activeSeconds = sessionEventActiveSeconds(events.rows.filter(e => e.event_type !== "START"),session.started_at,endedAt.toISOString());
         const pricing = session.pricing_snapshot || {};
@@ -1367,15 +1641,41 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
             "SELECT FLOOR(($1::numeric * $2::numeric) / 3600::numeric) AS game_cost, FLOOR(COALESCE((SELECT SUM(line_total) FROM session_orders WHERE session_id=$3 AND manager_id=$4),0)::numeric) AS buffet_cost",
             [pricingRateText, activeSeconds, sessionId, managerId]
         );
-        const gameCost = financial.rows[0].game_cost;
+        let gameCost = financial.rows[0].game_cost;
         const buffetCost = financial.rows[0].buffet_cost;
+        // When every committed segment carries its exact integer cost, use that ledger rather
+        // than re-pricing rounded wall-clock seconds. Then price only the active milliseconds
+        // after the last committed boundary; this prevents charging the idle gap after a segment.
+        const segmentLedgerEvents = events.rows.filter(e =>
+            ["SEGMENT_PAUSE","SEGMENT_CONTINUE"].includes(e.event_type) &&
+            new Date(e.occurred_at).getTime() <= endedAt.getTime()
+        );
+        const completeSegmentLedger = segmentLedgerEvents.length > 0 && segmentLedgerEvents.every(e =>
+            e.payload && e.payload.cost !== undefined && Number.isSafeInteger(Number(e.payload.cost)) && Number(e.payload.cost) >= 0
+        );
+        if (completeSegmentLedger) {
+            const committedCost = segmentLedgerEvents.reduce((sum,e) => sum + BigInt(String(Math.trunc(Number(e.payload.cost)))), 0n);
+            const lastSegmentEvent = segmentLedgerEvents[segmentLedgerEvents.length - 1];
+            const afterLastSegment = events.rows.filter(e => Number(e.sequence_no) > Number(lastSegmentEvent.sequence_no));
+            const remainingActiveMillis = sessionEventActiveMillisAfter(
+                afterLastSegment,
+                lastSegmentEvent.occurred_at,
+                endedAt.toISOString(),
+                lastSegmentEvent.event_type === "SEGMENT_CONTINUE"
+            );
+            const remainingCost = await client.query(
+                "SELECT FLOOR(($1::numeric * $2::numeric) / 3600000::numeric) AS game_cost",
+                [pricingRateText, remainingActiveMillis]
+            );
+            gameCost = (committedCost + BigInt(normalizeMoneyInteger(remainingCost.rows[0].game_cost) || "0")).toString();
+        }
         const totalResult = await client.query(
             "SELECT ($1::numeric + $2::numeric) AS total_cost",
             [gameCost, buffetCost]
         );
         const totalCost = totalResult.rows[0].total_cost;
         await client.query("UPDATE game_sessions SET status='SETTLED',ended_at=$1,duration_seconds=$2::bigint,duration_minutes=FLOOR($2::numeric/60)::integer,game_cost=$3,buffet_cost=$4,total_cost=$5,updated_at=NOW() WHERE id=$6 AND manager_id=$7",[endedAt.toISOString(),activeSeconds,gameCost,buffetCost,totalCost,sessionId,managerId]);
-        const participants = await client.query("SELECT customer_id,participant_key,participant_name,is_guest,is_payer FROM session_participants WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sessionId,managerId]);
+        const participants = await client.query("SELECT customer_id,participant_key,participant_name,is_guest,is_payer,prepayment_amount FROM session_participants WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sessionId,managerId]);
         const payers = participants.rows.filter(p => p.is_payer);
         if (payers.length) {
             const shares = await client.query(
@@ -1383,10 +1683,10 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
                 [gameCost, payers.length, buffetCost]
             );
             const shareData = shares.rows[0];
-            const baseGame = BigInt(String(shareData.game_share_base || '0'));
-            const gameRemainder = BigInt(String(shareData.game_remainder || '0'));
-            const baseBuffet = BigInt(String(shareData.buffet_share_base || '0'));
-            const buffetRemainder = BigInt(String(shareData.buffet_remainder || '0'));
+            const baseGame = BigInt(normalizeMoneyInteger(shareData.game_share_base) || "0");
+            const gameRemainder = BigInt(normalizeMoneyInteger(shareData.game_remainder) || "0");
+            const baseBuffet = BigInt(normalizeMoneyInteger(shareData.buffet_share_base) || "0");
+            const buffetRemainder = BigInt(normalizeMoneyInteger(shareData.buffet_remainder) || "0");
             const managerConfig = await getManagerConfiguration(client,managerId);
             let clubLevels = managerConfig.settings?.club_levels || [];
             if (typeof clubLevels === 'string') {
@@ -1410,8 +1710,8 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
                     "SELECT FLOOR($1::numeric*(100-$3::numeric)/100::numeric) AS game_cost,FLOOR($2::numeric*(100-$4::numeric)/100::numeric) AS buffet_cost",
                     [shareGame,shareBuffet,gameDiscountPercent,buffetDiscountPercent]
                 );
-                let invoiceGameCost = BigInt(String(discounted.rows[0].game_cost || "0"));
-                let invoiceBuffetCost = BigInt(String(discounted.rows[0].buffet_cost || "0"));
+                let invoiceGameCost = BigInt(normalizeMoneyInteger(discounted.rows[0].game_cost) || "0");
+                let invoiceBuffetCost = BigInt(normalizeMoneyInteger(discounted.rows[0].buffet_cost) || "0");
                 const beforeFixed = invoiceGameCost + invoiceBuffetCost;
                 const fixedDiscount = BigInt(String(fixedDiscountToman));
                 if (fixedDiscount > 0n) {
@@ -1421,15 +1721,36 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
                     remainingFixed -= buffetDeduction;
                     if (remainingFixed > 0n) invoiceGameCost = invoiceGameCost > remainingFixed ? invoiceGameCost - remainingFixed : 0n;
                 }
-                const prepayment = BigInt(String(payer.prepayment_amount || "0"));
-                const invoiceTotal = invoiceGameCost + invoiceBuffetCost;
-                const appliedPrepayment = prepayment > invoiceTotal ? invoiceTotal : prepayment;
-                const invoiceStatus = appliedPrepayment >= invoiceTotal ? 'PAID' : 'UNPAID';
-                const invoiceNumber = "GN-" + new Date().toISOString().replace(/[-:TZ.]/g,"").slice(0,14) + "-" + (payer.customer_id || "GUEST") + "-" + sessionId.slice(0,8);
+                // A synced payer transaction contains the accumulated shares across the actual
+                // historical segments. Prefer it over the legacy equal split, which charged late
+                // joiners for sections they did not participate in.
+                const payerTransaction = payer.customer_id
+                    ? (await client.query("SELECT amount,game_cost,food_cost FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND customer_id=$3 AND status<>'DELETED' ORDER BY id DESC LIMIT 1",[managerId,sessionId,payer.customer_id])).rows[0]
+                    : (await client.query("SELECT amount,game_cost,food_cost FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND customer_id IS NULL AND customer_name=$3 AND status<>'DELETED' ORDER BY id DESC LIMIT 1",[managerId,sessionId,payer.participant_name])).rows[0];
+                let invoiceTotal;
+                if (payerTransaction) {
+                    invoiceGameCost = BigInt(normalizeMoneyInteger(payerTransaction.game_cost) || "0");
+                    invoiceBuffetCost = BigInt(normalizeMoneyInteger(payerTransaction.food_cost) || "0");
+                    invoiceTotal = BigInt(normalizeMoneyInteger(payerTransaction.amount) || "0");
+                } else {
+                    invoiceTotal = invoiceGameCost + invoiceBuffetCost;
+                }
+                const prepayment = BigInt(normalizeMoneyInteger(payer.prepayment_amount) || "0");
+                // Settlement never auto-determines a financial invoice. The Manager reviews the
+                // invoice in the unreviewed queue and explicitly decides how any initial payment
+                // is applied and how unused balance is returned to wallet.
+                const appliedPrepayment = 0n;
+                const invoiceStatus = 'UNPAID';
+                // Invoice identity must be unique per payer, not merely per session/customer.
+                // Guest payers have NULL customer_id, so using only GUEST caused two guests in
+                // the same session to collide on invoices_manager_id_invoice_number_key.
+                // Keep it deterministic so a retry of the same settlement remains idempotent.
+                const payerIdentity = payer.customer_id ? `C${payer.customer_id}` : String(payer.participant_key || `G${payerIndex + 1}`).replace(/[^A-Za-z0-9_-]/g, "_");
+                const invoiceNumber = "GN-" + sessionId + "-" + payerIdentity;
                 const invoicePricingSnapshot = {...pricing,clubTier:tier,gameDiscountPercent,buffetDiscountPercent,fixedDiscountToman,prepaymentAmount:prepayment.toString(),appliedPrepayment:appliedPrepayment.toString()};
                 await client.query(
-                    "INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,$3,$4,$5,$6,'IRT',$7,$8,($7::numeric+$8::numeric),$9,$10,$11::jsonb,$12::jsonb,$13::jsonb) ON CONFLICT(session_id,customer_id) DO UPDATE SET status=EXCLUDED.status,game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,paid_amount=EXCLUDED.paid_amount,settlement_idempotency_key=COALESCE(invoices.settlement_idempotency_key,EXCLUDED.settlement_idempotency_key),pricing_snapshot=EXCLUDED.pricing_snapshot,updated_at=NOW()",
-                    [invoiceNumber,managerId,payer.customer_id,sessionId,session.station_id,invoiceStatus,invoiceGameCost.toString(),invoiceBuffetCost.toString(),appliedPrepayment.toString(),"settle_"+sessionId+"_"+(payer.customer_id || "guest")+"_"+payer.participant_key,JSON.stringify(invoicePricingSnapshot),JSON.stringify({id:payer.customer_id || null,name:payer.participant_name,isGuest:Boolean(payer.is_guest)}),JSON.stringify({id:managerId})]
+                    "INSERT INTO invoices(invoice_number,manager_id,customer_id,session_id,station_id,status,currency,game_cost,buffet_cost,total_amount,paid_amount,settlement_idempotency_key,pricing_snapshot,customer_snapshot,manager_snapshot) VALUES($1,$2,$3,$4,$5,$6,'IRT',$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14::jsonb) ON CONFLICT(manager_id,invoice_number) DO UPDATE SET status=CASE WHEN invoices.status IN ('REVIEWED','DEBTOR','PARTIAL') THEN invoices.status ELSE EXCLUDED.status END,game_cost=EXCLUDED.game_cost,buffet_cost=EXCLUDED.buffet_cost,total_amount=EXCLUDED.total_amount,paid_amount=CASE WHEN invoices.status IN ('REVIEWED','DEBTOR','PARTIAL') THEN LEAST(invoices.paid_amount,EXCLUDED.total_amount) ELSE LEAST(EXCLUDED.paid_amount,EXCLUDED.total_amount) END,settlement_idempotency_key=COALESCE(invoices.settlement_idempotency_key,EXCLUDED.settlement_idempotency_key),pricing_snapshot=EXCLUDED.pricing_snapshot,customer_snapshot=EXCLUDED.customer_snapshot,updated_at=NOW()",
+                    [invoiceNumber,managerId,payer.customer_id,sessionId,session.station_id,invoiceStatus,invoiceGameCost.toString(),invoiceBuffetCost.toString(),invoiceTotal.toString(),appliedPrepayment.toString(),"settle_"+sessionId+"_"+(payer.customer_id || "guest")+"_"+payer.participant_key,JSON.stringify(invoicePricingSnapshot),JSON.stringify({id:payer.customer_id || null,name:payer.participant_name,isGuest:Boolean(payer.is_guest),participantKey:payer.participant_key}),JSON.stringify({id:managerId})]
                 );
             }
         }
@@ -1446,7 +1767,7 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
 
 // Canonical Android contract routes are registered before the server starts listening.
 const registerCanonicalRoutes = require('./canonical_routes');
-registerCanonicalRoutes({ app, pool, requireManagerAuth, requireActiveEntitlement, requireCustomerAuth, requireSuperManagerAuth, rateLimit });
+registerCanonicalRoutes({ app, pool, requireManagerAuth, requireActiveEntitlement, requireCustomerAuth, requireSuperManagerAuth, rateLimit, getManagerConfiguration });
 
 const PORT = process.env.PORT || 3000;
 const expireDueReservationPayments = async () => {
@@ -1500,6 +1821,9 @@ const ensureRuntimeSchema = async () => {
     try {
         await client.query('BEGIN');
         await client.query('ALTER TABLE invoices ALTER COLUMN customer_id DROP NOT NULL');
+        await client.query('ALTER TABLE managers ADD COLUMN IF NOT EXISTS token_version integer NOT NULL DEFAULT 1');
+        await client.query("CREATE TABLE IF NOT EXISTS session_review_refunds (id BIGSERIAL PRIMARY KEY, manager_id VARCHAR(50) NOT NULL, session_id UUID NOT NULL, customer_id INTEGER NOT NULL, refund_amount NUMERIC NOT NULL DEFAULT 0, method VARCHAR(20) NOT NULL, status VARCHAR(30) NOT NULL DEFAULT 'FINALIZED', idempotency_key VARCHAR(200) NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(manager_id,session_id,customer_id), UNIQUE(idempotency_key))");
+        await client.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS token_version integer NOT NULL DEFAULT 1');
         await client.query('COMMIT');
     } catch (e) {
         try { await client.query('ROLLBACK'); } catch (_) {}

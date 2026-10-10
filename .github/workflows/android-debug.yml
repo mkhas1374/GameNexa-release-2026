@@ -53,7 +53,21 @@ jobs:
         run: node --check backend/server.js && node --check backend/canonical_routes.js && node --check backend/financialService.js
 
       - name: Run JVM tests
-        run: ./gradlew testDebugUnitTest --stacktrace
+        run: |
+          set -o pipefail
+          ./gradlew testDebugUnitTest --stacktrace --console=plain --no-configuration-cache 2>&1 | tee jvm-test.log
+
+      - name: Upload JVM failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameNexa-jvm-test-diagnostics
+          path: |
+            jvm-test.log
+            app/build/test-results/
+            app/build/reports/tests/
+          if-no-files-found: warn
+          retention-days: 3
 
       - name: Restore stable CI debug signing key
         uses: actions/cache@v4

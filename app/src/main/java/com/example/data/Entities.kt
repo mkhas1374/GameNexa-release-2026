@@ -179,7 +179,6 @@ data class Customer(
     @PrimaryKey(autoGenerate = true) val id: Long = 0L,
     val fullName: String,
     val phoneNumber: String,
-    val password: String = "",
     val debt: Long = 0L,
     val credit: Long = 0L,
     val description: String = "",
@@ -298,7 +297,10 @@ data class CustomerTransaction(
     val timestamp: Long = System.currentTimeMillis(),
     val playMinutes: Int = 0,
     val gameCost: Long = 0L,
-    val foodCost: Long = 0L
+    val foodCost: Long = 0L,
+    val sessionId: String = "",
+    val earnedGn: Long = 0L,
+    val earnedLp: Long = 0L
 ) {
     val conciseTitle: String
         get() {

@@ -41,6 +41,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -50,6 +51,44 @@ import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
     private val mainViewModel: GameNetViewModel by viewModels()
+
+    private fun installCrashCapture() {
+        synchronized(CRASH_CAPTURE_LOCK) {
+            if (crashCaptureInstalled) return
+            val previous = Thread.getDefaultUncaughtExceptionHandler()
+            val appContext = applicationContext
+            Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+                runCatching {
+                    val report = buildString {
+                        appendLine("GameNexa uncaught exception")
+                        appendLine("Time: ${java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", java.util.Locale.US).format(java.util.Date())}")
+                        appendLine("Thread: ${thread.name}")
+                        appendLine(android.util.Log.getStackTraceString(error))
+                    }
+                    File(appContext.filesDir, CRASH_REPORT_FILE).writeText(report)
+                }
+                if (previous != null) previous.uncaughtException(thread, error)
+                else {
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                    kotlin.system.exitProcess(10)
+                }
+            }
+            crashCaptureInstalled = true
+        }
+    }
+
+    private fun readCrashReport(): String =
+        runCatching { File(filesDir, CRASH_REPORT_FILE).takeIf { it.isFile }?.readText().orEmpty() }.getOrDefault("")
+
+    private fun clearCrashReport() {
+        runCatching { File(filesDir, CRASH_REPORT_FILE).delete() }
+    }
+
+    private companion object {
+        const val CRASH_REPORT_FILE = "gamenexa-last-crash.txt"
+        val CRASH_CAPTURE_LOCK = Any()
+        @Volatile var crashCaptureInstalled = false
+    }
 
 
     override fun attachBaseContext(newBase: Context) {
@@ -63,6 +102,7 @@ class MainActivity : ComponentActivity() {
     @Suppress("DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installCrashCapture()
         enableEdgeToEdge()
         window.attributes = window.attributes.apply {
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -81,6 +121,26 @@ class MainActivity : ComponentActivity() {
             val layoutDirection = if (lang == "fa") LayoutDirection.Rtl else LayoutDirection.Ltr
             CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
                 val context = androidx.compose.ui.platform.LocalContext.current
+                var previousCrashReport by remember { mutableStateOf(readCrashReport()) }
+                if (previousCrashReport.isNotBlank()) {
+                    AlertDialog(
+                        onDismissRequest = { previousCrashReport = "" },
+                        title = { Text("گزارش خطای اجرای قبلی") },
+                        text = { Text("برنامه در اجرای قبلی به‌طور غیرمنتظره متوقف شده است. گزارش فنی ذخیره شده؛ لطفاً با زدن «کپی گزارش خطا» آن را کپی کن و برای بررسی بفرست.") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("GameNexa crash report", previousCrashReport))
+                                Toast.makeText(context, "گزارش خطا کپی شد؛ آن را در همین گفتگو جای‌گذاری کن.", Toast.LENGTH_LONG).show()
+                                clearCrashReport()
+                                previousCrashReport = ""
+                            }) { Text("کپی گزارش خطا") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { previousCrashReport = "" }) { Text("بعداً") }
+                        }
+                    )
+                }
                 val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
                 val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
                 val appTheme by mainViewModel.appTheme.collectAsState()
@@ -92,6 +152,7 @@ class MainActivity : ComponentActivity() {
                     val notchSafeBarEnabled by viewModel.notchSafeBarEnabled.collectAsState()
 
                     val isAdminAuthenticated by viewModel.isAdminAuthenticated.collectAsState()
+                    val isAuthRestoring by viewModel.isAuthRestoring.collectAsState()
                     val isCustomerAuthenticated by viewModel.isCustomerAuthenticated.collectAsState()
                     val currentCustomer by com.example.data.network.SelfHostedManager.currentLoggedInCustomer.collectAsState()
                     val serverClockMillis by viewModel.serverClockMillis.collectAsState()
@@ -132,6 +193,8 @@ class MainActivity : ComponentActivity() {
                         Box(modifier = Modifier.fillMaxSize()) {
                             Column(modifier = Modifier.fillMaxSize()) {
                                 if (notchSafeBarEnabled) {
+                                    // Optional custom cutout protection. The clock no longer adds a
+                                    // second status-bar inset, so this is the only security bar when enabled.
                                     Spacer(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -143,7 +206,14 @@ class MainActivity : ComponentActivity() {
                                     IranTehranClock(serverTimeMillis = serverClockMillis!!, modifier = Modifier.fillMaxWidth())
                                 }
                                 Box(modifier = Modifier.weight(1f)) {
-                                    if (isFirstLaunch) {
+                                    if (isAuthRestoring) {
+                                        Box(
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            CircularProgressIndicator()
+                                        }
+                                    } else if (isFirstLaunch) {
                                         FirstLaunchGuide(
                                             lang = lang,
                                             onLanguageChange = { viewModel.saveLanguageSetting(it) },
@@ -1005,9 +1075,9 @@ private fun IranTehranClock(
     }
 
     Surface(
-        modifier = modifier
-            .windowInsetsPadding(WindowInsets.statusBarsIgnoringVisibility)
-            .height(38.dp),
+        // The optional notch-safe spacer is owned by the parent. Do not add another
+        // status-bar inset here, otherwise enabling the setting creates two top bars.
+        modifier = modifier.height(38.dp),
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 2.dp
     ) {

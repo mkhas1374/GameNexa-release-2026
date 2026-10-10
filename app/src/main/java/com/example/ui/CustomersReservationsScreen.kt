@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalFoundationApi::class)
+
 package com.example.ui
 
 import android.Manifest
@@ -19,8 +21,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -44,8 +51,22 @@ import com.example.data.Customer
 import com.example.data.CustomerTransaction
 import com.example.data.Reservation
 import com.example.data.network.SelfHostedManager
+import com.example.util.JalaliCalendarHelper
 import java.text.SimpleDateFormat
 import java.util.*
+
+private fun formatSegmentDetailBlocks(raw: String): List<String> {
+    if (raw.isBlank()) return emptyList()
+    val normalized = raw.replace(Regex("\\s*\\|\\s*"), "\n")
+    return normalized.split(Regex("(?=بخش\\s+\\d+\\s*:)"))
+        .map { block ->
+            block.lines()
+                .filterNot { it.contains("جزئیات نشست") || it.contains("پرداخت اولیه مختص این مشتری") }
+                .joinToString("\n")
+                .trim()
+        }
+        .filter { it.startsWith("بخش ") && it.isNotBlank() }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -259,6 +280,7 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
                 // Customers List Pane
                 CustomersTabContent(
                     customers = customers,
+                    archivedCustomers = viewModel.archivedCustomers.collectAsState().value,
                     transactions = customerTransactions,
                     lang = lang,
                     canDelete = (currentAdminRole == "SUPER_MANAGER" || currentAdminRole == "GAMENET_MANAGER" || currentAdminRole == "MANAGER") && !isTrialActive && currentAdminRole != "TRIAL_USER",
@@ -275,6 +297,20 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
                             showTrialLimitDialog = true
                         } else {
                             viewModel.deleteCustomer(it)
+                        }
+                    },
+                    onRestoreArchivedCustomer = { customer ->
+                        if (isTrialActive || currentAdminRole == "TRIAL_USER") {
+                            showTrialLimitDialog = true
+                        } else {
+                            viewModel.restoreArchivedCustomer(customer)
+                        }
+                    },
+                    onPurgeArchivedCustomer = { customer ->
+                        if (isTrialActive || currentAdminRole == "TRIAL_USER") {
+                            showTrialLimitDialog = true
+                        } else {
+                            viewModel.purgeArchivedCustomer(customer)
                         }
                     },
                     onAddClick = {
@@ -359,8 +395,8 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
             stations = managerStations,
             lang = lang,
             onDismiss = { showReservationDialog = false },
-            onSave = { name, phone, timestamp, duration, stationId, isVip ->
-                viewModel.addReservation(name, phone, timestamp, duration, stationId, isVip)
+            onSave = { name, phone, timestamp, duration, stationId, isVip, paidAmount ->
+                viewModel.addReservation(name, phone, timestamp, duration, stationId, isVip, paidAmount)
                 showReservationDialog = false
                 Toast.makeText(context, Localization.get("reservation_saved", lang), Toast.LENGTH_SHORT).show()
             }
@@ -474,11 +510,14 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
 @Composable
 fun CustomersTabContent(
     customers: List<Customer>,
+    archivedCustomers: List<Customer>,
     transactions: List<CustomerTransaction>,
     lang: String,
     canDelete: Boolean,
     onEditCustomer: (Customer) -> Unit,
     onDeleteCustomer: (Customer) -> Unit,
+    onRestoreArchivedCustomer: (Customer) -> Unit,
+    onPurgeArchivedCustomer: (Customer) -> Unit,
     onAddClick: () -> Unit,
     onUpdateTransactionStatus: (CustomerTransaction, String) -> Unit,
     onUpdateTransactionPayment: (CustomerTransaction, Double, String) -> Unit,
@@ -728,6 +767,96 @@ IconButton(
                             }
                         )
                     }
+                    if (archivedCustomers.isNotEmpty()) {
+                        item {
+                            Text(
+                                text = if (lang == "fa") "مخاطبان آرشیو شده (" + archivedCustomers.size + ")" else "Archived contacts (" + archivedCustomers.size + ")",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 10.dp, bottom = 2.dp)
+                            )
+                        }
+                        items(archivedCustomers, key = { "archived_" + it.id }) { customer ->
+                            val customerTrans = remember(transactions, customer.id) {
+                                transactions.filter { it.customerId == customer.id }
+                            }
+                            var showPurgeConfirm by remember(customer.id) { mutableStateOf(false) }
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(customer.fullName, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                            Text(
+                                                customer.phoneNumber + " • " + customerTrans.size + " " + if (lang == "fa") "فاکتور" else "invoices",
+                                                fontSize = 10.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            IconButton(
+                                                onClick = { onRestoreArchivedCustomer(customer) },
+                                                enabled = canDelete,
+                                                modifier = Modifier.size(32.dp)
+                                            ) {
+                                                Text("⤴️", fontSize = 16.sp)
+                                            }
+                                            IconButton(
+                                                onClick = { showPurgeConfirm = true },
+                                                enabled = canDelete,
+                                                modifier = Modifier.size(32.dp)
+                                            ) {
+                                                Icon(Icons.Default.Delete, contentDescription = if (lang == "fa") "حذف کامل" else "Purge", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(17.dp))
+                                            }
+                                        }
+                                    }
+                                    Text(
+                                        if (lang == "fa") "آرشیو شده — حذف کامل غیرقابل‌بازگشت است" else "Archived — permanent deletion is irreversible",
+                                        fontSize = 9.sp,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                            if (showPurgeConfirm) {
+                                AlertDialog(
+                                    onDismissRequest = { showPurgeConfirm = false },
+                                    title = { Text(if (lang == "fa") "حذف کامل مشتری" else "Permanently delete customer") },
+                                    text = {
+                                        Text(
+                                            if (lang == "fa")
+                                                "این عملیات مشتری و تمام سوابق مرتبط او را از سرور و دستگاه حذف می‌کند و قابل بازگشت نیست. ادامه می‌دهید؟"
+                                            else
+                                                "This permanently removes the customer and all related records from the server and device. This cannot be undone. Continue?"
+                                        )
+                                    },
+                                    confirmButton = {
+                                        TextButton(
+                                            onClick = {
+                                                showPurgeConfirm = false
+                                                onPurgeArchivedCustomer(customer)
+                                            }
+                                        ) {
+                                            Text(if (lang == "fa") "بله، حذف کامل" else "Permanently delete", color = MaterialTheme.colorScheme.error)
+                                        }
+                                    },
+                                    dismissButton = {
+                                        TextButton(onClick = { showPurgeConfirm = false }) {
+                                            Text(if (lang == "fa") "انصراف" else "Cancel")
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
 
                 if (showBatchDeleteConfirm) {
@@ -788,7 +917,7 @@ IconButton(
                             CustomerTransactionCard(
                                 transaction = trans,
                                 lang = lang,
-                                isAlwaysExpanded = true,
+                                isAlwaysExpanded = false,
                                 onUpdateStatus = { st -> onUpdateTransactionStatus(trans, st) },
                                 onUpdatePayment = { pAmount, st -> onUpdateTransactionPayment(trans, pAmount, st) },
                                 onDelete = { onDeleteTransaction(trans) },
@@ -800,20 +929,28 @@ IconButton(
                 }
             }
             2 -> {
-                // REVIEWED SECTION (INDIVIDUAL INVOICES)
-                val sortedReviewed = remember(reviewedTrans) {
-                    reviewedTrans.sortedByDescending { it.timestamp }
+                // REVIEWED SECTION: group by customer; newest invoice first inside each customer.
+                val groupedReviewed = remember(reviewedTrans) {
+                    reviewedTrans.groupBy { it.customerId }
+                        .mapValues { (_, transactions) -> transactions.sortedByDescending { it.timestamp } }
                 }
-                val filteredReviewed = remember(sortedReviewed, searchQuery) {
-                    if (searchQuery.isBlank()) sortedReviewed
-                    else sortedReviewed.filter {
-                        it.customerName.contains(searchQuery, ignoreCase = true) ||
-                        it.stationName.contains(searchQuery, ignoreCase = true) ||
-                        it.title.contains(searchQuery, ignoreCase = true)
+                val sortedReviewedGroups = remember(groupedReviewed) {
+                    groupedReviewed.toList().sortedByDescending { (_, transactions) ->
+                        transactions.firstOrNull()?.timestamp ?: 0L
+                    }
+                }
+                val filteredReviewedGroups = remember(sortedReviewedGroups, searchQuery) {
+                    if (searchQuery.isBlank()) sortedReviewedGroups
+                    else sortedReviewedGroups.filter { (_, transactions) ->
+                        transactions.any {
+                            it.customerName.contains(searchQuery, ignoreCase = true) ||
+                            it.stationName.contains(searchQuery, ignoreCase = true) ||
+                            it.title.contains(searchQuery, ignoreCase = true)
+                        }
                     }
                 }
 
-                if (filteredReviewed.isEmpty()) {
+                if (filteredReviewedGroups.isEmpty()) {
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -831,14 +968,17 @@ IconButton(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        itemsIndexed(filteredReviewed, key = { index, trans -> "reviewed_${trans.id}_${trans.timestamp}_$index" }) { _, trans ->
-                            CustomerTransactionCard(
-                                transaction = trans,
+                        itemsIndexed(filteredReviewedGroups, key = { _, group -> "reviewed_customer_${group.first}" }) { _, (_, transactions) ->
+                            val customerName = transactions.firstOrNull()?.customerName ?: ""
+                            val totalPaid = transactions.sumOf { it.paidAmount }
+                            ReviewedGroupCard(
+                                customerName = customerName,
+                                totalPaid = totalPaid.toDouble(),
+                                transactions = transactions,
                                 lang = lang,
-                                onUpdateStatus = { st -> onUpdateTransactionStatus(trans, st) },
-                                onUpdatePayment = { pAmount, st -> onUpdateTransactionPayment(trans, pAmount, st) },
-                                onDelete = { onDeleteTransaction(trans) },
-                                canDelete = canDelete,
+                                onUpdateStatus = { trans, st -> onUpdateTransactionStatus(trans, st) },
+                                onUpdatePayment = { trans, pAmount, st -> onUpdateTransactionPayment(trans, pAmount, st) },
+                                onDelete = { trans -> onDeleteTransaction(trans) },
                                 viewModel = viewModel
                             )
                         }
@@ -880,13 +1020,14 @@ IconButton(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(filteredDebtors, key = { it.first }) { (customerId, transList) ->
+                        itemsIndexed(filteredDebtors, key = { _, group -> "debtor_${group.first}" }) { _, (_, transList) ->
                             val customerName = transList.first().customerName
-                            val totalDebt = transList.sumOf { it.amount - it.paidAmount }
+                            val sortedCustomerTransactions = transList.sortedByDescending { it.timestamp }
+                            val totalDebt = sortedCustomerTransactions.sumOf { it.amount - it.paidAmount }
                             DebtorGroupCard(
                                 customerName = customerName,
-                                totalDebt = totalDebt.toDouble(),
-                                transactions = transList,
+                                totalDebt = totalDebt,
+                                transactions = sortedCustomerTransactions,
                                 lang = lang,
                                 onUpdateStatus = { trans, st -> onUpdateTransactionStatus(trans, st) },
                                 onUpdatePayment = { trans, pAmount, st -> onUpdateTransactionPayment(trans, pAmount, st) },
@@ -915,10 +1056,21 @@ fun CustomerTransactionCard(
     
     var expanded by remember { mutableStateOf(isAlwaysExpanded) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showPrepaymentDialog by remember { mutableStateOf(false) }
+    var settlementReview by remember { mutableStateOf<com.example.data.network.SettlementReview?>(null) }
+    var prepaymentAllocations by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
+    var refundMethods by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
+    var reviewStatuses by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
+    var refundRequested by remember { mutableStateOf(false) }
     var isSubmitting by remember(transaction) { mutableStateOf(false) }
+    var isPayFieldFocused by remember { mutableStateOf(false) }
+    val payFieldBringIntoViewRequester = remember { BringIntoViewRequester() }
+    fun partialPaymentKey(customerId: Long): Long = Long.MIN_VALUE + kotlin.math.abs(customerId.coerceAtLeast(Long.MIN_VALUE + 1L))
 
     val customers by viewModel.customers.collectAsState()
     val clubLevels by viewModel.clubLevels.collectAsState()
+    val gameRewardRate by viewModel.gameRewardRate.collectAsState()
+    val buffetRewardRate by viewModel.buffetRewardRate.collectAsState()
 
     val customer = remember(customers, transaction.customerId) {
         customers.find { it.id == transaction.customerId }
@@ -929,6 +1081,98 @@ fun CustomerTransactionCard(
         sortedLevels.find { custPoints >= it.requiredPoints } ?: clubLevels.firstOrNull()
     }
 
+    LaunchedEffect(isPayFieldFocused) {
+        if (isPayFieldFocused) {
+            kotlinx.coroutines.delay(180)
+            payFieldBringIntoViewRequester.bringIntoView()
+        }
+    }
+
+    LaunchedEffect(showPrepaymentDialog, transaction.sessionId) {
+        if (showPrepaymentDialog && transaction.sessionId.isNotBlank()) {
+            settlementReview = viewModel.fetchSettlementReview(
+                transaction.sessionId,
+                transaction.customerId,
+                transaction.customerName.takeIf { transaction.customerId <= 0L && it.isNotBlank() },
+                transaction
+            )
+            prepaymentAllocations = emptyMap()
+        }
+    }
+
+    LaunchedEffect(refundRequested) {
+        if (refundRequested) {
+            refundRequested = false
+            val review = settlementReview
+            if (review != null) {
+                val decisions = org.json.JSONArray()
+                var invalid = false
+                var resultingStatus = "REVIEWED"
+                review.payers.forEach { payer ->
+                    val refund = prepaymentAllocations[payer.customerId].orEmpty().filter { it.isDigit() }.toLongOrNull() ?: 0L
+                    val selectedRefundMethod = refundMethods[payer.customerId].orEmpty()
+                    val method = when (selectedRefundMethod) {
+                        "PARTIAL_CASH" -> "CASH"
+                        "WALLET", "CASH" -> selectedRefundMethod
+                        else -> if (refund > 0L) { if (payer.customerId <= 0L) "CASH" else "WALLET" } else "NONE"
+                    }
+                    val status = reviewStatuses[payer.customerId].orEmpty().ifBlank { if (payer.invoiceTotal - payer.prepaymentAmount > 0L) "DEBTOR" else "REVIEWED" }
+                    if (status == "DEBTOR" || status == "PARTIAL") resultingStatus = "DEBTOR"
+                    val partialPaid = if (status == "PARTIAL") prepaymentAllocations[partialPaymentKey(payer.customerId)].orEmpty().filter { it.isDigit() }.toLongOrNull() ?: 0L else 0L
+                    val payable = (payer.invoiceTotal - payer.prepaymentAmount).coerceAtLeast(0L)
+                    val paidAmount = when (status) {
+                        "REVIEWED" -> payer.invoiceTotal
+                        "DEBTOR" -> payer.prepaymentAmount.coerceAtMost(payer.invoiceTotal)
+                        "PARTIAL" -> (payer.prepaymentAmount + partialPaid).coerceAtMost(payer.invoiceTotal)
+                        else -> payer.prepaymentAmount.coerceAtMost(payer.invoiceTotal)
+                    }
+                    if (refund > payer.unusedPrepayment) invalid = true
+                    if (refund > 0L && method !in setOf("WALLET", "CASH")) invalid = true
+                    if (partialPaid < 0L || partialPaid > payable) invalid = true
+                    decisions.put(org.json.JSONObject().apply {
+                        put("customerId", payer.customerId)
+                        put("customerName", payer.name)
+                        if (payer.customerId == transaction.customerId || (payer.customerId <= 0L && transaction.customerId <= 0L && payer.name == transaction.customerName)) {
+                            put("transactionId", transaction.id)
+                        }
+                        put("refundAmount", refund)
+                        put("refundMethod", method)
+                        put("status", status)
+                        put("paidAmount", paidAmount)
+                    })
+                }
+                if (invalid) {
+                    isSubmitting = false
+                    android.widget.Toast.makeText(viewModel.getApplication(), "مقدار بازگشت یا روش پرداخت برای یکی از مشتریان معتبر نیست.", android.widget.Toast.LENGTH_LONG).show()
+                } else {
+                    val ok = viewModel.finalizeSettlementReview(transaction.sessionId, (0 until decisions.length()).map { decisions.getJSONObject(it) })
+                    if (ok) {
+                        // finalizeSettlementReview applies the server result to Room immediately
+                        // and schedules an authoritative refresh in the background. Do NOT call the legacy
+                        // status updater here: it can re-submit the pre-finalization paidAmount and
+                        // resurrect a just-finalized invoice as DEBTOR/UNREVIEWED.
+                        // Close the dialog FIRST. Never make the Manager wait for a
+                        // second network GET before seeing the state transition.
+                        // finalizeSettlementReview has already written the authoritative
+                        // response into Room, so the Flow updates the list immediately.
+                        isSubmitting = false
+                        showPrepaymentDialog = false
+                        prepaymentAllocations = emptyMap()
+                        refundMethods = emptyMap()
+                        reviewStatuses = emptyMap()
+                        android.widget.Toast.makeText(viewModel.getApplication(), "تعیین تکلیف فاکتور با موفقیت ثبت شد.", android.widget.Toast.LENGTH_SHORT).show()
+                    } else {
+                        isSubmitting = false
+                        android.widget.Toast.makeText(viewModel.getApplication(), "تعیین تکلیف با سرور ثبت نشد؛ اتصال را بررسی و دوباره تلاش کنید.", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }
+            } else {
+                isSubmitting = false
+                android.widget.Toast.makeText(viewModel.getApplication(), "جزئیات فاکتور از سرور دریافت نشد؛ دیالوگ بسته نشد تا اطلاعات مالی از دست نرود. دوباره تلاش کنید.", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     val gameDiscPct: Double = (activeLevel?.gameDiscountPercent ?: 0L).toDouble()
     val buffetDiscPct: Double = (activeLevel?.buffetDiscountPercent ?: 0L).toDouble()
     val fixedDiscTom: Double = (activeLevel?.fixedDiscountToman ?: 0L).toDouble()
@@ -936,6 +1180,9 @@ fun CustomerTransactionCard(
     val origGameCost: Double = if (transaction.gameCost > 0L) transaction.gameCost.toDouble() else (transaction.amount - transaction.foodCost).toDouble()
     val origFoodCost: Double = transaction.foodCost.toDouble()
     val origTotal: Double = if (transaction.amount > 0L) transaction.amount.toDouble() else (origGameCost + origFoodCost)
+    val previewGn = ((origGameCost.toLong() * gameRewardRate) / 10_000L + (origFoodCost.toLong() * buffetRewardRate) / 10_000L).coerceAtLeast(0L)
+    // Normal session preview uses the same authoritative rates for GN and LP.
+    val previewLp = ((origGameCost.toLong() * gameRewardRate) / 10_000L + (origFoodCost.toLong() * buffetRewardRate) / 10_000L).coerceAtLeast(0L)
 
     val gameDiscount: Double = origGameCost * (gameDiscPct / 100.0)
     val discountedGameCost: Double = (origGameCost - gameDiscount).coerceAtLeast(0.0)
@@ -950,6 +1197,58 @@ fun CustomerTransactionCard(
     var showSaveGuestDialog by remember { mutableStateOf(false) }
     val isGuest = remember(transaction.customerName, transaction.customerId) {
         transaction.customerName.contains("مهمان", ignoreCase = true) || transaction.customerId <= 0
+    }
+
+    // Share action is defined before the review controls so it can be placed
+    // directly beside «تعیین تکلیف فاکتور نشست» on UNREVIEWED invoices.
+    val context = LocalContext.current
+    val shareAction = {
+        val shareInvoiceTotal = if (hasDiscount) finalAmount else origTotal
+        val shareRemainingDebt = (shareInvoiceTotal - transaction.paidAmount.toDouble()).coerceAtLeast(0.0)
+        val receipt = buildString {
+            appendLine("================================")
+            appendLine("         گیم‌نکسا - فاکتور مشتری         ")
+            appendLine("================================")
+            appendLine("👤 مشتری: ${transaction.customerName}")
+            appendLine("📅 تاریخ: ${transaction.dateStr} - ${transaction.timeStr}")
+            appendLine("--------------------------------")
+            appendLine("🎮 دستگاه: ${transaction.stationName}")
+            appendLine("⏱ زمان بازی: ${transaction.title}")
+            appendLine("💵 هزینه بازی: %,.0f تومان".format(java.util.Locale.US, origGameCost))
+            appendLine("--------------------------------")
+            if (origFoodCost > 0) {
+                val items = transaction.buffetDetails.split(Regex("(?<=\\))\\s*,\\s*|\\n")).map { it.trim() }.filter { it.isNotBlank() }
+                if (items.isNotEmpty()) {
+                    appendLine("🍔 سفارشات بوفه:")
+                    items.forEach { appendLine("   • $it") }
+                }
+                appendLine("💵 جمع بوفه: %,.0f تومان".format(java.util.Locale.US, origFoodCost))
+                appendLine("--------------------------------")
+            }
+            if (hasDiscount) {
+                appendLine("✨ تخفیف باشگاه: %,.0f تومان".format(java.util.Locale.US, (origTotal - finalAmount)))
+                appendLine("--------------------------------")
+            }
+            appendLine("💰 جمع کل نهایی: %,.0f تومان".format(java.util.Locale.US, if (hasDiscount) finalAmount else origTotal))
+            if (transaction.paidAmount > 0) {
+                appendLine("💳 مبلغ پرداختی: %,d تومان".format(java.util.Locale.US, transaction.paidAmount))
+            }
+            if (shareRemainingDebt > 0) {
+                appendLine("⚠️ مانده بدهی: %,.0f تومان".format(java.util.Locale.US, shareRemainingDebt))
+            } else {
+                appendLine("✅ وضعیت: تسویه کامل")
+            }
+            appendLine("💎 پاداش GN کسب شده: +${transaction.earnedGn} GN")
+            appendLine("🏆 امتیاز LP کسب شده: +${transaction.earnedLp} LP")
+            appendLine("================================")
+            appendLine("    با تشکر از انتخاب و حضور شما!")
+        }
+        val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_SUBJECT, "فاکتور گیم‌نت - ${transaction.customerName}")
+            putExtra(android.content.Intent.EXTRA_TEXT, receipt)
+        }
+        context.startActivity(android.content.Intent.createChooser(shareIntent, "چاپ و اشتراک‌گذاری فاکتور"))
     }
 
     Card(
@@ -1024,27 +1323,40 @@ fun CustomerTransactionCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     if (!isAlwaysExpanded) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            if (hasDiscount) {
+                        Column(
+                            horizontalAlignment = Alignment.End,
+                            verticalArrangement = Arrangement.spacedBy(1.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                if (hasDiscount) {
+                                    Text(
+                                        text = "%,.0f".format(Locale.US, origTotal),
+                                        style = TextStyle(textDecoration = TextDecoration.LineThrough, color = MaterialTheme.colorScheme.onSurfaceVariant),
+                                        fontSize = 11.sp
+                                    )
+                                }
                                 Text(
-                                    text = "%,.0f".format(Locale.US, origTotal),
-                                    style = TextStyle(textDecoration = TextDecoration.LineThrough, color = MaterialTheme.colorScheme.onSurfaceVariant),
-                                    fontSize = 11.sp
+                                    text = "%,.0f تومان".format(Locale.US, if (hasDiscount) finalAmount else origTotal),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = if (transaction.status == "DEBTOR") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                )
+                                Icon(
+                                    imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                             Text(
-                                text = "%,.0f تومان".format(Locale.US, if (hasDiscount) finalAmount else origTotal),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (transaction.status == "DEBTOR") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                text = "${transaction.dateStr} | ${transaction.timeStr}",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Icon(
-                            imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
                     } else {
                         Column(horizontalAlignment = Alignment.End) {
                             Text(
@@ -1139,6 +1451,43 @@ fun CustomerTransactionCard(
                                 }
                             }
                             
+                            // Complete segment history is part of this customer's own invoice.
+                            // The invoice total above remains only this customer's allocated share.
+                            if (transaction.segmentDetails.isNotBlank()) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(vertical = 4.dp),
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                )
+                                Text(
+                                    text = "جزئیات بخش‌های نشست",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    formatSegmentDetailBlocks(transaction.segmentDetails).forEach { segmentBlock ->
+                                        Surface(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                                        ) {
+                                            Text(
+                                                text = segmentBlock,
+                                                modifier = Modifier.fillMaxWidth().padding(9.dp),
+                                                fontSize = 11.sp,
+                                                lineHeight = 18.sp,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                style = androidx.compose.ui.text.TextStyle(textDirection = androidx.compose.ui.text.style.TextDirection.Rtl)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
                             // Discounts (if any)
                             if (hasDiscount) {
                                 HorizontalDivider(
@@ -1231,12 +1580,8 @@ fun CustomerTransactionCard(
                 )
             }
 
-            val earnedGnPoints = remember(transaction) {
-                        val playHours = transaction.playMinutes / 60.0
-                        val pPts = playHours * 20.0
-                        val sPts = (transaction.amount / 1000.0) * 1.0
-                        (pPts + sPts).toInt()
-                    }
+            val earnedGnPoints = transaction.earnedGn
+            val earnedLpPoints = transaction.earnedLp
 
                     Surface(
                         shape = RoundedCornerShape(6.dp),
@@ -1251,61 +1596,218 @@ fun CustomerTransactionCard(
                         ) {
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text("💎", fontSize = 11.sp)
-                                Text("پاداش GN دریافتی این نشست:", fontSize = 11.sp, color = Color(0xFF1D4ED8), fontWeight = FontWeight.Bold)
+                                Text(if (transaction.status == "UNREVIEWED") "GN قابل دریافت این نشست:" else "پاداش GN دریافتی این نشست:", fontSize = 11.sp, color = Color(0xFF1D4ED8), fontWeight = FontWeight.Bold)
                             }
-                            Text("+$earnedGnPoints GN", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF1D4ED8))
+                            Text("+${if (transaction.status == "UNREVIEWED") previewGn else earnedGnPoints} GN", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF1D4ED8))
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f),
+                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("🏆", fontSize = 11.sp)
+                                Text(if (transaction.status == "UNREVIEWED") "LP قابل دریافت این نشست:" else "امتیاز LP دریافتی این نشست:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Text("+${if (transaction.status == "UNREVIEWED") previewLp else earnedLpPoints} LP", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
                         }
                     }
 
-                    // Share / Print Receipt Action Button
-                    val context = LocalContext.current
-                                            val shareAction = {
-                                val receipt = buildString {
-                                    appendLine("================================")
-                                    appendLine("         گیم‌نکسا - فاکتور مشتری         ")
-                                    appendLine("================================")
-                                    appendLine("👤 مشتری: ${transaction.customerName}")
-                                    appendLine("📅 تاریخ: ${transaction.dateStr} - ${transaction.timeStr}")
-                                    appendLine("--------------------------------")
-                                    appendLine("🎮 دستگاه: ${transaction.stationName}")
-                                    appendLine("⏱ زمان بازی: ${transaction.title}")
-                                    appendLine("💵 هزینه بازی: %,.0f تومان".format(java.util.Locale.US, origGameCost))
-                                    appendLine("--------------------------------")
-                                    if (origFoodCost > 0) {
-                                        val items = transaction.buffetDetails.split(Regex("(?<=\\))\\s*,\\s*|\\n")).map { it.trim() }.filter { it.isNotBlank() }
-                                        if (items.isNotEmpty()) {
-                                            appendLine("🍔 سفارشات بوفه:")
-                                            items.forEach { appendLine("   • $it") }
-                                        }
-                                        appendLine("💵 جمع بوفه: %,.0f تومان".format(java.util.Locale.US, origFoodCost))
-                                        appendLine("--------------------------------")
-                                    }
-                                    if (hasDiscount) {
-                                        appendLine("✨ تخفیف باشگاه: %,.0f تومان".format(java.util.Locale.US, (origTotal - finalAmount)))
-                                        appendLine("--------------------------------")
-                                    }
-                                    appendLine("💰 جمع کل نهایی: %,.0f تومان".format(java.util.Locale.US, if (hasDiscount) finalAmount else origTotal))
-                                    if (transaction.paidAmount > 0) {
-                                        appendLine("💳 مبلغ پرداختی: %,d تومان".format(java.util.Locale.US, transaction.paidAmount))
-                                    }
-                                    if (remainingDebt > 0) {
-                                        appendLine("⚠️ مانده بدهی: %,.0f تومان".format(java.util.Locale.US, remainingDebt))
-                                    } else {
-                                        appendLine("✅ وضعیت: تسویه کامل")
-                                    }
-                                    appendLine("💎 پاداش GN کسب شده: +$earnedGnPoints GN")
-                                    appendLine("================================")
-                                    appendLine("    با تشکر از انتخاب و حضور شما!")
-                                }
-                                val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(android.content.Intent.EXTRA_SUBJECT, "فاکتور گیم‌نت - ${transaction.customerName}")
-                                    putExtra(android.content.Intent.EXTRA_TEXT, receipt)
-                                }
-                                context.startActivity(android.content.Intent.createChooser(shareIntent, "چاپ و اشتراک‌گذاری فاکتور"))
+                    if (transaction.status == "UNREVIEWED" && transaction.sessionId.isNotBlank()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // RTL layout: first child is visually on the right, so Share comes first.
+                            FilledIconButton(
+                                onClick = shareAction,
+                                modifier = Modifier.size(46.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                                )
+                            ) {
+                                Icon(
+                                    Icons.Default.Share,
+                                    contentDescription = "اشتراک‌گذاری",
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
                             }
 
-                        if (transaction.status == "UNREVIEWED" || transaction.status == "DEBTOR") {
+                            OutlinedButton(
+                                onClick = { showPrepaymentDialog = true },
+                                modifier = Modifier.weight(1f).height(46.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    "💳 تعیین تکلیف فاکتور نشست",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1
+                                )
+                            }
+
+                            if (canDelete) {
+                                FilledIconButton(
+                                    onClick = { showDeleteConfirm = true },
+                                    modifier = Modifier.size(46.dp),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = IconButtonDefaults.filledIconButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.errorContainer
+                                    )
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "حذف فاکتور",
+                                        modifier = Modifier.size(20.dp),
+                                        tint = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                }
+                            } else {
+                                Spacer(modifier = Modifier.size(46.dp))
+                            }
+                        }
+                    }
+
+                    if (showPrepaymentDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showPrepaymentDialog = false },
+                            title = { Text("تعیین تکلیف فاکتور نشست", fontWeight = FontWeight.Bold) },
+                            text = {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().heightIn(max = 620.dp).verticalScroll(rememberScrollState()),
+                                    verticalArrangement = Arrangement.spacedBy(9.dp)
+                                ) {
+                                    val review = settlementReview
+                                    if (review == null) {
+                                        Text("در حال دریافت اطلاعات فاکتور از سرور...")
+                                    } else {
+                                        val invoiceTotal = review.payers.sumOf { it.invoiceTotal }
+                                        val grandTotal = if (invoiceTotal > 0L) invoiceTotal else review.gameCost + review.buffetCost
+                                        val allocatedPrepayment = review.payers.sumOf { it.prepaymentAmount }
+                                        val totalUnused = review.payers.sumOf { it.unusedPrepayment }
+                                        val totalPayable = review.payers.sumOf { (it.invoiceTotal - it.prepaymentAmount).coerceAtLeast(0L) }
+                                        Text("مشتری و فاکتور مورد بررسی:", fontWeight = FontWeight.Bold)
+                                        review.payers.forEach { Text(it.name.ifBlank { "مشتری ${it.customerId}" }, fontWeight = FontWeight.Bold) }
+                                        HorizontalDivider()
+                                        Text("هزینه کل نشست (همه بخش‌ها): ${String.format(Locale.US, "%,d", review.sessionTotalCost)} تومان", fontWeight = FontWeight.Bold)
+                                        Text("هزینه بازی؛ سهم همین فاکتور: ${String.format(Locale.US, "%,d", review.gameCost)} تومان")
+                                        Text("هزینه بوفه؛ سهم همین فاکتور: ${String.format(Locale.US, "%,d", review.buffetCost)} تومان")
+                                        Text("جمع کل فاکتور همین مشتری: ${String.format(Locale.US, "%,d", grandTotal)} تومان", fontWeight = FontWeight.Bold)
+                                        Text("پرداخت اولیه تخصیص‌یافته به همین مشتری: ${String.format(Locale.US, "%,d", allocatedPrepayment)} تومان")
+                                        Text("مانده بدهی پس از کسر پرداخت اولیه: ${String.format(Locale.US, "%,d", totalPayable)} تومان", fontWeight = FontWeight.Bold)
+                                        Text("مبلغ قابل بازگشت: ${String.format(Locale.US, "%,d", totalUnused)} تومان")
+                                        val detailBlocks = formatSegmentDetailBlocks(transaction.segmentDetails)
+                                        if (detailBlocks.isNotEmpty()) {
+                                            HorizontalDivider()
+                                            Text("ریز محاسبات هر بخش و سهم مشتری", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                            detailBlocks.forEach { detail ->
+                                                Surface(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                                                ) {
+                                                    Text(
+                                                        text = detail,
+                                                        modifier = Modifier.padding(9.dp).fillMaxWidth(),
+                                                        fontSize = 11.sp,
+                                                        lineHeight = 18.sp,
+                                                        style = androidx.compose.ui.text.TextStyle(textDirection = androidx.compose.ui.text.style.TextDirection.Rtl)
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        review.payers.forEach { payer ->
+                                            val payable = (payer.invoiceTotal - payer.prepaymentAmount).coerceAtLeast(0L)
+                                            val refundable = payer.unusedPrepayment
+                                            val payText = prepaymentAllocations[partialPaymentKey(payer.customerId)] ?: ""
+                                            val refundText = prepaymentAllocations[payer.customerId].orEmpty()
+                                            val status = reviewStatuses[payer.customerId].orEmpty()
+                                            Surface(
+                                                shape = RoundedCornerShape(10.dp),
+                                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                                    Text("سهم ${payer.name.ifBlank { "مشتری ${payer.customerId}" }} :", fontWeight = FontWeight.Bold)
+                                                    Text("پرداخت اولیه: ${String.format(Locale.US, "%,d", payer.prepaymentAmount)} تومان")
+                                                    Text("هزینه بازی: ${String.format(Locale.US, "%,d", payer.gameCost)} تومان")
+                                                    Text("هزینه بوفه: ${String.format(Locale.US, "%,d", payer.buffetCost)} تومان")
+                                                    Text("بدهکاری: ${String.format(Locale.US, "%,d", payable)} تومان", fontWeight = FontWeight.Bold, color = if (payable > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
+
+                                                    Text("مبلغ قابل پرداخت ${payer.name}", fontWeight = FontWeight.Bold)
+                                                    Surface(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        color = if (payable > 0) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant,
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    ) { Text("${String.format(Locale.US, "%,d", payable)} تومان", modifier = Modifier.padding(10.dp), fontWeight = FontWeight.Bold) }
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                                                        FilterChip(selected = status == "REVIEWED", onClick = { reviewStatuses = reviewStatuses.toMutableMap().apply { put(payer.customerId, "REVIEWED") } }, label = { Text("تسویه کامل") }, modifier = Modifier.weight(1f), enabled = payable > 0)
+                                                        FilterChip(selected = status == "DEBTOR", onClick = { reviewStatuses = reviewStatuses.toMutableMap().apply { put(payer.customerId, "DEBTOR") } }, label = { Text("بدهکار") }, modifier = Modifier.weight(1f), enabled = payable > 0)
+                                                        FilterChip(selected = status == "PARTIAL", onClick = { reviewStatuses = reviewStatuses.toMutableMap().apply { put(payer.customerId, "PARTIAL") } }, label = { Text("پرداخت بخشی") }, modifier = Modifier.weight(1f), enabled = payable > 0)
+                                                    }
+                                                    if (status == "PARTIAL") {
+                                                        OutlinedTextField(
+                                                            value = payText,
+                                                            onValueChange = { v -> prepaymentAllocations = prepaymentAllocations.toMutableMap().apply { put(partialPaymentKey(payer.customerId), v.filter { it.isDigit() }) } },
+                                                            label = { Text("مبلغ پرداخت بخشی") },
+                                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                            singleLine = true,
+                                                            modifier = Modifier.fillMaxWidth()
+                                                        )
+                                                    }
+
+                                                    Text("مبلغ قابل بازگشت به ${payer.name}", fontWeight = FontWeight.Bold)
+                                                    Surface(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        color = if (refundable > 0) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    ) { Text("${String.format(Locale.US, "%,d", refundable)} تومان", modifier = Modifier.padding(10.dp), fontWeight = FontWeight.Bold) }
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                                                        FilterChip(selected = refundMethods[payer.customerId] == "WALLET", onClick = { refundMethods = refundMethods.toMutableMap().apply { put(payer.customerId, "WALLET") } }, label = { Text("بازگشت به کیف پول") }, modifier = Modifier.weight(1f), enabled = refundable > 0 && payer.customerId > 0)
+                                                        FilterChip(selected = refundMethods[payer.customerId] == "CASH", onClick = { refundMethods = refundMethods.toMutableMap().apply { put(payer.customerId, "CASH") } }, label = { Text("پرداخت نقدی") }, modifier = Modifier.weight(1f), enabled = refundable > 0)
+                                                        FilterChip(selected = refundMethods[payer.customerId] == "PARTIAL_CASH", onClick = { refundMethods = refundMethods.toMutableMap().apply { put(payer.customerId, "PARTIAL_CASH") } }, label = { Text("پرداخت بخشی نقدی") }, modifier = Modifier.weight(1f), enabled = refundable > 0)
+                                                    }
+                                                    if (refundMethods[payer.customerId] == "PARTIAL_CASH") {
+                                                        OutlinedTextField(
+                                                            value = refundText,
+                                                            onValueChange = { v -> prepaymentAllocations = prepaymentAllocations.toMutableMap().apply { put(payer.customerId, v.filter { it.isDigit() }) } },
+                                                            label = { Text("مبلغ بازگشت نقدی") },
+                                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                            singleLine = true,
+                                                            modifier = Modifier.fillMaxWidth()
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Text("تا زمان «انجام شد» هیچ GN یا LP قطعی نمی‌شود.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                Button(onClick = { isSubmitting = true; refundRequested = true }, enabled = settlementReview != null && !isSubmitting) {
+                                    if (isSubmitting) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                    else Text("انجام شد")
+                                }
+                            },
+                            dismissButton = { TextButton(onClick = { showPrepaymentDialog = false }) { Text("لغو") } }
+                        )
+                    }
+
+                        if (transaction.status == "DEBTOR") {
                             val payableAmount = if (hasDiscount) finalAmount else origTotal
                             val parsedInput = payInput.toDoubleOrNull()
                             val isInputValid = parsedInput != null && parsedInput > 0
@@ -1382,12 +1884,16 @@ fun CustomerTransactionCard(
                                 value = payInput,
                                 onValueChange = { payInput = it },
                                 label = { Text("پرداخت بخشی از مبلغ (تومان)", fontSize = 10.sp) },
-                                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 2.dp)
+                                    .bringIntoViewRequester(payFieldBringIntoViewRequester)
+                                    .onFocusChanged { isPayFieldFocused = it.isFocused },
                                 shape = RoundedCornerShape(8.dp),
                                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
                                 singleLine = true
                             )
-                        } else {
+                        } else if (transaction.status != "UNREVIEWED") {
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                                 horizontalArrangement = Arrangement.End,
@@ -1710,6 +2216,25 @@ fun CustomerCard(
                             }
                         }
 
+                        // LP Loyalty Balance — server-authoritative and visible directly on every manager customer card.
+                        Card(
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = CardDefaults.cardColors(containerColor = if (customer.lp > 0) Color(0xFFE3F2FD) else MaterialTheme.colorScheme.surface),
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = if (customer.lp > 0) Color(0xFF42A5F5).copy(alpha = 0.45f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp).fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("LP", fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1565C0))
+                                Text(String.format(Locale.US, "%,d", customer.lp), fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF1565C0))
+                            }
+                        }
+
                         // Debt Info
                         Card(
                             modifier = Modifier.weight(1f),
@@ -1991,8 +2516,21 @@ fun PointHistoryDialog(
     onDismiss: () -> Unit
 ) {
     val pointLogs by viewModel.getPointLogs(customer.id).collectAsState(initial = emptyList())
+    val gnLedgerEntries by viewModel.allGnLedgerEntries.collectAsState()
+    val customerTransactions by viewModel.customerTransactions.collectAsState()
+    val customerGnLedger = remember(gnLedgerEntries, customer.id) {
+        gnLedgerEntries.filter { it.customerId == customer.id }.sortedByDescending { it.timestamp }
+    }
+    val unsettledTransactions = remember(customerTransactions, customer.id) {
+        customerTransactions.filter { it.customerId == customer.id && (it.status == "DEBTOR" || it.status == "UNREVIEWED") }.sortedByDescending { it.timestamp }
+    }
     var purchasePointsInput by remember { mutableStateOf("") }
     var purchaseTitleInput by remember { mutableStateOf("خرید امتیاز از گیم‌نت") }
+    var managerActivity by remember { mutableStateOf<com.example.data.network.ManagerCustomerActivity?>(null) }
+
+    LaunchedEffect(customer.id) {
+        managerActivity = viewModel.fetchManagerCustomerActivity(customer.id)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -2017,6 +2555,90 @@ fun PointHistoryDialog(
                     .heightIn(max = 400.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                if (customerGnLedger.isNotEmpty() || unsettledTransactions.isNotEmpty()) {
+                    Card(
+                        shape = RoundedCornerShape(8.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.18f))
+                    ) {
+                        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Text("💎 وضعیت GN و تسویه", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            customerGnLedger.forEach { entry ->
+                                val statusLabel = when (entry.status.uppercase()) {
+                                    "PENDING" -> "در انتظار تسویه"
+                                    "AVAILABLE" -> "تسویه شده"
+                                    "REVERSED" -> "برگشت‌خورده"
+                                    else -> entry.status
+                                }
+                                val sign = if (entry.gnAmount >= 0) "+" else ""
+                                Text(
+                                    text = "$sign${String.format(Locale.US, "%,d", entry.gnAmount)} GN • $statusLabel • ${entry.description.ifBlank { entry.transactionType }}",
+                                    fontSize = 10.sp,
+                                    color = if (entry.status == "PENDING") Color(0xFFE65100) else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            unsettledTransactions.forEach { tx ->
+                                val remaining = (tx.amount - tx.paidAmount).coerceAtLeast(0L)
+                                val label = if (tx.status == "DEBTOR") "تسویه نشده" else "بررسی نشده"
+                                Text(
+                                    text = "${tx.title.ifBlank { "فاکتور" }} • مانده ${String.format(Locale.US, "%,d", remaining)} تومان • $label",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                managerActivity?.let { activity ->
+                    if (activity.transactions.isNotEmpty() || activity.gnLedger.isNotEmpty() || activity.lpLedger.isNotEmpty()) {
+                        Card(
+                            shape = RoundedCornerShape(8.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                        ) {
+                            Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Text("📚 جزئیات دریافت GN و LP", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                activity.transactions.forEach { tx ->
+                                    val sourceText = when {
+                                        tx.gameCost > 0L && tx.foodCost > 0L -> "بازی + بوفه"
+                                        tx.gameCost > 0L -> "بازی"
+                                        tx.foodCost > 0L -> "بوفه"
+                                        else -> "سایر"
+                                    }
+                                    Text(
+                                        text = sourceText + " • GN: +" + String.format(Locale.US, "%,d", tx.earnedGn) + " • LP: +" + String.format(Locale.US, "%,d", tx.earnedLp) + " • " + tx.status,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                activity.gnLedger.forEach { gn ->
+                                    val source = when (gn.transactionType.uppercase()) {
+                                        "GAME_REWARD" -> "بابت بازی"
+                                        "BUFFET_REWARD" -> "بابت بوفه"
+                                        "GAME_AND_BUFFET_REWARD" -> "بابت بازی + بوفه"
+                                        "BEHAVIOR_REWARD" -> "تشویقی مدیر / رفتار"
+                                        "ADMIN_ADJUSTMENT" -> "اصلاح یا تشویق مدیر"
+                                        "REFERRAL" -> "معرفی / دعوت"
+                                        else -> gn.description.ifBlank { gn.transactionType.ifBlank { "سایر" } }
+                                    }
+                                    Text(
+                                        text = "GN +" + String.format(Locale.US, "%,d", gn.gnAmount) + " • " + source + " • مرجع: " + gn.referenceId,
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                                activity.lpLedger.forEach { lp ->
+                                    Text(
+                                        text = "LP " + (if (lp.type == "CREDIT") "+" else "-") + String.format(Locale.US, "%,d", lp.amount) + " • " + lp.referenceType.ifBlank { "تراکنش" } + " • " + lp.referenceId,
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Purchase / Add GN Points section
                 Card(
                     shape = RoundedCornerShape(8.dp),
@@ -2393,7 +3015,7 @@ fun CustomerFormDialog(
     var description by remember(customer) { mutableStateOf(customer?.description ?: "") }
     var invitedByCode by remember(customer) { mutableStateOf(if (customer?.invitedByCode.equals("null", ignoreCase = true)) "" else (customer?.invitedByCode ?: "")) }
     var manualPointsInput by remember(customer) { mutableStateOf("") }
-    var password by remember(customer) { mutableStateOf(customer?.password ?: "") }
+    var password by remember(customer) { mutableStateOf("") }
 
     val pickContactLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickContact()
@@ -2544,10 +3166,10 @@ fun CustomerFormDialog(
                                                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                                         val clip = android.content.ClipData.newPlainText(
                                                             "GameNexa Customer Account",
-                                                            "نام کاربری: ${phoneNumber.trim()}\nرمز عبور: $password\nورود به اپلیکیشن مشتریان GameNexa"
+                                                            "نام کاربری: ${phoneNumber.trim()}\nورود به اپلیکیشن مشتریان GameNexa"
                                                         )
                                                         clipboard.setPrimaryClip(clip)
-                                                        Toast.makeText(context, "اطلاعات حساب مشتری کپی شد!", Toast.LENGTH_SHORT).show()
+                                                        Toast.makeText(context, "نام کاربری کپی شد؛ رمز عبور را جداگانه منتقل کنید.", Toast.LENGTH_SHORT).show()
                                                     }
                                                 ) {
                                                     Icon(Icons.Default.ContentCopy, contentDescription = "کپی", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
@@ -2588,10 +3210,10 @@ fun CustomerFormDialog(
                                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                                 val clip = android.content.ClipData.newPlainText(
                                                     "GameNexa Customer Account",
-                                                    "نام کاربری: ${phoneNumber.trim()}\nرمز عبور: $password\nورود به اپلیکیشن مشتریان GameNexa"
+                                                    "نام کاربری: ${phoneNumber.trim()}\nورود به اپلیکیشن مشتریان GameNexa"
                                                 )
                                                 clipboard.setPrimaryClip(clip)
-                                                Toast.makeText(context, "مشخصات ورود کپی شد!", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(context, "نام کاربری کپی شد؛ رمز عبور در کلیپ‌بورد قرار نگرفت.", Toast.LENGTH_SHORT).show()
                                             },
                                             shape = RoundedCornerShape(8.dp),
                                             modifier = Modifier.weight(1f),
@@ -2707,7 +3329,7 @@ fun ReservationFormDialog(
     stations: List<Pair<Long,String>>,
     lang: String,
     onDismiss: () -> Unit,
-    onSave: (name: String, phone: String, timestamp: Long, duration: Int, stationId: Long, isVip: Boolean) -> Unit
+    onSave: (name: String, phone: String, timestamp: Long, duration: Int, stationId: Long, isVip: Boolean, paidAmount: Long) -> Unit
 ) {
     val context = LocalContext.current
 
@@ -2759,14 +3381,17 @@ fun ReservationFormDialog(
         }
     }
 
-    // Synchronize default inputs with current phone date and time
-    val calendar = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran"))
-    var yearInput by remember { mutableStateOf(calendar.get(Calendar.YEAR).toString()) }
-    var monthInput by remember { mutableStateOf((calendar.get(Calendar.MONTH) + 1).toString()) }
-    var dayInput by remember { mutableStateOf(calendar.get(Calendar.DAY_OF_MONTH).toString()) }
-    var hourInput by remember { mutableStateOf(String.format(Locale.US, "%02d", calendar.get(Calendar.HOUR_OF_DAY))) }
-    var minuteInput by remember { mutableStateOf(String.format(Locale.US, "%02d", calendar.get(Calendar.MINUTE))) }
+    // All reservation dates are entered/displayed in the Iranian Solar Hijri calendar.
+    val jalaliToday = remember { JalaliCalendarHelper.currentJalali() }
+    var selectedJalaliYear by remember { mutableIntStateOf(jalaliToday[0]) }
+    var selectedJalaliMonth by remember { mutableIntStateOf(jalaliToday[1]) }
+    var selectedJalaliDay by remember { mutableIntStateOf(jalaliToday[2]) }
+    var showJalaliDatePicker by remember { mutableStateOf(false) }
+    var paymentInput by remember { mutableStateOf("") }
+    var hourInput by remember { mutableStateOf(String.format(Locale.US, "%02d", Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran")).get(Calendar.HOUR_OF_DAY))) }
+    var minuteInput by remember { mutableStateOf(String.format(Locale.US, "%02d", Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran")).get(Calendar.MINUTE))) }
 
+    val jalaliMonths = listOf("فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور","مهر","آبان","آذر","دی","بهمن","اسفند")
     var expandedDropdown by remember { mutableStateOf(false) }
 
     AlertDialog(
@@ -2913,46 +3538,48 @@ fun ReservationFormDialog(
                 }
 
                 item {
-                    // Date Selectors Row
-                    Text(
-                        text = Localization.get("reservation_time", lang),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = yearInput,
-                            onValueChange = { yearInput = it },
-                            label = { Text(if (lang == "fa") "سال" else "YY", fontSize = 8.sp) },
-                            modifier = Modifier.weight(1.5f),
-                            shape = RoundedCornerShape(8.dp),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true
-                        )
-                        OutlinedTextField(
-                            value = monthInput,
-                            onValueChange = { monthInput = it },
-                            label = { Text(if (lang == "fa") "ماه" else "MM", fontSize = 8.sp) },
-                                modifier = Modifier.fillMaxSize(),
-                            shape = RoundedCornerShape(8.dp),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true
-                        )
-                        OutlinedTextField(
-                            value = dayInput,
-                            onValueChange = { dayInput = it },
-                            label = { Text(if (lang == "fa") "روز" else "DD", fontSize = 8.sp) },
-                                modifier = Modifier.fillMaxSize(),
-                            shape = RoundedCornerShape(8.dp),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true
+                    Text("تاریخ حضور", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("امروز" to 0, "فردا" to 1, "پس‌فردا" to 2).forEach { (label, offset) ->
+                            OutlinedButton(
+                                onClick = {
+                                    val base = JalaliCalendarHelper.jalaliToGregorianMillis(jalaliToday[0], jalaliToday[1], jalaliToday[2]) ?: System.currentTimeMillis()
+                                    val c = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran")); c.timeInMillis = base + offset * 86_400_000L
+                                    val j = JalaliCalendarHelper.currentJalali().let { now ->
+                                        val cc = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran")); cc.timeInMillis = c.timeInMillis
+                                        JalaliCalendarHelper.formatJalaliDateTime(c.timeInMillis, false).split("/").map { it.toInt() }.toIntArray()
+                                    }
+                                    selectedJalaliYear = j[0]; selectedJalaliMonth = j[1]; selectedJalaliDay = j[2]
+                                },
+                                modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 4.dp)
+                            ) { Text(label, fontSize = 11.sp) }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedButton(onClick = { showJalaliDatePicker = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text("${selectedJalaliYear}/${String.format(Locale.US, "%02d", selectedJalaliMonth)}/${String.format(Locale.US, "%02d", selectedJalaliDay)} — ${jalaliMonths[selectedJalaliMonth - 1]}")
+                    }
+                    if (showJalaliDatePicker) {
+                        JalaliReservationDatePicker(
+                            year = selectedJalaliYear,
+                            month = selectedJalaliMonth,
+                            day = selectedJalaliDay,
+                            months = jalaliMonths,
+                            onSelect = { y, m, d -> selectedJalaliYear = y; selectedJalaliMonth = m; selectedJalaliDay = d; showJalaliDatePicker = false },
+                            onDismiss = { showJalaliDatePicker = false }
                         )
                     }
+                }
+
+                item {
+                    OutlinedTextField(
+                        value = paymentInput,
+                        onValueChange = { paymentInput = it.filter(Char::isDigit) },
+                        label = { Text("مقدار پرداختی (تومان)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true
+                    )
                 }
 
                 item {
@@ -3020,22 +3647,19 @@ fun ReservationFormDialog(
                     if (selectedCustomerName.isNotBlank() && durationInput.toIntOrNull() != null) {
                         // Construct Timestamp safely
                         try {
-                            val targetCal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran"))
-                            targetCal.set(Calendar.YEAR, yearInput.toInt())
-                            targetCal.set(Calendar.MONTH, monthInput.toInt() - 1)
-                            targetCal.set(Calendar.DAY_OF_MONTH, dayInput.toInt())
-                            targetCal.set(Calendar.HOUR_OF_DAY, hourInput.toInt())
-                            targetCal.set(Calendar.MINUTE, minuteInput.toInt())
-                            targetCal.set(Calendar.SECOND, 0)
-                            targetCal.set(Calendar.MILLISECOND, 0)
+                            val timestamp = JalaliCalendarHelper.jalaliToGregorianMillis(
+                                selectedJalaliYear, selectedJalaliMonth, selectedJalaliDay,
+                                hourInput.toInt(), minuteInput.toInt()
+                            ) ?: throw IllegalArgumentException("Invalid Solar Hijri date")
 
                             onSave(
                                 selectedCustomerName,
                                 phoneNumber,
-                                targetCal.timeInMillis,
+                                timestamp,
                                 durationInput.toInt(),
                                 selectedStationId,
-                                isVipReservation
+                                isVipReservation,
+                                paymentInput.toLongOrNull() ?: 0L
                             )
                         } catch (e: Exception) {
                             Toast.makeText(context, if (lang == "fa") "فرمت تاریخ یا زمان نامعتبر است" else "Invalid date/time format", Toast.LENGTH_SHORT).show()
@@ -3053,6 +3677,57 @@ fun ReservationFormDialog(
                 Text(Localization.get("cancel", lang))
             }
         }
+    )
+}
+
+@Composable
+fun JalaliReservationDatePicker(
+    year: Int,
+    month: Int,
+    day: Int,
+    months: List<String>,
+    onSelect: (Int, Int, Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var shownYear by remember(year) { mutableIntStateOf(year) }
+    var shownMonth by remember(month) { mutableIntStateOf(month) }
+    val firstMillis = JalaliCalendarHelper.jalaliToGregorianMillis(shownYear, shownMonth, 1) ?: return
+    val firstCal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran")); firstCal.timeInMillis = firstMillis
+    val firstWeekday = firstCal.get(Calendar.DAY_OF_WEEK) % 7 // Saturday=0, Sunday=1, ... Friday=6
+    val days = JalaliCalendarHelper.jalaliMonthDays(shownYear, shownMonth)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { if (shownMonth == 1) { shownMonth = 12; shownYear-- } else shownMonth-- }) { Text("‹") }
+                Text("${months[shownMonth - 1]} $shownYear", fontWeight = FontWeight.Bold)
+                TextButton(onClick = { if (shownMonth == 12) { shownMonth = 1; shownYear++ } else shownMonth++ }) { Text("›") }
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    listOf("ش","ی","د","س","چ","پ","ج").forEach { Text(it, modifier = Modifier.weight(1f), textAlign = TextAlign.Center, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                }
+                for (week in 0..5) {
+                    Row(Modifier.fillMaxWidth()) {
+                        for (col in 0..6) {
+                            val number = week * 7 + col - firstWeekday + 1
+                            Box(Modifier.weight(1f).padding(2.dp), contentAlignment = Alignment.Center) {
+                                if (number in 1..days) {
+                                    val selected = number == day && shownYear == year && shownMonth == month
+                                    TextButton(onClick = { onSelect(shownYear, shownMonth, number) }, modifier = Modifier.size(42.dp), contentPadding = PaddingValues(0.dp)) {
+                                        Text(number.toString(), fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Normal, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("بستن") } }
     )
 }
 
@@ -3086,7 +3761,7 @@ fun ReviewedGroupCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                        modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.weight(1f),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -3100,7 +3775,8 @@ fun ReviewedGroupCard(
                         text = customerName,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f)
                     )
                 }
                 Row(
@@ -3108,11 +3784,22 @@ fun ReviewedGroupCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "%,d تومان".format(Locale.US, totalPaid),
+                        text = "%,d تومان".format(Locale.US, totalPaid.toLong()),
                         fontWeight = FontWeight.Black,
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.primary
                     )
+                    IconButton(
+                        onClick = { transactions.forEach(onDelete) },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "حذف فاکتورهای این مشتری",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                     Icon(
                         imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
                         contentDescription = null,
@@ -3148,7 +3835,7 @@ fun ReviewedGroupCard(
 @Composable
 fun DebtorGroupCard(
     customerName: String,
-    totalDebt: Double,
+    totalDebt: Long,
     transactions: List<CustomerTransaction>,
     lang: String,
     onUpdateStatus: (CustomerTransaction, String) -> Unit,
@@ -3181,7 +3868,7 @@ fun DebtorGroupCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                        modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.weight(1f),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -3338,7 +4025,7 @@ fun DebtorGroupCard(
     if (showSaveGuestDialog) {
         SaveGuestAsCustomerDialog(
             initialGuestName = customerName,
-            initialDebt = totalDebt,
+            initialDebt = totalDebt.toDouble(),
             onDismiss = { showSaveGuestDialog = false },
             onSave = { name, phone, d, c, desc ->
                 viewModel.convertGuestToCustomer(

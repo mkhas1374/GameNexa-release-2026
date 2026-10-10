@@ -105,6 +105,9 @@ interface GameNetApi {
 
 
 
+    @POST("api/v1/manager/billing-preview")
+    suspend fun billingPreview(@Body request: BillingPreviewRequest): BillingPreviewResponse
+
     @GET("api/v1/manager/console-types")
     suspend fun getConsoleTypes(): List<ConsoleType>
 
@@ -156,6 +159,9 @@ interface GameNetApi {
     @POST("api/v1/manager/customers/delete-batch")
     suspend fun deleteCustomerBatch(@Body body: Map<String, List<Long>>): Response<Map<String, Any>>
 
+    @DELETE("api/v1/manager/customers/{id}/purge")
+    suspend fun purgeArchivedCustomer(@Path("id") id: Long): Response<Map<String, Any>>
+
     @GET("api/v1/manager/reservations")
     suspend fun getReservations(): List<Reservation>
 
@@ -176,6 +182,9 @@ interface GameNetApi {
 
     @POST("api/auth/manager/login")
     suspend fun loginUser(@Body body: UserLoginRequest): UserAuthResponse
+
+    @POST("api/auth/logout")
+    suspend fun logoutSession(): retrofit2.Response<okhttp3.ResponseBody>
 
     // Diagnostic, Health & Ping Endpoints
     @GET("api/v1/super-manager/ping")
@@ -258,11 +267,10 @@ interface GameNetApi {
 
 @com.squareup.moshi.JsonClass(generateAdapter = true)
 data class UserRegisterRequest(
-    @com.squareup.moshi.Json(name = "username") val username: String,
-    @com.squareup.moshi.Json(name = "password") val password: String,
-    @com.squareup.moshi.Json(name = "phone") val phone: String? = null,
-    @com.squareup.moshi.Json(name = "email") val email: String? = null,
-    @com.squareup.moshi.Json(name = "role") val role: String = "OPERATOR"
+    @com.squareup.moshi.Json(name = "phone_number") val phoneNumber: String,
+    @com.squareup.moshi.Json(name = "manager_id") val managerId: String,
+    @com.squareup.moshi.Json(name = "full_name") val fullName: String,
+    @com.squareup.moshi.Json(name = "password") val password: String
 )
 
 @com.squareup.moshi.JsonClass(generateAdapter = true)
@@ -838,6 +846,22 @@ data class ReservationDbDto(
 )
 
 @com.squareup.moshi.JsonClass(generateAdapter = true)
+data class BillingPreviewRequest(
+    val consoleType: String,
+    val controllerCount: Int,
+    val amountToman: Long = 0L,
+    val minutes: Int = 0
+)
+
+@com.squareup.moshi.JsonClass(generateAdapter = true)
+data class BillingPreviewResponse(
+    val success: Boolean = false,
+    val hourlyRate: Long = 0L,
+    val durationMillis: Long = 0L,
+    val costForMinutesToman: Long = 0L
+)
+
+@com.squareup.moshi.JsonClass(generateAdapter = true)
 data class PricingPreviewRequest(
     val reservationType: String = "",
     val stationId: Long? = null,
@@ -923,6 +947,9 @@ object NetworkClient {
 
             val okHttpClientBuilder = OkHttpClient.Builder()
                 .dns(GameNexaDns)
+                // Explicitly honor Android's system ProxySelector so HTTP(S) proxies and
+                // VPN-provided routing are not bypassed by the app.
+                .proxySelector(java.net.ProxySelector.getDefault())
                 .connectTimeout(60, TimeUnit.SECONDS)
                 .readTimeout(60, TimeUnit.SECONDS)
                 .writeTimeout(60, TimeUnit.SECONDS)
