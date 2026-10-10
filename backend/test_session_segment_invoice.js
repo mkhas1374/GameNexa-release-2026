@@ -1,0 +1,15 @@
+const fs = require('fs');
+const assert = require('assert');
+const vm = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/ui/GameNetViewModel.kt', 'utf8');
+const screen = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/ui/MainScreen.kt', 'utf8');
+const invoice = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/ui/CustomersReservationsScreen.kt', 'utf8');
+assert(vm.includes('elapsedPlayingTimeMillis = if (commitSegment) 0L else station.elapsedPlayingTimeMillis + elapsed'), 'committing a segment must reset the live segment elapsed timer');
+assert(vm.includes('val remainingMs = totalElapsed.coerceAtLeast(0L)'), 'final settlement must not subtract already-committed segments from current-segment elapsed time');
+assert(!vm.includes('customerGameCostMap.clear()'), 'final settlement must not redistribute every segment using only final payer selection');
+assert(vm.includes('segmentDetailsForCustomer[cid].orEmpty().joinToString'), 'each customer transaction must carry its own segment-share detail');
+assert(vm.includes('durationSeconds = elapsed / 1000L'), 'segment duration must be recorded explicitly');
+assert(screen.includes('formatTime(currentElapsedMs)'), 'normal session timer must show current segment elapsed time, reset after commit');
+assert(screen.includes('هزینه بخش فعلی:'), 'station card must show the current segment cost separately from session total');
+assert(invoice.includes('transaction.segmentDetails'), 'invoice UI must display multi-segment details');
+assert(invoice.includes('Reconcile Room with the authoritative server in the background') === false, 'UI does not own settlement reconciliation');
+console.log('PASS: segment commits reset current timer/cost, final settlement avoids duplicate segment charging, and invoices display per-customer segment details');

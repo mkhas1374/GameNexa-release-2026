@@ -1187,7 +1187,7 @@ fun StationCard(
                         val timerText = when {
                             isTimeUp -> "+${formatTime(overtimeMillis)}"
                             isCountdown -> formatTime(remainingMillis)
-                            else -> formatTime(elapsedMillis)
+                            else -> formatTime(currentElapsedMs)
                         }
 
                         // Row 1: Live Timer & Hourly Rate
@@ -1244,6 +1244,28 @@ fun StationCard(
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
+                        }
+
+                        if (!isFree && station.getSegmentsList().isNotEmpty()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (lang == "fa") "هزینه بخش فعلی:" else "Current Segment Cost:",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = if (lang == "fa") ExactBilling.formatToman(ExactBilling.costForMillis(hourlyRate, currentElapsedMs)) else ExactBilling.formatToman(ExactBilling.costForMillis(hourlyRate, currentElapsedMs)).replace(" تومان", " T"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                         }
 
                         // Row 3: مقدار پرداختی اولیه (Initial Prepayment)

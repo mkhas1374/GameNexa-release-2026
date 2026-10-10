@@ -1132,11 +1132,10 @@ fun CustomerTransactionCard(
                 } else {
                     val ok = viewModel.finalizeSettlementReview(transaction.sessionId, (0 until decisions.length()).map { decisions.getJSONObject(it) })
                     if (ok) {
-                        // finalizeSettlementReview already applies the exact server result to Room
-                        // and performs an authoritative server refresh. Do NOT call the legacy
+                        // finalizeSettlementReview applies the server result to Room immediately
+                        // and schedules an authoritative refresh in the background. Do NOT call the legacy
                         // status updater here: it can re-submit the pre-finalization paidAmount and
                         // resurrect a just-finalized invoice as DEBTOR/UNREVIEWED.
-                        isSubmitting = false
                         // Close the dialog FIRST. Never make the Manager wait for a
                         // second network GET before seeing the state transition.
                         // finalizeSettlementReview has already written the authoritative
@@ -1152,6 +1151,9 @@ fun CustomerTransactionCard(
                         android.widget.Toast.makeText(viewModel.getApplication(), "تعیین تکلیف با سرور ثبت نشد؛ اتصال را بررسی و دوباره تلاش کنید.", android.widget.Toast.LENGTH_LONG).show()
                     }
                 }
+            } else {
+                isSubmitting = false
+                android.widget.Toast.makeText(viewModel.getApplication(), "جزئیات فاکتور از سرور دریافت نشد؛ دیالوگ بسته نشد تا اطلاعات مالی از دست نرود. دوباره تلاش کنید.", android.widget.Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -1434,6 +1436,29 @@ fun CustomerTransactionCard(
                                 }
                             }
                             
+                            // Complete segment history is part of this customer's own invoice.
+                            // The invoice total above remains only this customer's allocated share.
+                            if (transaction.segmentDetails.isNotBlank()) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(vertical = 4.dp),
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                )
+                                Text(
+                                    text = "جزئیات بخش‌های نشست",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = transaction.segmentDetails,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    fontSize = 10.sp,
+                                    lineHeight = 16.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = androidx.compose.ui.text.TextStyle(textDirection = androidx.compose.ui.text.style.TextDirection.Rtl)
+                                )
+                            }
+
                             // Discounts (if any)
                             if (hasDiscount) {
                                 HorizontalDivider(

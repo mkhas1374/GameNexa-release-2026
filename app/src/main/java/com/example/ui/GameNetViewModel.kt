@@ -3359,22 +3359,27 @@ loadSettings()
                     ?: return@launch
                 if (station.status != "RUNNING") return@launch
                 val now = System.currentTimeMillis()
-                val elapsed = (now - station.lastStateChangeTimeMillis).coerceAtLeast(0L)
+                // Include time accumulated before a pause/resume in this still-open segment.
+                // elapsedPlayingTimeMillis is reset only after a segment is committed.
+                val elapsed = (station.elapsedPlayingTimeMillis +
+                    if (station.status == "RUNNING") (now - station.lastStateChangeTimeMillis).coerceAtLeast(0L) else 0L
+                ).coerceAtLeast(0L)
                 val segments = station.getSegmentsList().toMutableList()
                 if (commitSegment && elapsed > 0L) {
                     val durationMin = maxOf(1, (elapsed / 60_000L).toInt())
                     val rate = getHourlyRate(station.consoleType, station.controllerCount)
-                    val cost = ((elapsed / 1000L) * rate) / 3600L
+                    val cost = com.example.util.ExactBilling.costForMillis(rate, elapsed).toLong()
                     segments.add(StationSegment(
                         segmentIndex = segments.size + 1,
                         consoleType = station.consoleType,
                         controllerCount = station.controllerCount,
                         customerIds = station.getCustomerIds(),
                         customerNames = station.getCustomerNames(),
-                        startTimeMs = station.lastStateChangeTimeMillis,
+                        startTimeMs = (station.lastStateChangeTimeMillis - station.elapsedPlayingTimeMillis).coerceAtLeast(0L),
                         endTimeMs = now,
                         durationMinutes = durationMin,
                         cost = cost,
+                        durationSeconds = elapsed / 1000L,
                         payerCustomerId = payerCustomerIds.firstOrNull(),
                         payerCustomerName = payerCustomerNames.firstOrNull(),
                         payerCustomerIds = payerCustomerIds.distinct(),
@@ -3498,8 +3503,9 @@ loadSettings()
                 val activeElapsed = if (station.status == "RUNNING") (now - station.lastStateChangeTimeMillis) else 0L
                 val totalElapsed = station.elapsedPlayingTimeMillis + activeElapsed
 
-                val alreadySegmentedMs = existingSegments.sumOf { (it.endTimeMs - it.startTimeMs).coerceAtLeast(0L).takeIf { d -> d > 0L } ?: (it.durationMinutes * 60 * 1000L) }
-                val remainingMs = totalElapsed - alreadySegmentedMs
+                // elapsedPlayingTimeMillis is the CURRENT uncommitted segment only. Previously
+                // committed segments live in segmentsJson and must never be subtracted again.
+                val remainingMs = totalElapsed.coerceAtLeast(0L)
 
                 val effectivePayerIds = when {
                     payerCustomerIds.isNotEmpty() -> payerCustomerIds
@@ -3515,7 +3521,8 @@ loadSettings()
                 if (remainingMs > 0 || existingSegments.isEmpty()) {
                     val durationMin = maxOf(1, ((if (remainingMs > 0) remainingMs else totalElapsed) / (1000L * 60L)).toInt())
                     val rate = getHourlyRate(station.consoleType, station.controllerCount)
-                    val segmentCost = (((if (remainingMs > 0) remainingMs else totalElapsed).coerceAtLeast(0L) / 1000L) * rate) / 3600L
+                    val segmentDurationMs = (if (remainingMs > 0) remainingMs else totalElapsed).coerceAtLeast(0L)
+                    val segmentCost = com.example.util.ExactBilling.costForMillis(rate, segmentDurationMs).toLong()
 
                     val finalSegment = StationSegment(
                         segmentIndex = existingSegments.size + 1,
@@ -3523,10 +3530,13 @@ loadSettings()
                         controllerCount = station.controllerCount,
                         customerIds = station.getCustomerIds(),
                         customerNames = station.getCustomerNames(),
-                        startTimeMs = if (existingSegments.isNotEmpty()) station.lastStateChangeTimeMillis else (if (station.startTimeMillis > 0) station.startTimeMillis else now),
+                        startTimeMs = if (existingSegments.isNotEmpty())
+                            (station.lastStateChangeTimeMillis - station.elapsedPlayingTimeMillis).coerceAtLeast(0L)
+                        else (if (station.startTimeMillis > 0) station.startTimeMillis else now),
                         endTimeMs = now,
                         durationMinutes = durationMin,
                         cost = segmentCost,
+                        durationSeconds = segmentDurationMs / 1000L,
                         payerCustomerId = effectivePayerIds.firstOrNull() ?: customPayerId,
                         payerCustomerName = effectivePayerNames.firstOrNull() ?: customPayerName,
                         payerCustomerIds = effectivePayerIds,
@@ -3620,11 +3630,14 @@ loadSettings()
             for (segment in existingSegments) {
                 val segCost = segment.cost
                 if (segment.payerCustomerIds.isNotEmpty()) {
-                    val count = segment.payerCustomerIds.size
+                    val payerIds = segment.payerCustomerIds.distinct()
+                    val count = payerIds.size
                     val share = segCost / count
-                    for (i in segment.payerCustomerIds.indices) {
-                        val pid = segment.payerCustomerIds[i]
-                        customerGameCostMap[pid] = (customerGameCostMap[pid] ?: 0L) + share
+                    val remainder = segCost % count
+                    for (i in payerIds.indices) {
+                        val pid = payerIds[i]
+                        val payerShare = share + if (i == payerIds.lastIndex) remainder else 0L
+                        customerGameCostMap[pid] = (customerGameCostMap[pid] ?: 0L) + payerShare
                         if (i < segment.payerCustomerNames.size) {
                             customerNameMap[pid] = segment.payerCustomerNames[i]
                         }
@@ -3638,11 +3651,14 @@ loadSettings()
                         }
                     }
                 } else if (segment.customerIds.isNotEmpty()) {
-                    val count = segment.customerIds.size
+                    val segmentCustomerIds = segment.customerIds.distinct()
+                    val count = segmentCustomerIds.size
                     val share = segCost / count
-                    for (i in segment.customerIds.indices) {
-                        val cid = segment.customerIds[i]
-                        customerGameCostMap[cid] = (customerGameCostMap[cid] ?: 0L) + share
+                    val remainder = segCost % count
+                    for (i in segmentCustomerIds.indices) {
+                        val cid = segmentCustomerIds[i]
+                        val customerShare = share + if (i == segmentCustomerIds.lastIndex) remainder else 0L
+                        customerGameCostMap[cid] = (customerGameCostMap[cid] ?: 0L) + customerShare
                         if (i < segment.customerNames.size) {
                             customerNameMap[cid] = segment.customerNames[i]
                         }
@@ -3653,9 +3669,11 @@ loadSettings()
                     if (stationCustomerIds.isNotEmpty()) {
                         val count = stationCustomerIds.size
                         val share = segCost / count
+                        val remainder = segCost % count
                         for (i in stationCustomerIds.indices) {
                             val cid = stationCustomerIds[i]
-                            customerGameCostMap[cid] = (customerGameCostMap[cid] ?: 0L) + share
+                            val customerShare = share + if (i == stationCustomerIds.lastIndex) remainder else 0L
+                            customerGameCostMap[cid] = (customerGameCostMap[cid] ?: 0L) + customerShare
                             if (i < stationCustomerNames.size) {
                                 customerNameMap[cid] = stationCustomerNames[i]
                             }
@@ -3694,27 +3712,55 @@ loadSettings()
                 }
             }
 
-            if (effectivePayerIds.isNotEmpty()) {
-                customerGameCostMap.clear()
-                customerBuffetCostMap.clear()
-                customerBuffetMap.clear()
-                customerNameMap.clear()
-                val payerCount = effectivePayerIds.size
-                val gameBase = gameCost / payerCount
-                val gameRemainder = gameCost % payerCount
-                val buffetBase = foodCost / payerCount
-                val buffetRemainder = foodCost % payerCount
-                effectivePayerIds.forEachIndexed { index, pid ->
-                    customerGameCostMap[pid] = gameBase + if (index == payerCount - 1) gameRemainder else 0L
-                    customerBuffetCostMap[pid] = buffetBase + if (index == payerCount - 1) buffetRemainder else 0L
-                    customerNameMap[pid] = effectivePayerNames.getOrNull(index)
-                        ?.takeIf { it.isNotBlank() }
-                        ?: if (pid < 0L) "مهمان " + (-pid) else "مشتری " + pid
-                }
-            }
 
             val allCids = (customerGameCostMap.keys + customerBuffetCostMap.keys).toSet()
             val prepayMap = station.getEffectiveCustomerPrepaymentsMap()
+            val allRegisteredCustomers = repository.allCustomers.firstOrNull() ?: emptyList()
+            val segmentDetailsForCustomer = mutableMapOf<Long, MutableList<String>>()
+            existingSegments.forEachIndexed { index, segment ->
+                val actualIds = segment.customerIds
+                val actualNames = segment.customerNames
+                val participantIds = when {
+                    actualIds.isNotEmpty() -> actualIds
+                    segment.payerCustomerIds.isNotEmpty() -> segment.payerCustomerIds
+                    segment.payerCustomerId != null -> listOf(segment.payerCustomerId)
+                    else -> emptyList()
+                }
+                val participantText = participantIds.mapIndexed { i, id ->
+                    val name = actualNames.getOrNull(i)?.takeIf { it.isNotBlank() }
+                        ?: segment.payerCustomerNames.getOrNull(i)?.takeIf { it.isNotBlank() }
+                        ?: allRegisteredCustomers.firstOrNull { it.id == id }?.fullName
+                        ?: if (id < 0L) "مهمان ${-id}" else "مشتری $id"
+                    val kind = if (id > 0L && allRegisteredCustomers.any { it.id == id }) "مشترک ثبت‌شده" else "مهمان/گذری"
+                    "$name ($kind)"
+                }.ifEmpty { listOf("مخاطب ثبت نشده") }.joinToString("، ")
+                val splitIds = when {
+                    segment.payerCustomerIds.isNotEmpty() -> segment.payerCustomerIds
+                    segment.payerCustomerId != null -> listOf(segment.payerCustomerId)
+                    segment.customerIds.isNotEmpty() -> segment.customerIds
+                    allCids.isNotEmpty() -> allCids.toList()
+                    else -> listOf(-1L) // unassigned walk-in: this invoice owns the full segment
+                }.distinct()
+                val baseShare = if (splitIds.isEmpty()) 0L else segment.cost / splitIds.size
+                val remainder = if (splitIds.isEmpty()) 0L else segment.cost % splitIds.size
+                val startText = com.example.util.JalaliCalendarHelper.formatJalaliDateTime(segment.startTimeMs)
+                val endText = com.example.util.JalaliCalendarHelper.formatJalaliDateTime(segment.endTimeMs)
+                splitIds.forEachIndexed { splitIndex, payerId ->
+                    val share = baseShare + if (splitIndex == splitIds.lastIndex) remainder else 0L
+                    val payerName = segment.payerCustomerNames.getOrNull(splitIndex)?.takeIf { it.isNotBlank() }
+                        ?: actualNames.getOrNull(actualIds.indexOf(payerId))?.takeIf { it.isNotBlank() }
+                        ?: allRegisteredCustomers.firstOrNull { it.id == payerId }?.fullName
+                        ?: if (payerId < 0L) "مهمان ${-payerId}" else "مشتری $payerId"
+                    val detail = "بخش ${index + 1}: $startText تا $endText | مدت ${segment.durationSeconds.takeIf { it > 0L } ?: ((segment.endTimeMs - segment.startTimeMs).coerceAtLeast(0L) / 1000L)} ثانیه | هزینه بخش ${String.format(Locale.US, "%,d", segment.cost)} تومان | مخاطبان: $participantText | سهم $payerName: ${String.format(Locale.US, "%,d", share)} تومان"
+                    segmentDetailsForCustomer.getOrPut(payerId) { mutableListOf() }.add(detail)
+                }
+                // Show each session segment on every invoice, including segments where this
+                // particular customer did not pay; never charge that customer for those segments.
+                allCids.filter { it !in splitIds }.forEach { cid ->
+                    val detail = "بخش ${index + 1}: $startText تا $endText | مدت ${segment.durationSeconds.takeIf { it > 0L } ?: ((segment.endTimeMs - segment.startTimeMs).coerceAtLeast(0L) / 1000L)} ثانیه | هزینه بخش ${String.format(Locale.US, "%,d", segment.cost)} تومان | مخاطبان: $participantText | سهم این مشتری: 0 تومان"
+                    segmentDetailsForCustomer.getOrPut(cid) { mutableListOf() }.add(detail)
+                }
+            }
             for (cid in allCids) {
                 val gameCost = customerGameCostMap[cid] ?: 0L
                 val buffetCost = customerBuffetCostMap[cid] ?: 0L
@@ -3759,7 +3805,11 @@ loadSettings()
                         status = initialStatus,
                         dateStr = jalaliDate,
                         timeStr = jalaliTime,
-                        segmentDetails = "${existingSegments.size} بخش | پرداخت اولیه نشست: ${String.format(Locale.US, "%,d", custPrepay)} تومان",
+                        segmentDetails = buildString {
+                            append("جزئیات نشست: ${existingSegments.size} بخش\n")
+                            append(segmentDetailsForCustomer[cid].orEmpty().joinToString("\n"))
+                            append("\nپرداخت اولیه مختص این مشتری: ${String.format(Locale.US, "%,d", custPrepay)} تومان")
+                        },
                         buffetDetails = customerBuffets,
                         timestamp = now,
                         playMinutes = existingSegments.sumOf { it.durationMinutes },
@@ -3796,7 +3846,11 @@ loadSettings()
                     status = "REVIEWED", // Since they pay immediately, we can mark it as reviewed, or keep UNREVIEWED? Let's use UNREVIEWED so the manager explicitly marks it.
                     dateStr = jalaliDate,
                     timeStr = jalaliTime,
-                    segmentDetails = "${existingSegments.size} بخش",
+                    segmentDetails = buildString {
+                        append("جزئیات نشست: ${existingSegments.size} بخش\n")
+                        append(segmentDetailsForCustomer[-1L].orEmpty().joinToString("\n"))
+                        append("\nپرداخت اولیه مختص این مهمان: ${String.format(Locale.US, "%,d", station.prepaymentAmount)} تومان")
+                    },
                     buffetDetails = buffetDetailsList.joinToString("\n"),
                     timestamp = now,
                     playMinutes = existingSegments.sumOf { it.durationMinutes },
@@ -3904,29 +3958,30 @@ loadSettings()
                 val now = System.currentTimeMillis()
                 val currentTotalMs = station.elapsedPlayingTimeMillis
                 val existingSegments = station.getSegmentsList().toMutableList()
-                val alreadySegmentedMs = existingSegments.sumOf { (it.endTimeMs - it.startTimeMs).coerceAtLeast(0L).takeIf { d -> d > 0L } ?: (it.durationMinutes * 60 * 1000L) }
-                val unsegmentedMs = currentTotalMs - alreadySegmentedMs
+                val unsegmentedMs = currentTotalMs.coerceAtLeast(0L)
+                val committedCurrentSegment = unsegmentedMs >= 5000L
 
-                if (unsegmentedMs >= 5000L) {
+                if (committedCurrentSegment) {
                     val durationMin = maxOf(1, (unsegmentedMs / (1000L * 60L)).toInt())
                     val rate = getHourlyRate(station.consoleType, station.controllerCount)
-                    val cost = ((unsegmentedMs.coerceAtLeast(0L) / 1000L) * rate) / 3600L
+                    val cost = com.example.util.ExactBilling.costForMillis(rate, unsegmentedMs).toLong()
                     val seg = StationSegment(
                         segmentIndex = existingSegments.size + 1,
                         consoleType = station.consoleType,
                         controllerCount = station.controllerCount,
                         customerIds = station.getCustomerIds(),
                         customerNames = station.getCustomerNames(),
-                        startTimeMs = station.lastStateChangeTimeMillis,
+                        startTimeMs = (station.lastStateChangeTimeMillis - unsegmentedMs).coerceAtLeast(0L),
                         endTimeMs = now,
                         durationMinutes = durationMin,
-                        cost = cost
+                        cost = cost,
+                        durationSeconds = unsegmentedMs / 1000L
                     )
                     existingSegments.add(seg)
                 }
                 val updated = station.copy(
                     consoleType = consoleName,
-                    elapsedPlayingTimeMillis = currentTotalMs,
+                    elapsedPlayingTimeMillis = if (committedCurrentSegment) 0L else currentTotalMs,
                     lastStateChangeTimeMillis = now,
                     segmentsJson = existingSegments.toJson()
                 )
@@ -3951,29 +4006,30 @@ loadSettings()
                 val now = System.currentTimeMillis()
                 val currentTotalMs = station.elapsedPlayingTimeMillis
                 val existingSegments = station.getSegmentsList().toMutableList()
-                val alreadySegmentedMs = existingSegments.sumOf { (it.endTimeMs - it.startTimeMs).coerceAtLeast(0L).takeIf { d -> d > 0L } ?: (it.durationMinutes * 60 * 1000L) }
-                val unsegmentedMs = currentTotalMs - alreadySegmentedMs
+                val unsegmentedMs = currentTotalMs.coerceAtLeast(0L)
+                val committedCurrentSegment = unsegmentedMs >= 5000L
 
-                if (unsegmentedMs >= 5000L) {
+                if (committedCurrentSegment) {
                     val durationMin = maxOf(1, (unsegmentedMs / (1000L * 60L)).toInt())
                     val rate = getHourlyRate(station.consoleType, station.controllerCount)
-                    val cost = ((unsegmentedMs.coerceAtLeast(0L) / 1000L) * rate) / 3600L
+                    val cost = com.example.util.ExactBilling.costForMillis(rate, unsegmentedMs).toLong()
                     val seg = StationSegment(
                         segmentIndex = existingSegments.size + 1,
                         consoleType = station.consoleType,
                         controllerCount = station.controllerCount,
                         customerIds = station.getCustomerIds(),
                         customerNames = station.getCustomerNames(),
-                        startTimeMs = station.lastStateChangeTimeMillis,
+                        startTimeMs = (station.lastStateChangeTimeMillis - unsegmentedMs).coerceAtLeast(0L),
                         endTimeMs = now,
                         durationMinutes = durationMin,
-                        cost = cost
+                        cost = cost,
+                        durationSeconds = unsegmentedMs / 1000L
                     )
                     existingSegments.add(seg)
                 }
                 val updated = station.copy(
                     controllerCount = count,
-                    elapsedPlayingTimeMillis = currentTotalMs,
+                    elapsedPlayingTimeMillis = if (committedCurrentSegment) 0L else currentTotalMs,
                     lastStateChangeTimeMillis = now,
                     segmentsJson = existingSegments.toJson()
                 )
@@ -6643,41 +6699,35 @@ loadSettings()
     }
 
     suspend fun finalizeSettlementReview(sessionId: String, decisions: List<org.json.JSONObject>): Boolean = withContext(Dispatchers.IO) {
+        // A successful HTTP response means the server committed the decision. Never make the
+        // dialog depend on a second GET/sync: that GET may fail or return a temporarily stale
+        // list, leaving the Manager trapped in the dialog even though finalization succeeded.
         val result = SelfHostedManager.finalizeSettlementReview(sessionId, decisions) ?: return@withContext false
-        // The API response is committed on the server. Re-hydrate the authoritative list so
-        // UI state is reconciled by stable local_id rather than confusing server IDs with Room IDs.
-        if (repository.syncCustomerTransactionsFromServer()) return@withContext true
         val results = result.optJSONArray("results") ?: org.json.JSONArray()
         val all = repository.allCustomerTransactions.firstOrNull() ?: emptyList()
-        var appliedLocally = false
         for (i in 0 until results.length()) {
             val r = results.optJSONObject(i) ?: continue
             val cid = r.optLong("customerId", 0L)
             val customerName = r.optString("customerName", "")
-            // The server transaction id and Android Room id are not guaranteed to be
-            // identical (the Android row can be created before the server row exists).
-            // Prefer the exact id when it is local, but ALWAYS fall back to the stable
-            // session + participant identity so the invoice disappears immediately.
-            val matching = all.filter { tx ->
-                tx.status != "DELETED" &&
-                    tx.sessionId == sessionId &&
+            val status = r.optString("status", "REVIEWED").uppercase()
+            val targets = all.filter { tx ->
+                tx.status != "DELETED" && tx.sessionId == sessionId &&
                     if (cid > 0L) tx.customerId == cid
                     else tx.customerId <= 0L && customerName.isNotBlank() && tx.customerName == customerName
-            }
-            // `transactionId` in the response is a server ID, not necessarily a Room ID.
-            // Never apply it to an unrelated local row; use session + participant identity.
-            val targets = matching.distinctBy { it.id }
-            if (targets.isEmpty()) continue
-            val status = r.optString("status", "REVIEWED").uppercase()
-            val earnedGn = r.optLong("earnedGn", 0L)
-            val earnedLp = r.optLong("earnedLp", 0L)
+            }.distinctBy { it.id }
             targets.forEach { tx ->
                 val paid = if (status == "REVIEWED") tx.amount else r.optLong("paidAmount", tx.paidAmount)
-                repository.upsertCustomerTransactionLocal(tx.copy(status=status, paidAmount=paid, earnedGn=earnedGn, earnedLp=earnedLp))
-                appliedLocally = true
+                repository.upsertCustomerTransactionLocal(tx.copy(status=status, paidAmount=paid,
+                    earnedGn=r.optLong("earnedGn", 0L), earnedLp=r.optLong("earnedLp", 0L)))
             }
         }
-        appliedLocally
+        // Reconcile Room with the authoritative server in the background. The dialog can close
+        // immediately and the StateFlow is updated optimistically even if this request times out.
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { repository.syncCustomerTransactionsFromServer() }
+                .onFailure { android.util.Log.w("GameNetViewModel", "Post-finalize refresh deferred: ${it.message}") }
+        }
+        true
     }
 
     suspend fun refundUnusedPrepayment(sessionId: String, allocations: Map<Long, Long>): Boolean {
