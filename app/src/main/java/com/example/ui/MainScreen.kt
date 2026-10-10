@@ -344,7 +344,10 @@ fun StationCard(
     }
 
     val segmentsDurationMs = remember(station.segmentsJson) {
-        station.getSegmentsList().sumOf { it.endTimeMs - it.startTimeMs }
+        station.getSegmentsList().sumOf { segment ->
+            if (segment.durationSeconds > 0L) segment.durationSeconds * 1000L
+            else (segment.endTimeMs - segment.startTimeMs).coerceAtLeast(0L)
+        }
     }
     val currentElapsedMs by remember(isRunning, isPaused, currentTime, station.elapsedPlayingTimeMillis, station.lastStateChangeTimeMillis) {
         derivedStateOf {

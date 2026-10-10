@@ -3375,7 +3375,9 @@ loadSettings()
                         controllerCount = station.controllerCount,
                         customerIds = station.getCustomerIds(),
                         customerNames = station.getCustomerNames(),
-                        startTimeMs = (station.lastStateChangeTimeMillis - station.elapsedPlayingTimeMillis).coerceAtLeast(0L),
+                        startTimeMs = segments.lastOrNull()?.endTimeMs
+                            ?: station.startTimeMillis.takeIf { it > 0L }
+                            ?: (station.lastStateChangeTimeMillis - elapsed).coerceAtLeast(0L),
                         endTimeMs = now,
                         durationMinutes = durationMin,
                         cost = cost,
@@ -3530,9 +3532,9 @@ loadSettings()
                         controllerCount = station.controllerCount,
                         customerIds = station.getCustomerIds(),
                         customerNames = station.getCustomerNames(),
-                        startTimeMs = if (existingSegments.isNotEmpty())
-                            (station.lastStateChangeTimeMillis - station.elapsedPlayingTimeMillis).coerceAtLeast(0L)
-                        else (if (station.startTimeMillis > 0) station.startTimeMillis else now),
+                        startTimeMs = existingSegments.lastOrNull()?.endTimeMs
+                            ?: station.startTimeMillis.takeIf { it > 0L }
+                            ?: (station.lastStateChangeTimeMillis - totalElapsed).coerceAtLeast(0L),
                         endTimeMs = now,
                         durationMinutes = durationMin,
                         cost = segmentCost,
@@ -3971,7 +3973,9 @@ loadSettings()
                         controllerCount = station.controllerCount,
                         customerIds = station.getCustomerIds(),
                         customerNames = station.getCustomerNames(),
-                        startTimeMs = (station.lastStateChangeTimeMillis - unsegmentedMs).coerceAtLeast(0L),
+                        startTimeMs = existingSegments.lastOrNull()?.endTimeMs
+                            ?: station.startTimeMillis.takeIf { it > 0L }
+                            ?: (station.lastStateChangeTimeMillis - unsegmentedMs).coerceAtLeast(0L),
                         endTimeMs = now,
                         durationMinutes = durationMin,
                         cost = cost,
@@ -4019,7 +4023,9 @@ loadSettings()
                         controllerCount = station.controllerCount,
                         customerIds = station.getCustomerIds(),
                         customerNames = station.getCustomerNames(),
-                        startTimeMs = (station.lastStateChangeTimeMillis - unsegmentedMs).coerceAtLeast(0L),
+                        startTimeMs = existingSegments.lastOrNull()?.endTimeMs
+                            ?: station.startTimeMillis.takeIf { it > 0L }
+                            ?: (station.lastStateChangeTimeMillis - unsegmentedMs).coerceAtLeast(0L),
                         endTimeMs = now,
                         durationMinutes = durationMin,
                         cost = cost,
