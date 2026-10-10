@@ -3408,7 +3408,7 @@ loadSettings()
                     runCatching {
                         val sessionId = repository.getSetting("active_session_$stationId")?.takeIf { it.isNotBlank() }
                         if (sessionId != null) {
-                            val committed = if (commitSegment) updated.getSegmentsList().lastOrNull() else null
+                            val committed = if (commitSegment && elapsed > 0L) updated.getSegmentsList().lastOrNull() else null
                             val eventType = when {
                                 commitSegment && continueRunning -> "SEGMENT_CONTINUE"
                                 commitSegment -> "SEGMENT_PAUSE"
@@ -3427,6 +3427,19 @@ loadSettings()
                                 payload.put("customerNames", org.json.JSONArray(committed.customerNames))
                                 payload.put("payerCustomerIds", org.json.JSONArray(committed.payerCustomerIds))
                                 payload.put("payerCustomerNames", org.json.JSONArray(committed.payerCustomerNames))
+                            } else if (commitSegment) {
+                                // A zero-length boundary must not resend the previous segment's cost.
+                                payload.put("segmentIndex", updated.getSegmentsList().size + 1)
+                                payload.put("startTimeMs", now)
+                                payload.put("endTimeMs", now)
+                                payload.put("durationSeconds", 0)
+                                payload.put("cost", 0)
+                                payload.put("consoleType", station.consoleType)
+                                payload.put("controllerCount", station.controllerCount)
+                                payload.put("customerIds", org.json.JSONArray(station.getCustomerIds()))
+                                payload.put("customerNames", org.json.JSONArray(station.getCustomerNames()))
+                                payload.put("payerCustomerIds", org.json.JSONArray(payerCustomerIds))
+                                payload.put("payerCustomerNames", org.json.JSONArray(payerCustomerNames))
                             }
                             queueOrSendSessionEvent(sessionId, eventType, now, payload)
                         }

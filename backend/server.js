@@ -921,6 +921,24 @@ function sessionEventActiveSeconds(events, startAt, endAt) {
     return activeSeconds;
 }
 
+function sessionEventActiveMillisAfter(events, startAt, endAt, initiallyRunning) {
+    const endMs = new Date(endAt).getTime();
+    let cursorMs = new Date(startAt).getTime();
+    if (!Number.isFinite(cursorMs) || !Number.isFinite(endMs) || endMs < cursorMs) return 0;
+    let running = Boolean(initiallyRunning);
+    let activeMillis = 0;
+    for (const event of events) {
+        const t = new Date(event.occurred_at).getTime();
+        if (!Number.isFinite(t) || t < cursorMs || t > endMs) continue;
+        if (running) activeMillis += Math.max(0, t - cursorMs);
+        if (event.event_type === "PAUSE" || event.event_type === "SEGMENT_PAUSE") running = false;
+        else if (event.event_type === "RESUME" || event.event_type === "SEGMENT_CONTINUE") running = true;
+        cursorMs = t;
+    }
+    if (running) activeMillis += Math.max(0, endMs - cursorMs);
+    return Math.max(0, Math.trunc(activeMillis));
+}
+
 app.get("/api/station/start/status", requireManagerAuth, requireActiveEntitlement, async (req,res) => {
     const managerId = sessionManagerId(req);
     const idempotencyKey = String(req.headers["idempotency-key"] || req.query?.idempotencyKey || "").trim();
@@ -1553,8 +1571,8 @@ app.get("/api/v1/manager/live-sessions", requireManagerAuth, requireActiveEntitl
                 const t=new Date(event.occurredAt).getTime();
                 if(!Number.isFinite(t) || t<cursor) continue;
                 if(running) activeSeconds += Math.max(0,Math.floor((t-cursor)/1000));
-                if(event.eventType==='PAUSE') running=false;
-                else if(event.eventType==='RESUME') running=true;
+                if(event.eventType==='PAUSE' || event.eventType==='SEGMENT_PAUSE') running=false;
+                else if(event.eventType==='RESUME' || event.eventType==='SEGMENT_CONTINUE') running=true;
                 cursor=t;
             }
             if(running) activeSeconds += Math.max(0,Math.floor((serverTime-cursor)/1000));
@@ -1623,8 +1641,34 @@ app.post("/api/station/settle", requireManagerAuth, requireActiveEntitlement, ra
             "SELECT FLOOR(($1::numeric * $2::numeric) / 3600::numeric) AS game_cost, FLOOR(COALESCE((SELECT SUM(line_total) FROM session_orders WHERE session_id=$3 AND manager_id=$4),0)::numeric) AS buffet_cost",
             [pricingRateText, activeSeconds, sessionId, managerId]
         );
-        const gameCost = financial.rows[0].game_cost;
+        let gameCost = financial.rows[0].game_cost;
         const buffetCost = financial.rows[0].buffet_cost;
+        // When every committed segment carries its exact integer cost, use that ledger rather
+        // than re-pricing rounded wall-clock seconds. Then price only the active milliseconds
+        // after the last committed boundary; this prevents charging the idle gap after a segment.
+        const segmentLedgerEvents = events.rows.filter(e =>
+            ["SEGMENT_PAUSE","SEGMENT_CONTINUE"].includes(e.event_type) &&
+            new Date(e.occurred_at).getTime() <= endedAt.getTime()
+        );
+        const completeSegmentLedger = segmentLedgerEvents.length > 0 && segmentLedgerEvents.every(e =>
+            e.payload && e.payload.cost !== undefined && Number.isSafeInteger(Number(e.payload.cost)) && Number(e.payload.cost) >= 0
+        );
+        if (completeSegmentLedger) {
+            const committedCost = segmentLedgerEvents.reduce((sum,e) => sum + BigInt(String(Math.trunc(Number(e.payload.cost)))), 0n);
+            const lastSegmentEvent = segmentLedgerEvents[segmentLedgerEvents.length - 1];
+            const afterLastSegment = events.rows.filter(e => Number(e.sequence_no) > Number(lastSegmentEvent.sequence_no));
+            const remainingActiveMillis = sessionEventActiveMillisAfter(
+                afterLastSegment,
+                lastSegmentEvent.occurred_at,
+                endedAt.toISOString(),
+                lastSegmentEvent.event_type === "SEGMENT_CONTINUE"
+            );
+            const remainingCost = await client.query(
+                "SELECT FLOOR(($1::numeric * $2::numeric) / 3600000::numeric) AS game_cost",
+                [pricingRateText, remainingActiveMillis]
+            );
+            gameCost = (committedCost + BigInt(normalizeMoneyInteger(remainingCost.rows[0].game_cost) || "0")).toString();
+        }
         const totalResult = await client.query(
             "SELECT ($1::numeric + $2::numeric) AS total_cost",
             [gameCost, buffetCost]

@@ -29,6 +29,11 @@ assert(backend.includes('participantKey.replace(/[^A-Za-z0-9_-]/g'), 'guest invo
 assert(backend.includes("customerOrNull !== null ? 'C' + customerOrNull"), 'registered customer sync must update the same invoice identity used by server settlement');
 assert(server.includes('payerTransaction') && server.includes('payerTransaction.amount'), 'server settlement must preserve a synced segment-specific payer total');
 assert(server.includes('SEGMENT_CONTINUE') && server.includes('SEGMENT_PAUSE'), 'backend must accept segment boundary events and preserve active session state');
+assert(server.includes('function sessionEventActiveMillisAfter'), 'backend must price active milliseconds after the last committed segment without whole-second overcharge');
+assert(server.includes('const completeSegmentLedger'), 'settlement must prefer exact committed segment costs when the ledger is complete');
+assert(server.includes('lastSegmentEvent.event_type === "SEGMENT_CONTINUE"'), 'settlement must count only the active tail after a continue boundary');
+assert(server.includes("event.eventType==='PAUSE' || event.eventType==='SEGMENT_PAUSE'"), 'live-session elapsed time must pause at segment boundaries');
+assert(vm.includes('if (commitSegment && elapsed > 0L) updated.getSegmentsList().lastOrNull()'), 'zero-length segment commits must never resend a previous segment cost');
 assert(server.includes('targetParticipantKey') && server.includes('SESSION_NOT_ACTIVE'), 'buffet order endpoint must support guest targets and reject closed sessions explicitly');
 assert(managerApi.includes('sessionId?.takeIf') && vm.includes('result.retryable'), 'Android must bind buffet retries to the original session and avoid retrying permanent 4xx errors');
 assert(vm.includes('BUFFET_ORDER_GUARD station='), 'buffet operation must catch failures without crashing the Manager screen');
