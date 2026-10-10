@@ -55,6 +55,19 @@ import com.example.util.JalaliCalendarHelper
 import java.text.SimpleDateFormat
 import java.util.*
 
+private fun formatSegmentDetailBlocks(raw: String): List<String> {
+    if (raw.isBlank()) return emptyList()
+    val normalized = raw.replace(Regex("\\s*\\|\\s*"), "\n")
+    return normalized.split(Regex("(?=بخش\\s+\\d+\\s*:)"))
+        .map { block ->
+            block.lines()
+                .filterNot { it.contains("جزئیات نشست") || it.contains("پرداخت اولیه مختص این مشتری") }
+                .joinToString("\n")
+                .trim()
+        }
+        .filter { it.startsWith("بخش ") && it.isNotBlank() }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
@@ -1449,14 +1462,28 @@ fun CustomerTransactionCard(
                                     fontWeight = FontWeight.ExtraBold,
                                     color = MaterialTheme.colorScheme.primary
                                 )
-                                Text(
-                                    text = transaction.segmentDetails,
+                                Column(
                                     modifier = Modifier.fillMaxWidth(),
-                                    fontSize = 10.sp,
-                                    lineHeight = 16.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    style = androidx.compose.ui.text.TextStyle(textDirection = androidx.compose.ui.text.style.TextDirection.Rtl)
-                                )
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    formatSegmentDetailBlocks(transaction.segmentDetails).forEach { segmentBlock ->
+                                        Surface(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                                        ) {
+                                            Text(
+                                                text = segmentBlock,
+                                                modifier = Modifier.fillMaxWidth().padding(9.dp),
+                                                fontSize = 11.sp,
+                                                lineHeight = 18.sp,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                style = androidx.compose.ui.text.TextStyle(textDirection = androidx.compose.ui.text.style.TextDirection.Rtl)
+                                            )
+                                        }
+                                    }
+                                }
                             }
 
                             // Discounts (if any)
@@ -1663,18 +1690,42 @@ fun CustomerTransactionCard(
                                     if (review == null) {
                                         Text("در حال دریافت اطلاعات فاکتور از سرور...")
                                     } else {
-                                        val grandTotal = review.gameCost + review.buffetCost
+                                        val invoiceTotal = review.payers.sumOf { it.invoiceTotal }
+                                        val grandTotal = if (invoiceTotal > 0L) invoiceTotal else review.gameCost + review.buffetCost
+                                        val allocatedPrepayment = review.payers.sumOf { it.prepaymentAmount }
                                         val totalUnused = review.payers.sumOf { it.unusedPrepayment }
                                         val totalPayable = review.payers.sumOf { (it.invoiceTotal - it.prepaymentAmount).coerceAtLeast(0L) }
-                                        Text("مشتری این فاکتور:", fontWeight = FontWeight.Bold)
+                                        Text("مشتری و فاکتور مورد بررسی:", fontWeight = FontWeight.Bold)
                                         review.payers.forEach { Text(it.name.ifBlank { "مشتری ${it.customerId}" }, fontWeight = FontWeight.Bold) }
                                         HorizontalDivider()
-                                        Text("پرداخت اولیه کل نشست: ${String.format(Locale.US, "%,d", review.sessionTotalPrepayment)} تومان")
-                                        Text("هزینه بازی این فاکتور: ${String.format(Locale.US, "%,d", review.gameCost)} تومان")
-                                        Text("هزینه بوفه این فاکتور: ${String.format(Locale.US, "%,d", review.buffetCost)} تومان")
-                                        Text("جمع کل فاکتور: ${String.format(Locale.US, "%,d", grandTotal)} تومان", fontWeight = FontWeight.Bold)
-                                        Text("مانده قابل بازگشت این فاکتور: ${String.format(Locale.US, "%,d", totalUnused)} تومان")
-                                        Text("مانده قابل پرداخت این فاکتور: ${String.format(Locale.US, "%,d", totalPayable)} تومان", fontWeight = FontWeight.Bold)
+                                        Text("هزینه کل نشست (همه بخش‌ها): ${String.format(Locale.US, "%,d", review.sessionTotalCost)} تومان", fontWeight = FontWeight.Bold)
+                                        Text("هزینه بازی؛ سهم همین فاکتور: ${String.format(Locale.US, "%,d", review.gameCost)} تومان")
+                                        Text("هزینه بوفه؛ سهم همین فاکتور: ${String.format(Locale.US, "%,d", review.buffetCost)} تومان")
+                                        Text("جمع کل فاکتور همین مشتری: ${String.format(Locale.US, "%,d", grandTotal)} تومان", fontWeight = FontWeight.Bold)
+                                        Text("پرداخت اولیه تخصیص‌یافته به همین مشتری: ${String.format(Locale.US, "%,d", allocatedPrepayment)} تومان")
+                                        Text("مانده بدهی پس از کسر پرداخت اولیه: ${String.format(Locale.US, "%,d", totalPayable)} تومان", fontWeight = FontWeight.Bold)
+                                        Text("مبلغ قابل بازگشت: ${String.format(Locale.US, "%,d", totalUnused)} تومان")
+                                        val detailBlocks = formatSegmentDetailBlocks(transaction.segmentDetails)
+                                        if (detailBlocks.isNotEmpty()) {
+                                            HorizontalDivider()
+                                            Text("ریز محاسبات هر بخش و سهم مشتری", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                            detailBlocks.forEach { detail ->
+                                                Surface(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                                                ) {
+                                                    Text(
+                                                        text = detail,
+                                                        modifier = Modifier.padding(9.dp).fillMaxWidth(),
+                                                        fontSize = 11.sp,
+                                                        lineHeight = 18.sp,
+                                                        style = androidx.compose.ui.text.TextStyle(textDirection = androidx.compose.ui.text.style.TextDirection.Rtl)
+                                                    )
+                                                }
+                                            }
+                                        }
 
                                         review.payers.forEach { payer ->
                                             val payable = (payer.invoiceTotal - payer.prepaymentAmount).coerceAtLeast(0L)

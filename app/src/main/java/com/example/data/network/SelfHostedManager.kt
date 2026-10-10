@@ -71,6 +71,9 @@ data class SettlementReview(
     val remainingRefundable: Long,
     val gameCost: Long = 0L,
     val buffetCost: Long = 0L,
+    val sessionGameCost: Long = 0L,
+    val sessionBuffetCost: Long = 0L,
+    val sessionTotalCost: Long = 0L,
     val payers: List<SettlementPayer> = emptyList()
 )
 
@@ -1327,6 +1330,7 @@ object SelfHostedManager {
                         )
                     }
                 }
+                val sessionJson = root.optJSONObject("session") ?: JSONObject()
                 SettlementReview(
                     sessionId=sessionId,
                     totalPrepayment=root.optString("totalPrepayment","0").toLongOrNull() ?: root.optLong("totalPrepayment",0L),
@@ -1335,6 +1339,9 @@ object SelfHostedManager {
                     remainingRefundable=root.optString("remainingRefundable","0").toLongOrNull() ?: root.optLong("remainingRefundable",0L),
                     gameCost=root.optString("gameCost","0").toLongOrNull() ?: root.optLong("gameCost",0L),
                     buffetCost=root.optString("buffetCost","0").toLongOrNull() ?: root.optLong("buffetCost",0L),
+                    sessionGameCost=sessionJson.optString("game_cost","0").toLongOrNull() ?: sessionJson.optLong("game_cost",0L),
+                    sessionBuffetCost=sessionJson.optString("buffet_cost","0").toLongOrNull() ?: sessionJson.optLong("buffet_cost",0L),
+                    sessionTotalCost=sessionJson.optString("total_cost","0").toLongOrNull() ?: sessionJson.optLong("total_cost",0L),
                     payers=payers
                 )
             }

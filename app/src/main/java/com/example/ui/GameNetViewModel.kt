@@ -6703,8 +6703,11 @@ loadSettings()
             val cid = r.optLong("customerId", 0L)
             val customerName = r.optString("customerName", "")
             val status = r.optString("status", "REVIEWED").uppercase()
+            val localTransactionId = decisions.firstOrNull { d -> d.optLong("customerId", 0L) == cid }
+                ?.optLong("transactionId", 0L) ?: 0L
             val targets = all.filter { tx ->
-                tx.status != "DELETED" && tx.sessionId == sessionId &&
+                tx.status != "DELETED" &&
+                    (tx.sessionId == sessionId || (localTransactionId > 0L && tx.id == localTransactionId)) &&
                     if (cid > 0L) tx.customerId == cid
                     else tx.customerId <= 0L && customerName.isNotBlank() && tx.customerName == customerName
             }.distinctBy { it.id }

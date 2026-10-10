@@ -12,4 +12,10 @@ assert(vm.includes('durationSeconds = elapsed / 1000L'), 'segment duration must 
 assert(screen.includes('formatTime(currentElapsedMs)'), 'normal session timer must show current segment elapsed time, reset after commit');
 assert(screen.includes('هزینه بخش فعلی:'), 'station card must show the current segment cost separately from session total');
 assert(invoice.includes('transaction.segmentDetails'), 'invoice UI must display multi-segment details');
+assert(invoice.includes('formatSegmentDetailBlocks(transaction.segmentDetails)'), 'segment details must be rendered as readable vertical blocks');
+assert(invoice.includes('جمع کل فاکتور همین مشتری'), 'dialog must distinguish invoice total from remaining debt');
+assert(invoice.includes('review.sessionTotalCost'), 'dialog must show full-session total separately');
+assert(backend.includes('const fallbackInvoice = requestedCustomerId > 0'), 'GET review must recover missing payer identity from a persisted invoice');
+assert(backend.includes('Historical segment payers can be missing'), 'finalization must include historical invoice payers');
+assert(backend.includes('paidAmount:retryPaid') && backend.includes('status:finalStatus,paidAmount'), 'finalization response must include authoritative paidAmount');
 console.log('PASS: segment commits reset current timer/cost, final settlement avoids duplicate segment charging, and invoices display per-customer segment details');

@@ -895,6 +895,33 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
           if(repaired!==undefined) p.prepayment_amount=String(repaired);
         });
       }
+      if (requestedCustomerId !== null && !enriched.some(p =>
+        requestedCustomerId > 0
+          ? Number(p.customer_id || 0) === requestedCustomerId
+          : requestedCustomerId === 0
+            ? Boolean(p.is_guest) && p.customer_id === null && String(p.participant_name || '') === requestedParticipantName
+            : Boolean(p.is_guest) && p.customer_id === null && (String(p.participant_key || '') === 'guest:' + requestedCustomerId || (requestedCustomerId === -1 && String(p.participant_key || '') === 'guest:walk-in'))
+      )) {
+        const fallbackInvoice = requestedCustomerId > 0
+          ? invoiceRows.find(r => Number(r.customer_id || 0) === requestedCustomerId)
+          : requestedCustomerId === 0
+            ? invoiceRows.find(r => r.customer_id === null && String(r.customer_snapshot?.name || '') === requestedParticipantName)
+            : invoiceRows.filter(r => r.customer_id === null)[Math.max(0, -requestedCustomerId - 1)]
+              || (requestedCustomerId === -1 ? invoiceRows.find(r => r.customer_id === null && String(r.customer_snapshot?.participantKey || '') === 'guest:walk-in') : null);
+        if (fallbackInvoice) {
+          const guest = fallbackInvoice.customer_id === null;
+          const cid = guest ? null : Number(fallbackInvoice.customer_id);
+          const key = String(fallbackInvoice.customer_snapshot?.participantKey || (guest ? (requestedCustomerId < 0 ? 'guest:' + requestedCustomerId : 'guest:walk-in') : 'customer:' + cid));
+          const name = String(fallbackInvoice.customer_snapshot?.name || (guest ? requestedParticipantName : 'مشتری ' + cid)).trim();
+          const snapshotPre = guest
+            ? Number(snapshotPrepayments[key] || snapshotPrepayments[String(requestedCustomerId)] || 0)
+            : Number(snapshotPrepayments[String(cid)] || 0);
+          const knownPayers = enriched.filter(p => p.is_payer).length;
+          const prepayment = Math.max(0, snapshotPre || (knownPayers === 0 ? Number(snapshot.initialPrepaymentAmount || 0) : 0));
+          const total = Number(fallbackInvoice.total_amount || 0);
+          enriched.push({customer_id:cid,participant_key:key,participant_name:name,is_guest:guest,is_payer:true,prepayment_amount:String(prepayment),game_cost:String(fallbackInvoice.game_cost||0),buffet_cost:String(fallbackInvoice.buffet_cost||0),invoice_total:String(total),unused_prepayment:String(Math.max(0,prepayment-total))});
+        }
+      }
       const guestParticipants=enriched.filter(p=>Boolean(p.is_guest) && p.customer_id===null);
       const selectedParticipants = requestedCustomerId === null
         ? enriched
@@ -952,7 +979,7 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
           : -(guestParticipants.findIndex(g=>g.participant_key===p.participant_key)+1);
         return {...p,billing_customer_id:billingCustomerId};
       });
-      return res.json({success:true,session:{...session,game_cost:String(gameCost),buffet_cost:String(buffetCost),total_cost:String(gameCost+buffetCost)},participants:responseParticipants,totalPrepayment:String(poolAmount),sessionTotalPrepayment:String(sessionTotalPrepayment),gameCost:String(gameCost),buffetCost:String(buffetCost),unusedPool:String(unusedPool),refundedPrepayment:String(refunded),remainingRefundable:String(Math.max(0,unusedPool-Number(refunded||0))),finalized});
+      return res.json({success:true,session:{...session},participants:responseParticipants,totalPrepayment:String(poolAmount),sessionTotalPrepayment:String(sessionTotalPrepayment),gameCost:String(gameCost),buffetCost:String(buffetCost),unusedPool:String(unusedPool),refundedPrepayment:String(refunded),remainingRefundable:String(Math.max(0,unusedPool-Number(refunded||0))),finalized});
     }catch(e){console.error('[settlement-review]',e?.message||e);return res.status(500).json({error:'Settlement review lookup failed'});}
   });
 
@@ -1007,6 +1034,31 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
         });
       }
       const invoiceRowsForSession=(await c.query("SELECT id,invoice_number,customer_id,game_cost,buffet_cost,total_amount,paid_amount,status,customer_snapshot FROM invoices WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sid,mid])).rows;
+      // Historical segment payers can be missing from session_participants when only the final
+      // station participants were persisted. Every existing invoice remains a valid payer record.
+      for (const inv of invoiceRowsForSession) {
+        if (inv.customer_id !== null && inv.customer_id !== undefined) {
+          const cid = Number(inv.customer_id);
+          if (!participants.some(p => Number(p.customer_id || 0) === cid)) {
+            participants.push({customer_id:cid,participant_key:'customer:'+cid,participant_name:String(inv.customer_snapshot?.name || 'مشتری '+cid),is_guest:false,is_payer:true,prepayment_amount:Number(snapPre[String(cid)] || 0)});
+          }
+        } else {
+          const name = String(inv.customer_snapshot?.name || 'مشتری گذری (بدون اشتراک)').trim();
+          const key = String(inv.customer_snapshot?.participantKey || 'guest:walk-in');
+          if (!participants.some(p => !p.customer_id && (String(p.participant_key || '') === key || String(p.participant_name || '') === name))) {
+            participants.push({customer_id:null,participant_key:key,participant_name:name,is_guest:true,is_payer:true,prepayment_amount:Number(snapPre[key] || 0)});
+          }
+        }
+      }
+      if (Number(snapshot.initialPrepaymentAmount || 0) > 0 && participants.length > 0 &&
+          participants.every(p => Number(p.prepayment_amount || 0) === 0) && Object.keys(snapPre).length === 0) {
+        const base = Math.floor(Number(snapshot.initialPrepaymentAmount || 0) / participants.length);
+        const remainder = Number(snapshot.initialPrepaymentAmount || 0) % participants.length;
+        participants.forEach((p, i) => {
+          const key = p.customer_id !== null ? String(p.customer_id) : String(p.participant_key || ('guest:' + String(i + 1)));
+          legacyPrepaymentMap.set(key, base + (i === participants.length - 1 ? remainder : 0));
+        });
+      }
       const guestInvoiceByKey=new Map();
       invoiceRowsForSession.filter(r=>r.customer_id===null).forEach(r=>{
         const key=String(r.customer_snapshot?.participantKey||'');
@@ -1056,7 +1108,7 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
           }
           const rg=Number((await c.query("SELECT COALESCE(SUM(amount),0) amount FROM gn_ledger WHERE manager_id=$1 AND customer_id=$2 AND reference_type='SESSION_REVIEW' AND reference_id=$3 AND type='CREDIT'",[mid,cid,sid])).rows[0].amount||0);
           const rl=Number((await c.query("SELECT COALESCE(SUM(amount),0) amount FROM lp_ledger WHERE manager_id=$1 AND customer_id=$2 AND reference_type='SESSION_REVIEW' AND reference_id=$3 AND type='CREDIT'",[mid,cid,sid])).rows[0].amount||0);
-          results.push({customerId:cid,customerName:participant.participant_name,refundAmount:String(priorReview.refund_amount||0),refundMethod:String(priorReview.method||'NONE'),earnedGn:rg,earnedLp:rl,status:retryStatus,idempotent:true});
+          results.push({customerId:cid,customerName:participant.participant_name,refundAmount:String(priorReview.refund_amount||0),refundMethod:String(priorReview.method||'NONE'),earnedGn:rg,earnedLp:rl,status:retryStatus,paidAmount:retryPaid,idempotent:true});
           continue;
         }
         const solePayerFallback=(participants.length===1 && participant.is_payer)?Number(snapshot.initialPrepaymentAmount||0):0;
@@ -1167,7 +1219,7 @@ res.status(201).json(q.rows[0]);}catch(e){console.error('[customer-transactions]
           if(debtDelta!==0) await c.query("UPDATE customers SET debt=GREATEST(0,COALESCE(debt,0)+$1),updated_at=NOW() WHERE id=$2 AND manager_id=$3",[debtDelta,cid,mid]);
         }
         const resolvedTx=(await c.query("SELECT id FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' AND ((customer_id=$3 AND $3>0) OR (customer_id IS NULL AND $3<=0 AND customer_name=$4)) ORDER BY id DESC LIMIT 1",[mid,sid,cid,participant.participant_name])).rows[0];
-        results.push({customerId:cid,customerName:participant.participant_name,transactionId:Number(resolvedTx?.id||exactTransactionId||0),refundAmount:String(refund),refundMethod:method,earnedGn,earnedLp,status:finalStatus});
+        results.push({customerId:cid,customerName:participant.participant_name,transactionId:Number(resolvedTx?.id||exactTransactionId||0),refundAmount:String(refund),refundMethod:method,earnedGn,earnedLp,status:finalStatus,paidAmount});
       }
       await c.query('COMMIT');
       return res.json({success:true,sessionId:sid,results});
