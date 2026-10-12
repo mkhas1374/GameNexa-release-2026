@@ -233,6 +233,10 @@ object SelfHostedManager {
         .build()
 
     // State flows for real-time observation
+    @Volatile
+    var lastManagerSessionCheckHttpCode: Int = 0
+        private set
+
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
@@ -1454,6 +1458,7 @@ object SelfHostedManager {
                 .get()
                 .build()
             client.newCall(request).execute().use { response ->
+                lastManagerSessionCheckHttpCode = response.code
                 if (response.isSuccessful) {
                     _isConnected.value = true
                     NetworkLogger.dismissErrorBanner()
@@ -1464,6 +1469,7 @@ object SelfHostedManager {
                 }
             }
         } catch (e: Exception) {
+            lastManagerSessionCheckHttpCode = 0
             Log.w(TAG, "Authenticated manager session check failed: " + e.message)
             _isConnected.value = false
             false

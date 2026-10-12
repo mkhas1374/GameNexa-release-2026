@@ -5312,7 +5312,14 @@ loadSettings()
             SelfHostedManager.setManagerId(savedManagerId)
             NetworkClient.managerAuthToken = savedManagerToken
             if (!runCatching { SelfHostedManager.checkAuthenticatedManagerSession() }.getOrDefault(false)) {
-                invalidateSavedManagerSession("نشست مدیر منقضی یا نامعتبر شده است؛ لطفاً دوباره وارد شوید.")
+                val authCheckCode = SelfHostedManager.lastManagerSessionCheckHttpCode
+                if (authCheckCode == 401 || authCheckCode == 403) {
+                    invalidateSavedManagerSession("نشست مدیر منقضی یا نامعتبر شده است؛ لطفاً دوباره وارد شوید.")
+                } else {
+                    // A timeout/5xx is not proof that a valid JWT is revoked. Preserve the
+                    // saved session for offline grace and avoid logging out during an outage.
+                    _isServerConnected.value = false
+                }
                 return
             }
             // Server is the only authority for Manager subscription validity.
