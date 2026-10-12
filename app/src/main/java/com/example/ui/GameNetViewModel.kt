@@ -6895,7 +6895,12 @@ loadSettings()
         // list, leaving the Manager trapped in the dialog even though finalization succeeded.
         val result = SelfHostedManager.finalizeSettlementReview(sessionId, decisions) ?: return@withContext false
         val results = result.optJSONArray("results") ?: org.json.JSONArray()
-        val all = repository.allCustomerTransactions.firstOrNull() ?: emptyList()
+        // Reconcile from the server in this same finalization coroutine, not in a fire-and-forget
+        // job. The old async refresh could race the optimistic Room writes and leave the UI
+        // showing the pre-finalization queue until the next cold start.
+        runCatching { repository.syncCustomerTransactionsFromServer() }
+            .onFailure { android.util.Log.w("GameNetViewModel", "Immediate post-finalize sync failed: ${it.message}") }
+        val all = repository.getAllCustomerTransactionsLocal()
         for (i in 0 until results.length()) {
             val r = results.optJSONObject(i) ?: continue
             val cid = r.optLong("customerId", 0L)
@@ -6922,12 +6927,8 @@ loadSettings()
                     earnedGn=r.optLong("earnedGn", 0L), earnedLp=r.optLong("earnedLp", 0L)))
             }
         }
-        // Reconcile Room with the authoritative server in the background. The dialog can close
-        // immediately and the StateFlow is updated optimistically even if this request times out.
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching { repository.syncCustomerTransactionsFromServer() }
-                .onFailure { android.util.Log.w("GameNetViewModel", "Post-finalize refresh deferred: ${it.message}") }
-        }
+        // Room now contains the server reconciliation plus any local fallback updates above.
+        // Do not launch a second racing refresh after returning success.
         true
     }
 
