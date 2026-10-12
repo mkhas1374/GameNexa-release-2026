@@ -2373,7 +2373,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                                 catch (e: Exception) { android.util.Log.w("GameNetViewModel", "Expired Manager session cleanup failed: ${e.message}") }
                             }
                         }
-                        if (!wasConnected && _currentAdminRole.value != "TRIAL_USER" && _currentAdminRole.value.isNotBlank()) {
+                        if (!wasConnected && managerAuthInitializationReady.isCompleted &&
+                            _currentAdminRole.value in setOf("MANAGER", "GAMENET_MANAGER", "SUPER_MANAGER") &&
+                            !NetworkClient.managerAuthToken.isNullOrBlank()) {
                             // A health probe only proves transport reachability; it does not hydrate
                             // Room or re-run subscription validation. After force-close/reopen, a
                             // transient verification failure used to leave the Manager stuck behind
@@ -2458,7 +2460,10 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     }
                 } else {
                     // Connected to server - reconcile offline session starts/events/settlements.
-                    if (currentElapsed - lastReconnectSyncElapsed >= 5000L && !isTrial) {
+                    val hasAuthenticatedManagerSession = managerAuthInitializationReady.isCompleted &&
+                        currentRole in setOf("MANAGER", "GAMENET_MANAGER", "SUPER_MANAGER") &&
+                        !NetworkClient.managerAuthToken.isNullOrBlank()
+                    if (currentElapsed - lastReconnectSyncElapsed >= 5000L && !isTrial && hasAuthenticatedManagerSession) {
                         lastReconnectSyncElapsed = currentElapsed
                         flushPendingSessionStarts()
                         flushSessionOutbox()

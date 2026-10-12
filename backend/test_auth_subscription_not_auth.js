@@ -11,4 +11,5 @@ assert(block.includes("persistedToken.isNotBlank()"), "server-issued token must 
 assert(block.includes("_isAdminAuthenticated.value = false"), "invalid/missing session must remain logged out");
 assert(/if \(hasServerManagerSession && !_isCustomerAuthenticated\.value\) \{[\s\S]*?_isAdminAuthenticated\.value = true/.test(block), "authentication may be restored only inside the valid-session guard");
 assert(block.indexOf("if (hasServerManagerSession && !_isCustomerAuthenticated.value)") < block.indexOf("_isAdminAuthenticated.value = true"), "the valid-session guard must precede authentication");
+assert(vm.includes('managerAuthInitializationReady.isCompleted') && vm.includes('!NetworkClient.managerAuthToken.isNullOrBlank()'), 'startup and reconnect sync must wait for a valid restored Manager session before protected API calls');
 console.log("PASS: active subscription no longer authenticates a fresh install without a valid Manager session");
