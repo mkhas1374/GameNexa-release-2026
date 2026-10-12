@@ -6890,45 +6890,56 @@ loadSettings()
     }
 
     suspend fun finalizeSettlementReview(sessionId: String, decisions: List<org.json.JSONObject>): Boolean = withContext(Dispatchers.IO) {
-        // A successful HTTP response means the server committed the decision. Never make the
-        // dialog depend on a second GET/sync: that GET may fail or return a temporarily stale
-        // list, leaving the Manager trapped in the dialog even though finalization succeeded.
+        // A successful HTTP response means the server committed the decision. Apply that
+        // authoritative result to Room immediately so the queue changes without restarting.
         val result = SelfHostedManager.finalizeSettlementReview(sessionId, decisions) ?: return@withContext false
         val results = result.optJSONArray("results") ?: org.json.JSONArray()
-        // Reconcile from the server in this same finalization coroutine, not in a fire-and-forget
-        // job. The old async refresh could race the optimistic Room writes and leave the UI
-        // showing the pre-finalization queue until the next cold start.
-        runCatching { repository.syncCustomerTransactionsFromServer() }
-            .onFailure { android.util.Log.w("GameNetViewModel", "Immediate post-finalize sync failed: ${it.message}") }
-        val all = repository.getAllCustomerTransactionsLocal()
-        for (i in 0 until results.length()) {
-            val r = results.optJSONObject(i) ?: continue
-            val cid = r.optLong("customerId", 0L)
-            val customerName = r.optString("customerName", "")
-            val status = r.optString("status", "REVIEWED").uppercase()
-            val localTransactionId = decisions.firstOrNull { d -> d.optLong("customerId", 0L) == cid }
-                ?.optLong("transactionId", 0L) ?: 0L
-            // Room intentionally keys transactions by server-provided local_id, not the
-            // server primary key. The finalization response now includes localTransactionId.
-            val resultLocalTransactionId = r.optLong("localTransactionId", 0L)
-            val targets = all.filter { tx ->
-                tx.status != "DELETED" &&
-                    (tx.sessionId == sessionId ||
-                        (localTransactionId > 0L && tx.id == localTransactionId) ||
-                        (resultLocalTransactionId > 0L && tx.id == resultLocalTransactionId)) &&
-                    if (cid > 0L) tx.customerId == cid
-                    else tx.customerId <= 0L && customerName.isNotBlank() && tx.customerName == customerName
-            }.distinctBy { it.id }
-            targets.forEach { tx ->
-                // The server's paidAmount is authoritative for both fully paid and debtor
-                // decisions. Falling back to tx.amount is only for older server responses.
-                val paid = r.optLong("paidAmount", if (status == "REVIEWED") tx.amount else tx.paidAmount)
-                repository.upsertCustomerTransactionLocal(tx.copy(status=status, paidAmount=paid,
-                    earnedGn=r.optLong("earnedGn", 0L), earnedLp=r.optLong("earnedLp", 0L)))
+
+        suspend fun applyFinalResultsToLocalRows() {
+            val all = repository.getAllCustomerTransactionsLocal()
+            for (i in 0 until results.length()) {
+                val r = results.optJSONObject(i) ?: continue
+                val cid = r.optLong("customerId", 0L)
+                val customerName = r.optString("customerName", "")
+                val status = r.optString("status", "REVIEWED").uppercase()
+                val requestedLocalId = decisions.firstOrNull { d -> d.optLong("customerId", 0L) == cid }
+                    ?.optLong("transactionId", 0L) ?: 0L
+                val responseLocalId = r.optLong("localTransactionId", 0L)
+                val targets = all.filter { tx ->
+                    tx.status != "DELETED" &&
+                        (tx.sessionId == sessionId ||
+                            (requestedLocalId > 0L && tx.id == requestedLocalId) ||
+                            (responseLocalId > 0L && tx.id == responseLocalId)) &&
+                        if (cid > 0L) tx.customerId == cid
+                        else tx.customerId <= 0L && customerName.isNotBlank() && tx.customerName == customerName
+                }.distinctBy { it.id }
+                targets.forEach { tx ->
+                    val paid = r.optLong("paidAmount", if (status == "REVIEWED") tx.amount else tx.paidAmount)
+                    repository.upsertCustomerTransactionLocal(tx.copy(
+                        status = status,
+                        paidAmount = paid,
+                        earnedGn = r.optLong("earnedGn", 0L),
+                        earnedLp = r.optLong("earnedLp", 0L)
+                    ))
+                }
             }
         }
-        // Room now contains the server reconciliation plus any local fallback updates above.
-        // Do not launch a second racing refresh after returning success.
+
+        // Optimistic local update is immediate; the server response is the authority.
+        applyFinalResultsToLocalRows()
+
+        // A refresh replaces Room rows and can race the optimistic update. Re-apply the
+        // final server decision after refresh completes, so no stale queue state survives
+        // until the next app launch. Keep this off the critical path so the dialog closes now.
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                if (repository.syncCustomerTransactionsFromServer()) {
+                    applyFinalResultsToLocalRows()
+                }
+            }.onFailure {
+                android.util.Log.w("GameNetViewModel", "Post-finalize refresh deferred: ${it.message}")
+            }
+        }
         true
     }
 
