@@ -2348,6 +2348,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         // are reflected as soon as the API becomes reachable or unreachable.
         viewModelScope.launch(Dispatchers.IO) {
             var lastProbeElapsed = 0L
+            var lastManagerAuthValidationElapsed = 0L
             while (true) {
                 val elapsed = android.os.SystemClock.elapsedRealtime()
                 if (lastProbeElapsed == 0L || elapsed - lastProbeElapsed >= 5000L) {
@@ -2359,6 +2360,19 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     _isServerConnected.value = reachable
                     if (reachable) {
                         _lastSuccessfulServerCheckElapsed.value = elapsed
+                        // A JWT can expire while the app remains open. Validate the Manager
+                        // session periodically so one rejected token cannot cause a storm of
+                        // 401s across every polling/sync endpoint.
+                        val managerRole = _currentAdminRole.value in setOf("MANAGER", "GAMENET_MANAGER", "SUPER_MANAGER")
+                        if (managerRole && !_managerAuthInProgress.value &&
+                            (lastManagerAuthValidationElapsed == 0L || elapsed - lastManagerAuthValidationElapsed >= 10_000L)) {
+                            lastManagerAuthValidationElapsed = elapsed
+                            val authValid = runCatching { SelfHostedManager.checkAuthenticatedManagerSession() }.getOrDefault(false)
+                            if (!authValid) {
+                                try { verifyLicenseStatus() }
+                                catch (e: Exception) { android.util.Log.w("GameNetViewModel", "Expired Manager session cleanup failed: ${e.message}") }
+                            }
+                        }
                         if (!wasConnected && _currentAdminRole.value != "TRIAL_USER" && _currentAdminRole.value.isNotBlank()) {
                             // A health probe only proves transport reachability; it does not hydrate
                             // Room or re-run subscription validation. After force-close/reopen, a
@@ -5250,6 +5264,24 @@ loadSettings()
         decryptSetting("enc_pending_purchased_license")
     }
 
+    private suspend fun invalidateSavedManagerSession(message: String) {
+        encryptSetting("enc_auth_token", "")
+        encryptSetting("enc_session_type", "")
+        encryptSetting("enc_admin_role", "")
+        encryptSetting("enc_manager_id", "")
+        NetworkClient.managerAuthToken = null
+        NetworkClient.authToken = null
+        SelfHostedManager.setManagerId("")
+        _currentAdminRole.value = "UNAUTHENTICATED"
+        _isAdminAuthenticated.value = false
+        _isCustomerAuthenticated.value = false
+        _isSubscribed.value = false
+        _authState.value = AuthState.Unauthenticated
+        _licenseState.value = LicenseState.Unactivated(message)
+        _accessState.value = AppAccessState.Denied(message)
+        _showAuthDialog.value = true
+    }
+
     suspend fun verifyLicenseStatus() {
         val planType = decryptSetting("enc_plan_type")
         val savedRole = decryptSetting("enc_admin_role")
@@ -5263,10 +5295,23 @@ loadSettings()
 
         if (isManager) {
             com.example.data.network.NetworkClient.isTrialMode = false
+            // A cached subscription is not an authenticated session. Validate the saved JWT
+            // before any cold-start cloud synchronization, otherwise an expired token causes
+            // every protected endpoint to spam 401 and financial queues never converge.
+            val savedManagerId = decryptSetting("enc_manager_id").ifBlank { decryptSetting("enc_user_id") }
+            val savedManagerToken = decryptSetting("enc_auth_token")
+            if (savedManagerId.isBlank() || savedManagerToken.isBlank()) {
+                invalidateSavedManagerSession("نشست مدیر ذخیره‌شده ناقص است؛ دوباره وارد شوید.")
+                return
+            }
+            SelfHostedManager.setManagerId(savedManagerId)
+            NetworkClient.managerAuthToken = savedManagerToken
+            if (!runCatching { SelfHostedManager.checkAuthenticatedManagerSession() }.getOrDefault(false)) {
+                invalidateSavedManagerSession("نشست مدیر منقضی یا نامعتبر شده است؛ لطفاً دوباره وارد شوید.")
+                return
+            }
             // Server is the only authority for Manager subscription validity.
             // Do not synthesize a plan or expiry from local cache here.
-
-            // Continue into the common server verification path below.
         }
 
         if (isSuper) {
@@ -6846,14 +6891,21 @@ loadSettings()
             val status = r.optString("status", "REVIEWED").uppercase()
             val localTransactionId = decisions.firstOrNull { d -> d.optLong("customerId", 0L) == cid }
                 ?.optLong("transactionId", 0L) ?: 0L
+            // Room intentionally keys transactions by server-provided local_id, not the
+            // server primary key. The finalization response now includes localTransactionId.
+            val resultLocalTransactionId = r.optLong("localTransactionId", 0L)
             val targets = all.filter { tx ->
                 tx.status != "DELETED" &&
-                    (tx.sessionId == sessionId || (localTransactionId > 0L && tx.id == localTransactionId)) &&
+                    (tx.sessionId == sessionId ||
+                        (localTransactionId > 0L && tx.id == localTransactionId) ||
+                        (resultLocalTransactionId > 0L && tx.id == resultLocalTransactionId)) &&
                     if (cid > 0L) tx.customerId == cid
                     else tx.customerId <= 0L && customerName.isNotBlank() && tx.customerName == customerName
             }.distinctBy { it.id }
             targets.forEach { tx ->
-                val paid = if (status == "REVIEWED") tx.amount else r.optLong("paidAmount", tx.paidAmount)
+                // The server's paidAmount is authoritative for both fully paid and debtor
+                // decisions. Falling back to tx.amount is only for older server responses.
+                val paid = r.optLong("paidAmount", if (status == "REVIEWED") tx.amount else tx.paidAmount)
                 repository.upsertCustomerTransactionLocal(tx.copy(status=status, paidAmount=paid,
                     earnedGn=r.optLong("earnedGn", 0L), earnedLp=r.optLong("earnedLp", 0L)))
             }

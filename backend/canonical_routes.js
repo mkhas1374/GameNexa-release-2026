@@ -799,7 +799,10 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       const id=Number(req.params.id), mid=manager(req), b=req.body||{};
       if(!Number.isSafeInteger(id)||id<=0)return res.status(422).json({error:'Invalid transaction id'});
       await c.query('BEGIN');
-      const before=(await c.query("SELECT * FROM customer_transactions WHERE id=$1 AND manager_id=$2 AND status<>'DELETED' FOR UPDATE",[id,mid])).rows[0];
+      // Newer clients send the server id; older/offline Room rows may only know local_id.
+      // Resolve primary id first, and use local_id only if no primary-id row exists.
+      let before=(await c.query("SELECT * FROM customer_transactions WHERE id=$1 AND manager_id=$2 AND status<>'DELETED' FOR UPDATE",[id,mid])).rows[0];
+      if(!before) before=(await c.query("SELECT * FROM customer_transactions WHERE local_id=$1 AND manager_id=$2 AND status<>'DELETED' ORDER BY id DESC LIMIT 1 FOR UPDATE",[id,mid])).rows[0];
       if(!before){await c.query('ROLLBACK');return res.status(404).json({error:'Transaction not found'});}
       const amount=Math.max(0,Math.trunc(Number(b.amount ?? before.amount ?? 0)));
       const paid=Math.max(0,Math.min(amount,Math.trunc(Number(b.paidAmount ?? before.paid_amount ?? 0))));
@@ -807,12 +810,12 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       const status=amount<=0||paid>=amount?'REVIEWED':(requested==='UNREVIEWED'?'UNREVIEWED':'DEBTOR');
       const oldOutstanding=Math.max(0,Number(before.amount||0)-Number(before.paid_amount||0));
       const newOutstanding=Math.max(0,amount-paid);
-      await c.query('UPDATE customer_transactions SET amount=$1,paid_amount=$2,status=$3,updated_at=NOW() WHERE id=$4 AND manager_id=$5',[amount,paid,status,id,mid]);
+      await c.query('UPDATE customer_transactions SET amount=$1,paid_amount=$2,status=$3,updated_at=NOW() WHERE id=$4 AND manager_id=$5',[amount,paid,status,before.id,mid]);
       if(Number(before.customer_id||0)>0){
         const delta=newOutstanding-oldOutstanding;
         if(delta!==0) await c.query('UPDATE customers SET debt=GREATEST(0,COALESCE(debt,0)+$1),updated_at=NOW() WHERE id=$2 AND manager_id=$3',[delta,Number(before.customer_id),mid]);
       }
-      const after=(await c.query('SELECT * FROM customer_transactions WHERE id=$1 AND manager_id=$2',[id,mid])).rows[0];
+      const after=(await c.query('SELECT * FROM customer_transactions WHERE id=$1 AND manager_id=$2',[before.id,mid])).rows[0];
       await c.query('COMMIT');
       return res.json({success:true,transaction:after});
     }catch(e){try{await c.query('ROLLBACK')}catch(_){}console.error('[customer-transactions/patch]',e?.message||e);return res.status(500).json({error:'Internal server error'});}finally{c.release();}
@@ -1277,7 +1280,7 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
           }
           const rg=Number((await c.query("SELECT COALESCE(SUM(amount),0) amount FROM gn_ledger WHERE manager_id=$1 AND customer_id=$2 AND reference_type='SESSION_REVIEW' AND reference_id=$3 AND type='CREDIT'",[mid,cid,sid])).rows[0].amount||0);
           const rl=Number((await c.query("SELECT COALESCE(SUM(amount),0) amount FROM lp_ledger WHERE manager_id=$1 AND customer_id=$2 AND reference_type='SESSION_REVIEW' AND reference_id=$3 AND type='CREDIT'",[mid,cid,sid])).rows[0].amount||0);
-          results.push({customerId:cid,customerName:participant.participant_name,refundAmount:String(priorReview.refund_amount||0),refundMethod:String(priorReview.method||'NONE'),earnedGn:rg,earnedLp:rl,status:retryStatus,paidAmount:retryPaid,idempotent:true});
+          results.push({customerId:cid,customerName:participant.participant_name,transactionId:Number(linkedTx?.id||0),localTransactionId:Number(linkedTx?.local_id||0),refundAmount:String(priorReview.refund_amount||0),refundMethod:String(priorReview.method||'NONE'),earnedGn:rg,earnedLp:rl,status:retryStatus,paidAmount:retryPaid,idempotent:true});
           continue;
         }
         const solePayerFallback=(participants.length===1 && participant.is_payer)?Number(snapshot.initialPrepaymentAmount||0):0;
@@ -1342,7 +1345,7 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
         // ID as a server primary key without validation.
         const requestedTransactionId=Number(d.transactionId||0);
         const exactTransaction=linkedTxInSession ? linkedTx : (requestedTransactionId>0
-          ? (await c.query("SELECT id,customer_id,amount,paid_amount,game_cost,food_cost FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' AND (local_id=$3 OR id=$3) AND ((customer_id=$4 AND $4>0) OR (customer_id IS NULL AND $4<=0 AND customer_name=$5)) ORDER BY CASE WHEN local_id=$3 THEN 0 ELSE 1 END,id DESC LIMIT 1 FOR UPDATE",[mid,sid,requestedTransactionId,cid,participant.participant_name])).rows[0]
+          ? (await c.query("SELECT id,local_id,customer_id,amount,paid_amount,game_cost,food_cost FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' AND (local_id=$3 OR id=$3) AND ((customer_id=$4 AND $4>0) OR (customer_id IS NULL AND $4<=0 AND customer_name=$5)) ORDER BY CASE WHEN local_id=$3 THEN 0 ELSE 1 END,id DESC LIMIT 1 FOR UPDATE",[mid,sid,requestedTransactionId,cid,participant.participant_name])).rows[0]
           : null);
         const exactTransactionId=Number(exactTransaction?.id||0);
         const debtBefore = (exactTransactionId>0
@@ -1385,8 +1388,8 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
           const debtDelta=debtAfterOutstanding-debtBeforeOutstanding;
           if(debtDelta!==0) await c.query("UPDATE customers SET debt=GREATEST(0,COALESCE(debt,0)+$1),updated_at=NOW() WHERE id=$2 AND manager_id=$3",[debtDelta,cid,mid]);
         }
-        const resolvedTx=(await c.query("SELECT id FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' AND ((customer_id=$3 AND $3>0) OR (customer_id IS NULL AND $3<=0 AND customer_name=$4)) ORDER BY id DESC LIMIT 1",[mid,sid,cid,participant.participant_name])).rows[0];
-        results.push({customerId:cid,customerName:participant.participant_name,transactionId:Number(resolvedTx?.id||exactTransactionId||0),refundAmount:String(refund),refundMethod:method,earnedGn,earnedLp,status:finalStatus,paidAmount});
+        const resolvedTx=(await c.query("SELECT id,local_id FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' AND ((customer_id=$3 AND $3>0) OR (customer_id IS NULL AND $3<=0 AND customer_name=$4)) ORDER BY id DESC LIMIT 1",[mid,sid,cid,participant.participant_name])).rows[0];
+        results.push({customerId:cid,customerName:participant.participant_name,transactionId:Number(resolvedTx?.id||exactTransactionId||0),localTransactionId:Number(exactTransaction?.local_id||resolvedTx?.local_id||0),refundAmount:String(refund),refundMethod:method,earnedGn,earnedLp,status:finalStatus,paidAmount});
       }
       await c.query('COMMIT');
       return res.json({success:true,sessionId:sid,results});

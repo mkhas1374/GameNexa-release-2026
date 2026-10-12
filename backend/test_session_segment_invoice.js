@@ -46,4 +46,5 @@ assert(managerApi.includes('sessionId?.takeIf') && vm.includes('result.retryable
 assert(vm.includes('BUFFET_ORDER_GUARD station='), 'buffet operation must catch failures without crashing the Manager screen');
 assert(screen.includes('onIncrementProduct = { order -> viewModel.incrementBuffetOrder(station.id, order.productName, order.targetCustomerId, order.targetCustomerName)'), 'station order controls must preserve payer identity for targeted buffet orders');
 assert(vm.includes('targetCustomerName = targetCustomerName,') && vm.includes('sessionId = sessionId'), 'all buffet API call sites must provide session and payer identity');
+assert(fs.readFileSync(__dirname + '/server.js', 'utf8').includes("THEN $2::timestamptz ELSE NULL::timestamptz"), 'pause/resume must bind paused_at as timestamptz, not text');
 console.log('PASS: segment commits reset current timer/cost, final settlement avoids duplicate segment charging, and invoices display per-customer segment details');

@@ -1460,7 +1460,7 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
         );
         if (["PAUSE","RESUME","SEGMENT_PAUSE","SEGMENT_CONTINUE"].includes(eventType)) {
             const nextStatus = (eventType === "PAUSE" || eventType === "SEGMENT_PAUSE") ? "PAUSED" : "ACTIVE";
-            await client.query("UPDATE game_sessions SET status=$1::varchar,paused_at=CASE WHEN $1::varchar='PAUSED' THEN $2 ELSE NULL END,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[nextStatus,occurredAt.toISOString(),sessionId,managerId]);
+            await client.query("UPDATE game_sessions SET status=$1::varchar,paused_at=CASE WHEN $1::varchar='PAUSED' THEN $2::timestamptz ELSE NULL::timestamptz END,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[nextStatus,occurredAt.toISOString(),sessionId,managerId]);
         }
         await client.query("COMMIT");
         return res.json({success:true,sessionId,sequenceNo,serverTime:Date.now()});

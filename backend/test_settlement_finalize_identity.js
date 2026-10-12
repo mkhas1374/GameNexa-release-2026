@@ -3,6 +3,7 @@ const assert = require('assert');
 const routes = fs.readFileSync(__dirname + '/canonical_routes.js', 'utf8');
 const manager = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/data/network/SelfHostedManager.kt', 'utf8');
 const viewModel = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/ui/GameNetViewModel.kt', 'utf8');
+const screen = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/ui/CustomersReservationsScreen.kt', 'utf8');
 
 assert(routes.includes('local_id=$3 OR id=$3'), 'finalize must resolve Room local IDs to server rows');
 assert(routes.includes('local_id=$2 OR id=$2'), 'linked payer lookup must resolve the Room local ID before a colliding server ID');
@@ -21,4 +22,9 @@ assert(manager.includes('o.has("local_id") && !o.isNull("local_id")'), 'hydratio
 assert(viewModel.includes('Reconcile Room with the authoritative server in the background'), 'post-finalization refresh must not block dialog closure');
 assert(viewModel.includes('        true\n    }'), 'successful server finalization must return success even if local row matching is incomplete');
 assert(!viewModel.includes('val exact = if (txId > 0L)'), 'server IDs must not be applied directly to unrelated Room rows');
+
+assert(routes.includes('localTransactionId:Number(exactTransaction?.local_id||resolvedTx?.local_id||0)'), 'finalization response must carry Room local_id so every invoice row can update without an app restart');
+assert(viewModel.includes('resultLocalTransactionId > 0L && tx.id == resultLocalTransactionId'), 'local invoice rows must match finalization by the Room local_id returned from the server');
+assert(screen.includes('val payableAmount = transaction.amount.toDouble().coerceAtLeast(0.0)'), 'full debtor settlement must pay the persisted invoice total rather than reapplying a preview discount');
+assert(routes.includes(`WHERE local_id=$1 AND manager_id=$2 AND status<>'DELETED' ORDER BY id DESC LIMIT 1 FOR UPDATE`), 'legacy transaction updates must resolve local_id when the server id is unavailable');
 console.log('PASS: settlement finalization preserves local identity, prevents stale status downgrade, and does not block UI closure on refresh');

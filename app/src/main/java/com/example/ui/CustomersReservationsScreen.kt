@@ -1808,7 +1808,10 @@ fun CustomerTransactionCard(
                     }
 
                         if (transaction.status == "DEBTOR") {
-                            val payableAmount = if (hasDiscount) finalAmount else origTotal
+                            // A debtor invoice's persisted amount is already the contractual
+                            // amount after any approved discount. Recomputing a preview discount
+                            // here can submit a smaller "full payment" and leave a phantom balance.
+                            val payableAmount = transaction.amount.toDouble().coerceAtLeast(0.0)
                             val parsedInput = payInput.toDoubleOrNull()
                             val isInputValid = parsedInput != null && parsedInput > 0
 
