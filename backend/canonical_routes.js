@@ -805,8 +805,9 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       const sessionId=String(b.sessionId||'').trim();
       const customerId=Number(b.customerId||0);
       const customerName=String(b.customerName||'').trim();
-      let before=(await c.query("SELECT * FROM customer_transactions WHERE local_id=$1 AND manager_id=$2 AND status<>'DELETED' AND ($3='' OR session_id::text=$3) AND (($4>0 AND customer_id=$4) OR ($4<=0 AND customer_id IS NULL AND ($5='' OR customer_name=$5))) ORDER BY id DESC LIMIT 1 FOR UPDATE",[localId,mid,sessionId,customerId,customerName])).rows[0];
-      if(!before) before=(await c.query("SELECT * FROM customer_transactions WHERE id=$1 AND manager_id=$2 AND status<>'DELETED' AND ($3='' OR session_id::text=$3) AND (($4>0 AND customer_id=$4) OR ($4<=0 AND customer_id IS NULL AND ($5='' OR customer_name=$5))) FOR UPDATE",[id,mid,sessionId,customerId,customerName])).rows[0];
+      const hasPayerIdentity=b.customerId!==undefined || customerName!=='';
+      let before=(await c.query("SELECT * FROM customer_transactions WHERE local_id=$1 AND manager_id=$2 AND status<>'DELETED' AND ($3='' OR session_id::text=$3) AND (NOT $6::boolean OR (($4>0 AND customer_id=$4) OR ($4<=0 AND customer_id IS NULL AND ($5='' OR customer_name=$5)))) ORDER BY id DESC LIMIT 1 FOR UPDATE",[localId,mid,sessionId,customerId,customerName,hasPayerIdentity])).rows[0];
+      if(!before) before=(await c.query("SELECT * FROM customer_transactions WHERE id=$1 AND manager_id=$2 AND status<>'DELETED' AND ($3='' OR session_id::text=$3) AND (NOT $6::boolean OR (($4>0 AND customer_id=$4) OR ($4<=0 AND customer_id IS NULL AND ($5='' OR customer_name=$5)))) FOR UPDATE",[id,mid,sessionId,customerId,customerName,hasPayerIdentity])).rows[0];
       if(!before){await c.query('ROLLBACK');return res.status(404).json({error:'Transaction not found'});}
       const amount=Math.max(0,Math.trunc(Number(b.amount ?? before.amount ?? 0)));
       const paid=Math.max(0,Math.min(amount,Math.trunc(Number(b.paidAmount ?? before.paid_amount ?? 0))));
