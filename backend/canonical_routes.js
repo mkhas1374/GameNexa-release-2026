@@ -799,10 +799,14 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
       const id=Number(req.params.id), mid=manager(req), b=req.body||{};
       if(!Number.isSafeInteger(id)||id<=0)return res.status(422).json({error:'Invalid transaction id'});
       await c.query('BEGIN');
-      // Newer clients send the server id; older/offline Room rows may only know local_id.
-      // Resolve primary id first, and use local_id only if no primary-id row exists.
-      let before=(await c.query("SELECT * FROM customer_transactions WHERE id=$1 AND manager_id=$2 AND status<>'DELETED' FOR UPDATE",[id,mid])).rows[0];
-      if(!before) before=(await c.query("SELECT * FROM customer_transactions WHERE local_id=$1 AND manager_id=$2 AND status<>'DELETED' ORDER BY id DESC LIMIT 1 FOR UPDATE",[id,mid])).rows[0];
+      // Room identity is usually local_id, while legacy rows may only expose the server id.
+      // Match local_id together with payer/session identity first to avoid numeric id collisions.
+      const localId=Number(b.localId||id);
+      const sessionId=String(b.sessionId||'').trim();
+      const customerId=Number(b.customerId||0);
+      const customerName=String(b.customerName||'').trim();
+      let before=(await c.query("SELECT * FROM customer_transactions WHERE local_id=$1 AND manager_id=$2 AND status<>'DELETED' AND ($3='' OR session_id::text=$3) AND (($4>0 AND customer_id=$4) OR ($4<=0 AND customer_id IS NULL AND ($5='' OR customer_name=$5))) ORDER BY id DESC LIMIT 1 FOR UPDATE",[localId,mid,sessionId,customerId,customerName])).rows[0];
+      if(!before) before=(await c.query("SELECT * FROM customer_transactions WHERE id=$1 AND manager_id=$2 AND status<>'DELETED' AND ($3='' OR session_id::text=$3) AND (($4>0 AND customer_id=$4) OR ($4<=0 AND customer_id IS NULL AND ($5='' OR customer_name=$5))) FOR UPDATE",[id,mid,sessionId,customerId,customerName])).rows[0];
       if(!before){await c.query('ROLLBACK');return res.status(404).json({error:'Transaction not found'});}
       const amount=Math.max(0,Math.trunc(Number(b.amount ?? before.amount ?? 0)));
       const paid=Math.max(0,Math.min(amount,Math.trunc(Number(b.paidAmount ?? before.paid_amount ?? 0))));

@@ -26,5 +26,6 @@ assert(!viewModel.includes('val exact = if (txId > 0L)'), 'server IDs must not b
 assert(routes.includes('localTransactionId:Number(exactTransaction?.local_id||resolvedTx?.local_id||0)'), 'finalization response must carry Room local_id so every invoice row can update without an app restart');
 assert(viewModel.includes('resultLocalTransactionId > 0L && tx.id == resultLocalTransactionId'), 'local invoice rows must match finalization by the Room local_id returned from the server');
 assert(screen.includes('val payableAmount = transaction.amount.toDouble().coerceAtLeast(0.0)'), 'full debtor settlement must pay the persisted invoice total rather than reapplying a preview discount');
-assert(routes.includes(`WHERE local_id=$1 AND manager_id=$2 AND status<>'DELETED' ORDER BY id DESC LIMIT 1 FOR UPDATE`), 'legacy transaction updates must resolve local_id when the server id is unavailable');
+assert(routes.includes('Match local_id together with payer/session identity first'), 'legacy transaction updates must resolve local_id without numeric ID collisions');
+assert(manager.includes('put("localId", transaction.id)') && manager.includes('put("sessionId", transaction.sessionId)'), 'Android payment updates must send local transaction and session identity');
 console.log('PASS: settlement finalization preserves local identity, prevents stale status downgrade, and does not block UI closure on refresh');

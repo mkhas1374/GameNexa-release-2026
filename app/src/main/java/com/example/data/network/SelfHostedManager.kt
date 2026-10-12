@@ -1587,6 +1587,13 @@ object SelfHostedManager {
                 put("amount", transaction.amount)
                 put("paidAmount", transaction.paidAmount)
                 put("status", transaction.status)
+                // Room IDs are server local_id values when available. Include payer/session
+                // identity so the API can safely resolve old rows without colliding with a
+                // different server primary key that happens to have the same numeric value.
+                put("localId", transaction.id)
+                put("sessionId", transaction.sessionId)
+                put("customerId", transaction.customerId)
+                put("customerName", transaction.customerName)
             }
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/manager/customer-transactions/${transaction.id}")
