@@ -919,7 +919,7 @@ IconButton(
                                 lang = lang,
                                 isAlwaysExpanded = false,
                                 onUpdateStatus = { st -> onUpdateTransactionStatus(trans, st) },
-                                onUpdatePayment = { pAmount, st -> onUpdateTransactionPayment(trans, pAmount, st) },
+                                onUpdatePayment = { pAmount, st, onResult -> onUpdateTransactionPayment(trans, pAmount, st, onResult) },
                                 onDelete = { onDeleteTransaction(trans) },
                                 canDelete = canDelete,
                                 viewModel = viewModel
@@ -977,7 +977,7 @@ IconButton(
                                 transactions = transactions,
                                 lang = lang,
                                 onUpdateStatus = { trans, st -> onUpdateTransactionStatus(trans, st) },
-                                onUpdatePayment = { trans, pAmount, st -> onUpdateTransactionPayment(trans, pAmount, st) },
+                                onUpdatePayment = { trans, pAmount, st, onResult -> onUpdateTransactionPayment(trans, pAmount, st, onResult) },
                                 onDelete = { trans -> onDeleteTransaction(trans) },
                                 viewModel = viewModel
                             )
