@@ -27,7 +27,8 @@ async function runTests() {
     const nowTehran = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tehran' }));
     const baseDate = new Date(nowTehran);
     baseDate.setHours(15, 0, 0, 0);
-    if (baseDate.getTime() <= Date.now()) baseDate.setDate(baseDate.getDate() + 1);
+    // baseDate is expressed in the reconstructed Tehran-local clock above; compare it to that same clock before converting to UTC.
+    if (baseDate.getTime() <= nowTehran.getTime()) baseDate.setDate(baseDate.getDate() + 1);
     const startIso = new Date(baseDate.getTime() - (3.5 * 60 * 60 * 1000)).toISOString();
     
     // 1. State Machine
