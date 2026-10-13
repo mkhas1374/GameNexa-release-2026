@@ -288,8 +288,8 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
                     onUpdateTransactionStatus = { trans, status ->
                         viewModel.updateCustomerTransactionStatus(trans, status)
                     },
-                    onUpdateTransactionPayment = { trans, paidAmount, status ->
-                        viewModel.updateCustomerTransactionPayment(trans, paidAmount.toLong(), status)
+                    onUpdateTransactionPayment = { trans, paidAmount, status, onResult ->
+                        viewModel.updateCustomerTransactionPayment(trans, paidAmount.toLong(), status, onResult)
                     },
                     onDeleteTransaction = { trans ->
                         if (isTrialActive || currentAdminRole == "TRIAL_USER") {
@@ -481,7 +481,7 @@ fun CustomersTabContent(
     onDeleteCustomer: (Customer) -> Unit,
     onAddClick: () -> Unit,
     onUpdateTransactionStatus: (CustomerTransaction, String) -> Unit,
-    onUpdateTransactionPayment: (CustomerTransaction, Double, String) -> Unit,
+    onUpdateTransactionPayment: (CustomerTransaction, Double, String, (Boolean, String?) -> Unit) -> Unit,
     onDeleteTransaction: (CustomerTransaction) -> Unit,
     viewModel: GameNetViewModel
 ) {
@@ -907,7 +907,7 @@ fun CustomerTransactionCard(
     lang: String,
     isAlwaysExpanded: Boolean = false,
     onUpdateStatus: (String) -> Unit,
-    onUpdatePayment: (Double, String) -> Unit,
+    onUpdatePayment: (Double, String, (Boolean, String?) -> Unit) -> Unit,
     onDelete: () -> Unit,
     canDelete: Boolean,
     viewModel: GameNetViewModel
@@ -1320,9 +1320,21 @@ fun CustomerTransactionCard(
                                         onClick = {
                                             val paid = parsedInput!!
                                             if (paid >= payableAmount) {
-                                                if (!isSubmitting) { isSubmitting = true; onUpdatePayment(payableAmount, "REVIEWED") }
+                                                if (!isSubmitting) {
+                                                    isSubmitting = true
+                                                    onUpdatePayment(payableAmount, "REVIEWED") { success, message ->
+                                                        isSubmitting = false
+                                                        if (!success) android.widget.Toast.makeText(context, message ?: "ثبت فاکتور ناموفق بود", android.widget.Toast.LENGTH_LONG).show()
+                                                    }
+                                                }
                                             } else {
-                                                if (!isSubmitting) { isSubmitting = true; onUpdatePayment(paid, "DEBTOR") }
+                                                if (!isSubmitting) {
+                                                    isSubmitting = true
+                                                    onUpdatePayment(paid, "DEBTOR") { success, message ->
+                                                        isSubmitting = false
+                                                        if (!success) android.widget.Toast.makeText(context, message ?: "ثبت فاکتور ناموفق بود", android.widget.Toast.LENGTH_LONG).show()
+                                                    }
+                                                }
                                             }
                                         },
                                         enabled = !isSubmitting,
@@ -1334,7 +1346,15 @@ fun CustomerTransactionCard(
                                     }
                                 } else {
                                     OutlinedButton(
-                                        onClick = { if (!isSubmitting) { isSubmitting = true; onUpdatePayment(0.0, "DEBTOR") } },
+                                        onClick = {
+                                            if (!isSubmitting) {
+                                                isSubmitting = true
+                                                onUpdatePayment(0.0, "DEBTOR") { success, message ->
+                                                    isSubmitting = false
+                                                    if (!success) android.widget.Toast.makeText(context, message ?: "ثبت فاکتور ناموفق بود", android.widget.Toast.LENGTH_LONG).show()
+                                                }
+                                            }
+                                        },
                                         enabled = !isSubmitting,
                                         modifier = Modifier.height(38.dp).weight(1f),
                                         shape = RoundedCornerShape(8.dp),
@@ -1346,7 +1366,15 @@ fun CustomerTransactionCard(
                                     }
 
                                     Button(
-                                        onClick = { if (!isSubmitting) { isSubmitting = true; onUpdatePayment(payableAmount, "REVIEWED") } },
+                                        onClick = {
+                                            if (!isSubmitting) {
+                                                isSubmitting = true
+                                                onUpdatePayment(payableAmount, "REVIEWED") { success, message ->
+                                                    isSubmitting = false
+                                                    if (!success) android.widget.Toast.makeText(context, message ?: "ثبت فاکتور ناموفق بود", android.widget.Toast.LENGTH_LONG).show()
+                                                }
+                                            }
+                                        },
                                         enabled = !isSubmitting,
                                         modifier = Modifier.height(38.dp).weight(1f),
                                         shape = RoundedCornerShape(8.dp),
