@@ -279,7 +279,7 @@ app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), a
     const rawPhone = String(req.body?.phone_number || req.body?.phoneNumber || req.body?.username || '').trim();
     const managerId = String(req.body?.manager_id || req.body?.managerId || '').trim();
     // Match common local/international phone formats without changing account passwords.
-    const digitsOnly = value => String(value || '').replace(/\\D/g, '');
+    const digitsOnly = value => String(value || '').replace(/\D/g, '');
     const rawDigits = digitsOnly(rawPhone);
     const localDigits = rawDigits.startsWith('0098') ? '0' + rawDigits.slice(4)
         : rawDigits.startsWith('98') ? '0' + rawDigits.slice(2) : rawDigits;
