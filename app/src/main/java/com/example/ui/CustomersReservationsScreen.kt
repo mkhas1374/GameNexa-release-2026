@@ -495,6 +495,7 @@ fun CustomersTabContent(
     val unreviewedTrans by viewModel.unreviewedTransactions.collectAsState()
     val reviewedTrans by viewModel.reviewedTransactions.collectAsState()
     val debtorTrans by viewModel.debtorTransactions.collectAsState()
+    val context = LocalContext.current
     val debtorCustomerCount by remember(debtorTrans) { derivedStateOf { debtorTrans.map { it.customerId }.distinct().size } }
 
     Column(modifier = Modifier.fillMaxSize()) {
