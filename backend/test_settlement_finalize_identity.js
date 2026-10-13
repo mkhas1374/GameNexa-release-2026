@@ -19,12 +19,12 @@ assert(routes.includes('legacyTx.forEach'), 'legacy sessions without invoice sna
 assert(routes.includes('status:retryStatus,paidAmount:retryPaid,idempotent:true'), 'idempotent response must return authoritative status and paid amount, not refund-marker status');
 assert(routes.indexOf('const byId=new Map') > routes.indexOf('Historical segment payers can be missing'), 'payer indexes must be built after merging historical invoice payers');
 assert(manager.includes('o.has("local_id") && !o.isNull("local_id")'), 'hydration must preserve local_id as Room identity');
-assert(viewModel.includes('Reconcile Room with the authoritative server in the background'), 'post-finalization refresh must not block dialog closure');
+assert(viewModel.includes('A refresh replaces Room rows and can race the optimistic update') && viewModel.includes('Keep this off the critical path so the dialog closes now'), 'post-finalization refresh must reconcile after the dialog closes without blocking the UI');
 assert(viewModel.includes('        true\n    }'), 'successful server finalization must return success even if local row matching is incomplete');
 assert(!viewModel.includes('val exact = if (txId > 0L)'), 'server IDs must not be applied directly to unrelated Room rows');
 
 assert(routes.includes('localTransactionId:Number(exactTransaction?.local_id||resolvedTx?.local_id||0)'), 'finalization response must carry Room local_id so every invoice row can update without an app restart');
-assert(viewModel.includes('resultLocalTransactionId > 0L && tx.id == resultLocalTransactionId'), 'local invoice rows must match finalization by the Room local_id returned from the server');
+assert(viewModel.includes('responseLocalId > 0L && tx.id == responseLocalId'), 'local invoice rows must match finalization by the Room local_id returned from the server');
 assert(screen.includes('val payableAmount = transaction.amount.toDouble().coerceAtLeast(0.0)'), 'full debtor settlement must pay the persisted invoice total rather than reapplying a preview discount');
 assert(routes.includes('Match local_id together with payer/session identity first'), 'legacy transaction updates must resolve local_id without numeric ID collisions');
 assert(routes.includes('NOT $6::boolean OR'), 'older clients without payer identity must still resolve local_id while newer clients use identity constraints');

@@ -5348,7 +5348,18 @@ loadSettings()
                 _licenseState.value = LicenseState.Active("SUPER_MANAGER", Long.MAX_VALUE, serverNow, "SUPER_MANAGER_LIFETIME", true, serverNow)
                 return
             } catch (_: Exception) {
-                _isServerConnected.value = false
+                val authCheckCode = SelfHostedManager.lastManagerSessionCheckHttpCode
+                if (authCheckCode == 401 || authCheckCode == 403) {
+                    // Super Manager entitlement is lifetime, but the JWT is still time-limited.
+                    // An explicit rejection must clear the expired session and stop background
+                    // sync; subscription status alone cannot renew or authenticate that JWT.
+                    invalidateSavedManagerSession("نشست مدیر ارشد منقضی یا نامعتبر شده است؛ لطفاً دوباره وارد شوید.")
+                } else {
+                    // DNS/timeouts/5xx are not evidence that the saved token is invalid.
+                    // Preserve the local session and its business data for offline recovery.
+                    _isServerConnected.value = false
+                }
+                return
             }
         }
 

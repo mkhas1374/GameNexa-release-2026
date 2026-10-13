@@ -13,4 +13,11 @@ assert(/if \(hasServerManagerSession && !_isCustomerAuthenticated\.value\) \{[\s
 assert(block.indexOf("if (hasServerManagerSession && !_isCustomerAuthenticated.value)") < block.indexOf("_isAdminAuthenticated.value = true"), "the valid-session guard must precede authentication");
 assert(vm.includes('managerAuthInitializationReady.isCompleted') && vm.includes('!NetworkClient.managerAuthToken.isNullOrBlank()'), 'startup and reconnect sync must wait for a valid restored Manager session before protected API calls');
 assert(vm.includes('authCheckCode == 401 || authCheckCode == 403'), 'only an explicit auth rejection may erase a saved Manager session; network failures must preserve it');
-console.log("PASS: active subscription no longer authenticates a fresh install without a valid Manager session");
+const superStart = vm.indexOf('if (isSuper) {', vm.indexOf('suspend fun verifyLicenseStatus'));
+const superEnd = vm.indexOf('val isTrial = !isSuper', superStart);
+assert(superStart >= 0 && superEnd > superStart, 'Super Manager session validation block must exist');
+const superBlock = vm.slice(superStart, superEnd);
+assert(superBlock.includes('invalidateSavedManagerSession("نشست مدیر ارشد منقضی یا نامعتبر شده است؛ لطفاً دوباره وارد شوید.")'), 'expired Super Manager JWT must be invalidated');
+assert(superBlock.includes('authCheckCode == 401 || authCheckCode == 403'), 'Super Manager auth rejection must be distinguished from transport/server failures');
+assert(/catch \(_:\s*Exception\) \{[\s\S]*?return\s*\n\s*\}/.test(superBlock), 'failed Super Manager auth must return before subscription fallback can re-authorize the stale session');
+console.log("PASS: invalid/expired Manager and Super Manager sessions are cleared while network outages preserve local sessions");
