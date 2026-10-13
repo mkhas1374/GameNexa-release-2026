@@ -100,8 +100,16 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     val sessionHistory: StateFlow<List<SessionHistory>> = repository.allHistory
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    val customerTransactions: StateFlow<List<CustomerTransaction>> = repository.allCustomerTransactions
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    // The server is authoritative, but the invoice queue must react in the same frame as a
+    // successful finalization. Keep a short-lived overlay so a concurrent Room refresh cannot
+    // momentarily put the invoice back in UNREVIEWED while the server snapshot is arriving.
+    private val finalizedTransactionOverrides = MutableStateFlow<Map<Long, CustomerTransaction>>(emptyMap())
+    val customerTransactions: StateFlow<List<CustomerTransaction>> = combine(
+        repository.allCustomerTransactions,
+        finalizedTransactionOverrides
+    ) { rows, overrides ->
+        rows.map { row -> overrides[row.id] ?: row }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val unreviewedTransactions = customerTransactions.map { list ->
         list.filter { it.status == "UNREVIEWED" }
@@ -6916,22 +6924,28 @@ loadSettings()
                 val requestedLocalId = decisions.firstOrNull { d -> d.optLong("customerId", 0L) == cid }
                     ?.optLong("transactionId", 0L) ?: 0L
                 val responseLocalId = r.optLong("localTransactionId", 0L)
+                val idsMatch = { tx: CustomerTransaction ->
+                    (requestedLocalId > 0L && tx.id == requestedLocalId) ||
+                        (responseLocalId > 0L && tx.id == responseLocalId)
+                }
+                val participantMatches = { tx: CustomerTransaction ->
+                    if (cid > 0L) tx.customerId == cid || idsMatch(tx)
+                    else tx.customerId <= 0L && customerName.isNotBlank() && tx.customerName == customerName || idsMatch(tx)
+                }
                 val targets = all.filter { tx ->
-                    tx.status != "DELETED" &&
-                        (tx.sessionId == sessionId ||
-                            (requestedLocalId > 0L && tx.id == requestedLocalId) ||
-                            (responseLocalId > 0L && tx.id == responseLocalId)) &&
-                        if (cid > 0L) tx.customerId == cid
-                        else tx.customerId <= 0L && customerName.isNotBlank() && tx.customerName == customerName
+                    tx.status != "DELETED" && participantMatches(tx) &&
+                        (tx.sessionId == sessionId || idsMatch(tx) || tx.sessionId.isBlank())
                 }.distinctBy { it.id }
                 targets.forEach { tx ->
                     val paid = r.optLong("paidAmount", if (status == "REVIEWED") tx.amount else tx.paidAmount)
-                    repository.upsertCustomerTransactionLocal(tx.copy(
+                    val updated = tx.copy(
                         status = status,
                         paidAmount = paid,
                         earnedGn = r.optLong("earnedGn", 0L),
                         earnedLp = r.optLong("earnedLp", 0L)
-                    ))
+                    )
+                    repository.upsertCustomerTransactionLocal(updated)
+                    finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + (tx.id to updated)
                 }
             }
         }
@@ -6946,6 +6960,12 @@ loadSettings()
             runCatching {
                 if (repository.syncCustomerTransactionsFromServer()) {
                     applyFinalResultsToLocalRows()
+                    // Drop the overlay only after Room contains the same committed server state.
+                    val serverRows = repository.getAllCustomerTransactionsLocal().associateBy { it.id }
+                    finalizedTransactionOverrides.value = finalizedTransactionOverrides.value.filter { (id, override) ->
+                        val serverRow = serverRows[id]
+                        serverRow == null || serverRow.status != override.status || serverRow.paidAmount != override.paidAmount
+                    }
                 }
             }.onFailure {
                 android.util.Log.w("GameNetViewModel", "Post-finalize refresh deferred: ${it.message}")
