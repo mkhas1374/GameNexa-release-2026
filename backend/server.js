@@ -329,7 +329,7 @@ app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), a
                 SELECT c.*,
                     regexp_replace(translate(COALESCE(c.phone_number, ''), '۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789'), '[^0-9]', '', 'g') AS phone_digits
                 FROM customers c
-                WHERE ($1 IS NULL OR c.manager_id = $1)
+                WHERE ($1::text IS NULL OR c.manager_id::text = $1::text)
                   AND COALESCE(c.description, '') NOT LIKE '[GAMENEX_ARCHIVED:%'
             )
             SELECT * FROM candidates
