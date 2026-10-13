@@ -3188,6 +3188,7 @@ fun DebtorGroupCard(
     onDelete: (CustomerTransaction) -> Unit,
     viewModel: GameNetViewModel
 ) {
+    val context = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
     var isEditing by remember { mutableStateOf(false) }
     var inputAmount by remember { mutableStateOf("") }
