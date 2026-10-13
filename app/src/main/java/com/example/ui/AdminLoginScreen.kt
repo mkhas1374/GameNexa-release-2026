@@ -239,7 +239,7 @@ fun AdminLoginScreen(
                 Button(
                     onClick = {
                         val cleanUser = username.trim()
-                        val cleanPass = password.trim()
+                        val cleanPass = password
 
                         if (cleanUser.isBlank() || cleanPass.isBlank()) {
                             errorMessage = "لطفاً نام کاربری و رمز عبور را وارد کنید."

@@ -931,7 +931,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     fun authenticateAdmin(user: String, pass: String, onResult: (Boolean, String?) -> Unit) {
         _managerAuthInProgress.value = true
         val cleanUser = toEnglishDigits(user.trim())
-        val cleanPass = toEnglishDigits(pass.trim())
+        // Passwords are opaque secrets: never trim or digit-normalize them.
+        val cleanPass = pass
 
 
 
@@ -1188,7 +1189,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
     fun loginCustomer(phone: String, pass: String, onResult: (Boolean, String?) -> Unit) {
         val cleanPhone = toEnglishDigits(phone.trim())
-        val cleanPass = toEnglishDigits(pass.trim())
+        // The server verifies the exact password entered; do not trim or normalize its digits.
+        val cleanPass = pass
 
         if (cleanPhone.isBlank() || cleanPass.isBlank()) {
             onResult(false, "لطفاً شماره همراه و رمز عبور را وارد کنید.")
@@ -4387,7 +4389,12 @@ loadSettings()
         }
     }
 
-    fun updateCustomerTransactionPayment(transaction: CustomerTransaction, paidAmount: Long, newStatus: String) {
+    fun updateCustomerTransactionPayment(
+        transaction: CustomerTransaction,
+        paidAmount: Long,
+        newStatus: String,
+        onResult: (Boolean, String?) -> Unit = { _, _ -> }
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val custs = repository.allCustomers.firstOrNull() ?: emptyList()
@@ -4425,6 +4432,22 @@ loadSettings()
                 else -> "DEBTOR"
             }
             val normalizedPaidAmount = paidAmount.coerceIn(0L, finalTxAmount)
+
+            // A Manager invoice is not considered finalized until the backend acknowledges
+            // the exact status/payment update. Do not mutate Room, debt, GN or LP on rejection.
+            // Trial mode is intentionally local-only; walk-in guests still use the server.
+            val serverPayload = transaction.copy(
+                paidAmount = normalizedPaidAmount,
+                status = normalizedStatus,
+                amount = finalTxAmount
+            )
+            if (!NetworkClient.isTrialMode && !SelfHostedManager.updateManagerCustomerTransaction(serverPayload)) {
+                withContext(Dispatchers.Main) {
+                    onResult(false, "سرور ثبت فاکتور را نپذیرفت؛ ورود مدیریت و اتصال را بررسی کنید و دوباره تلاش کنید.")
+                }
+                return@launch
+            }
+
             if (cust != null) {
                 val oldOutstanding = (transaction.amount - transaction.paidAmount).coerceAtLeast(0L)
                 val newOutstanding = (finalTxAmount - normalizedPaidAmount).coerceAtLeast(0L)
@@ -4476,13 +4499,7 @@ loadSettings()
                     earnedLp = earnedLp
                 )
                 repository.updateCustomerTransaction(updated)
-                val serverUpdated = SelfHostedManager.updateManagerCustomerTransaction(updated)
-                if (serverUpdated) {
-                    repository.saveSetting("customer_transaction_outbox_${transaction.id}", "")
-                    // PATCH returned the authoritative server result; keep Room stable immediately.
-                } else {
-                    queueOrSyncCustomerTransaction(updated)
-                }
+                repository.saveSetting("customer_transaction_outbox_${transaction.id}", "")
                 repository.insertCustomer(updatedCust)
             } else {
                 val updated = transaction.copy(
@@ -4491,16 +4508,14 @@ loadSettings()
                     amount = finalTxAmount
                 )
                 repository.updateCustomerTransaction(updated)
-                val serverUpdated = SelfHostedManager.updateManagerCustomerTransaction(updated)
-                if (serverUpdated) {
-                    repository.saveSetting("customer_transaction_outbox_${transaction.id}", "")
-                    // PATCH returned the authoritative server result; keep Room stable immediately.
-                } else {
-                    queueOrSyncCustomerTransaction(updated)
-                }
+                repository.saveSetting("customer_transaction_outbox_${transaction.id}", "")
             }
+            withContext(Dispatchers.Main) { onResult(true, null) }
             } catch (e: Exception) {
                 android.util.Log.e("GameNexa", "Customer transaction settlement failed", e)
+                withContext(Dispatchers.Main) {
+                    onResult(false, "ثبت فاکتور ناموفق بود: ${e.message ?: "خطای نامشخص"}")
+                }
             }
         }
     }
@@ -6912,7 +6927,38 @@ loadSettings()
         // A successful HTTP response means the server committed the decision. Apply that
         // authoritative result to Room immediately so the queue changes without restarting.
         val result = SelfHostedManager.finalizeSettlementReview(sessionId, decisions) ?: return@withContext false
+        if (!result.optBoolean("success", true)) return@withContext false
         val results = result.optJSONArray("results") ?: org.json.JSONArray()
+
+        // Publish the server-acknowledged decision to the StateFlow overlay first. This is
+        // deliberately independent of Room writes so a local cache error cannot leave the
+        // invoice stuck in Unreviewed after the backend has committed it.
+        val visibleRows = customerTransactions.value
+        val immediateOverrides = mutableMapOf<Long, CustomerTransaction>()
+        decisions.forEach { decision ->
+            val localId = decision.optLong("transactionId", 0L)
+            if (localId <= 0L) return@forEach
+            val target = visibleRows.firstOrNull { tx ->
+                tx.id == localId && tx.status != "DELETED" &&
+                    (tx.sessionId == sessionId || tx.sessionId.isBlank())
+            } ?: return@forEach
+            val serverResult = (0 until results.length()).mapNotNull { results.optJSONObject(it) }
+                .firstOrNull { it.optLong("localTransactionId", 0L) == localId }
+            val requestedStatus = decision.optString("status", "REVIEWED").uppercase()
+            val status = serverResult?.optString("status", requestedStatus)?.uppercase()
+                ?: requestedStatus.let { if (it == "PARTIAL") "DEBTOR" else it }
+            val paid = serverResult?.optLong("paidAmount", decision.optLong("paidAmount", target.paidAmount))
+                ?: decision.optLong("paidAmount", if (status == "REVIEWED") target.amount else target.paidAmount)
+            immediateOverrides[target.id] = target.copy(
+                status = status,
+                paidAmount = paid,
+                earnedGn = serverResult?.optLong("earnedGn", target.earnedGn) ?: target.earnedGn,
+                earnedLp = serverResult?.optLong("earnedLp", target.earnedLp) ?: target.earnedLp
+            )
+        }
+        if (immediateOverrides.isNotEmpty()) {
+            finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + immediateOverrides
+        }
 
         suspend fun applyFinalResultsToLocalRows() {
             val all = repository.getAllCustomerTransactionsLocal()
@@ -6953,18 +6999,22 @@ loadSettings()
                         earnedGn = r.optLong("earnedGn", 0L),
                         earnedLp = r.optLong("earnedLp", 0L)
                     )
-                    repository.upsertCustomerTransactionLocal(updated)
                     finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + (tx.id to updated)
+                    runCatching { repository.upsertCustomerTransactionLocal(updated) }
+                        .onFailure { android.util.Log.e("GameNetViewModel", "Room invoice cache update deferred for id=${tx.id}", it) }
                 }
             }
         }
 
-        // Optimistic local update is immediate; the server response is the authority.
-        applyFinalResultsToLocalRows()
+        // Server commit is already authoritative. Cache reconciliation is best-effort and
+        // must never suppress the success callback or leave the dialog permanently submitting.
+        runCatching { applyFinalResultsToLocalRows() }
+            .onFailure { android.util.Log.e("GameNetViewModel", "Invoice committed but initial Room reconciliation failed", it) }
         // Older backend rows may return a normalized guest ID/name that cannot be joined to
-        // the original decision. Because the endpoint has already committed successfully, use
-        // the exact Room transaction IDs explicitly sent by this screen as a final local join.
-        val committedRows = repository.getAllCustomerTransactionsLocal()
+        // the original decision. Use exact Room transaction IDs as a final local join when available.
+        val committedRows = runCatching { repository.getAllCustomerTransactionsLocal() }
+            .onFailure { android.util.Log.e("GameNetViewModel", "Invoice committed but local rows could not be read", it) }
+            .getOrDefault(emptyList())
         decisions.forEach { decision ->
             val localId = decision.optLong("transactionId", 0L)
             if (localId <= 0L) return@forEach
@@ -6978,8 +7028,9 @@ loadSettings()
             val finalPaid = serverResult?.optLong("paidAmount", decision.optLong("paidAmount", target.paidAmount))
                 ?: decision.optLong("paidAmount", target.paidAmount)
             val updated = target.copy(status = finalStatus, paidAmount = finalPaid)
-            repository.upsertCustomerTransactionLocal(updated)
             finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + (target.id to updated)
+            runCatching { repository.upsertCustomerTransactionLocal(updated) }
+                .onFailure { android.util.Log.e("GameNetViewModel", "Invoice committed but explicit Room update failed for id=$localId", it) }
         }
 
         // A refresh replaces Room rows and can race the optimistic update. Re-apply the

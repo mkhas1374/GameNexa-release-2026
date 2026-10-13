@@ -162,10 +162,18 @@ class GameNetRepository(private val db: AppDatabase) {
 
     suspend fun syncAllWithServer(): Boolean {
         if (!isSyncModeEnabled()) return false
-        // Never perform Manager cloud synchronization before a server-authenticated
-        // Manager session exists. This prevents startup 401s and false Offline state.
+        // A non-empty cached JWT is not proof that the session is still valid. Validate it
+        // before a batch sync, otherwise every default product/console write can produce a
+        // burst of 401s after expiry or revocation.
         if (com.example.data.network.NetworkClient.authToken.isNullOrBlank() ||
             com.example.data.network.SelfHostedManager.currentManagerId.isBlank()) return false
+        if (!com.example.data.network.SelfHostedManager.checkAuthenticatedManagerSession()) {
+            android.util.Log.w(
+                "GameNexaSync",
+                "Skipped cloud batch: Manager session validation rejected (HTTP ${com.example.data.network.SelfHostedManager.lastManagerSessionCheckHttpCode})"
+            )
+            return false
+        }
         val api = getApi() ?: return false
         var anySyncSucceeded = false
 

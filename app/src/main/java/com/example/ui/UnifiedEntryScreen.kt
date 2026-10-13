@@ -592,11 +592,11 @@ fun UnifiedEntryScreen(
 
                     Button(
                         onClick = {
-                            if (adminUser.trim().isBlank() || adminPass.trim().isBlank()) {
+                            if (adminUser.trim().isBlank() || adminPass.isBlank()) {
                                 errorMessage = "لطفاً نام کاربری و رمز عبور را وارد کنید."
                                 return@Button
                             }
-                            viewModel.authenticateAdmin(adminUser.trim(), adminPass.trim()) { ok, msg ->
+                            viewModel.authenticateAdmin(adminUser.trim(), adminPass) { ok, msg ->
                                 if (!ok) {
                                     errorMessage = msg ?: "اطلاعات ورود مدیریت یا معاون اشتباه است."
                                 } else {

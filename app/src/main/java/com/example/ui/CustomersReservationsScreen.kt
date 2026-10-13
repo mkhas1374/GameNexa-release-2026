@@ -978,7 +978,11 @@ IconButton(
                                 transactions = transactions,
                                 lang = lang,
                                 onUpdateStatus = { trans, st -> onUpdateTransactionStatus(trans, st) },
-                                onUpdatePayment = { trans, pAmount, st, onResult -> onUpdateTransactionPayment(trans, pAmount, st, onResult) },
+                                onUpdatePayment = { trans, pAmount, st ->
+                                    onUpdateTransactionPayment(trans, pAmount, st) { success, message ->
+                                        if (!success) android.widget.Toast.makeText(context, message ?: "ثبت فاکتور ناموفق بود", android.widget.Toast.LENGTH_LONG).show()
+                                    }
+                                },
                                 onDelete = { trans -> onDeleteTransaction(trans) },
                                 viewModel = viewModel
                             )
@@ -1150,7 +1154,10 @@ fun CustomerTransactionCard(
                     isSubmitting = false
                     android.widget.Toast.makeText(viewModel.getApplication(), "مقدار بازگشت یا روش پرداخت برای یکی از مشتریان معتبر نیست.", android.widget.Toast.LENGTH_LONG).show()
                 } else {
-                    val ok = viewModel.finalizeSettlementReview(transaction.sessionId, (0 until decisions.length()).map { decisions.getJSONObject(it) })
+                    val ok = runCatching {
+                        viewModel.finalizeSettlementReview(transaction.sessionId, (0 until decisions.length()).map { decisions.getJSONObject(it) })
+                    }.onFailure { android.util.Log.e("GameNexaInvoice", "Invoice finalization callback failed", it) }
+                        .getOrDefault(false)
                     if (ok) {
                         // finalizeSettlementReview applies the server result to Room immediately
                         // and schedules an authoritative refresh in the background. Do NOT call the legacy

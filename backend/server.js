@@ -74,8 +74,14 @@ const requireSuperManagerAuth = async (req, res, next) => {
         const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
         if (decoded.role !== 'SUPER_MANAGER' || !decoded.id || !decoded.managerId || String(decoded.id) !== String(decoded.managerId)) return res.status(403).json({ error: 'Forbidden' });
         const account = await pool.query("SELECT id, role, token_version FROM managers WHERE id = $1 AND role = 'SUPER_MANAGER' LIMIT 1", [decoded.id]);
-        if (!account.rows.length) return res.status(401).json({ error: 'Manager account no longer exists' });
-        if (Number(account.rows[0].token_version || 1) !== Number(decoded.tv)) return res.status(401).json({ error: 'Session has been revoked', code: 'TOKEN_REVOKED' });
+        if (!account.rows.length) {
+            console.warn(`[manager-auth] rejected ${req.method} ${req.path}: manager_account_missing`);
+            return res.status(401).json({ error: 'Manager account no longer exists' });
+        }
+        if (Number(account.rows[0].token_version || 1) !== Number(decoded.tv)) {
+            console.warn(`[manager-auth] rejected ${req.method} ${req.path}: token_revoked`);
+            return res.status(401).json({ error: 'Session has been revoked', code: 'TOKEN_REVOKED' });
+        }
         const entitlement = await pool.query("SELECT 1 FROM manager_entitlements WHERE manager_id=$1 AND entitlement_type='SUPER_MANAGER_LIFETIME' AND status='ACTIVE' AND starts_at<=NOW() AND expires_at>NOW() LIMIT 1", [decoded.id]);
         if (!entitlement.rows.length) return res.status(403).json({ error: 'Active Super Manager entitlement required', code: 'SUPER_MANAGER_ENTITLEMENT_REQUIRED' });
         req.user = decoded;
@@ -88,25 +94,40 @@ const requireSuperManagerAuth = async (req, res, next) => {
 const requireManagerAuth = async (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !/^Bearer\s+\S+$/i.test(authHeader)) {
+        console.warn(`[manager-auth] rejected ${req.method} ${req.path}: missing_bearer`);
         return res.status(401).json({ error: 'No token provided' });
     }
-    const token = authHeader.slice(7).trim();
+
+    // Keep JWT parsing separate from database validation. A database exception must never
+    // be mislabeled as an invalid token (401), because clients then discard valid sessions.
+    let decoded;
     try {
-        const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
-        if (!['MANAGER', 'SUPER_MANAGER'].includes(decoded.role) || !decoded.id || !decoded.managerId || String(decoded.id) !== String(decoded.managerId) || !Number.isInteger(Number(decoded.tv))) {
-            return res.status(403).json({ error: 'Forbidden' });
-        }
-        const managerHeader = String(req.headers['x-manager-id'] || '').trim();
-        if (!managerHeader || managerHeader !== String(decoded.managerId)) {
-            return res.status(403).json({ error: 'Manager identity header mismatch' });
-        }
+        decoded = jwt.verify(authHeader.slice(7).trim(), JWT_SECRET, { algorithms: ['HS256'] });
+    } catch (e) {
+        const reason = e?.name === 'TokenExpiredError' ? 'token_expired' : (e?.name || 'token_invalid');
+        console.warn(`[manager-auth] rejected ${req.method} ${req.path}: ${reason}`);
+        return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    if (!['MANAGER', 'SUPER_MANAGER'].includes(decoded.role) || !decoded.id || !decoded.managerId || String(decoded.id) !== String(decoded.managerId) || !Number.isInteger(Number(decoded.tv))) {
+        console.warn(`[manager-auth] rejected ${req.method} ${req.path}: invalid_claims`);
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+    const managerHeader = String(req.headers['x-manager-id'] || '').trim();
+    if (!managerHeader || managerHeader !== String(decoded.managerId)) {
+        console.warn(`[manager-auth] rejected ${req.method} ${req.path}: manager_header_mismatch`);
+        return res.status(403).json({ error: 'Manager identity header mismatch' });
+    }
+
+    try {
         const account = await pool.query("SELECT id, role, token_version FROM managers WHERE id = $1 AND role = ANY($2::text[]) LIMIT 1", [decoded.id, ['MANAGER', 'SUPER_MANAGER']]);
         if (!account.rows.length) return res.status(401).json({ error: 'Manager account no longer exists' });
         if (Number(account.rows[0].token_version || 1) !== Number(decoded.tv)) return res.status(401).json({ error: 'Session has been revoked', code: 'TOKEN_REVOKED' });
         req.user = decoded;
-        next();
+        return next();
     } catch (e) {
-        return res.status(401).json({ error: 'Invalid token' });
+        console.error(`[manager-auth] account validation failed ${req.method} ${req.path}: ${e?.message || e}`);
+        return res.status(503).json({ error: 'Authentication validation unavailable', code: 'AUTH_VALIDATION_UNAVAILABLE' });
     }
 };
 
@@ -288,7 +309,10 @@ app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), a
     const rawPhone = String(req.body?.phone_number || req.body?.phoneNumber || req.body?.username || '').trim();
     const managerId = String(req.body?.manager_id || req.body?.managerId || '').trim();
     // Match common local/international phone formats without changing account passwords.
-    const digitsOnly = value => String(value || '').replace(/\D/g, '');
+    const digitsOnly = value => String(value || '')
+        .replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+        .replace(/[٠-٩]/g, d => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+        .replace(/\D/g, '');
     const rawDigits = digitsOnly(rawPhone);
     const localDigits = rawDigits.startsWith('0098') ? '0' + rawDigits.slice(4)
         : rawDigits.startsWith('98') ? '0' + rawDigits.slice(2) : rawDigits;
@@ -298,9 +322,12 @@ app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), a
     }
     try {
         const result = await pool.query(
-            "SELECT * FROM customers WHERE manager_id = $1 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' AND (phone_number = $2 OR regexp_replace(phone_number, '\\D', '', 'g') = $3 OR CASE WHEN regexp_replace(phone_number, '\\D', '', 'g') LIKE '98%' THEN '0' || substring(regexp_replace(phone_number, '\\D', '', 'g') from 3) ELSE regexp_replace(phone_number, '\\D', '', 'g') END = $4) LIMIT 1",
+            "SELECT * FROM customers WHERE manager_id = $1 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' AND (phone_number = $2 OR regexp_replace(phone_number, '\\D', '', 'g') = $3 OR CASE WHEN regexp_replace(phone_number, '\\D', '', 'g') LIKE '0098%' THEN '0' || substring(regexp_replace(phone_number, '\\D', '', 'g') from 5) WHEN regexp_replace(phone_number, '\\D', '', 'g') LIKE '98%' THEN '0' || substring(regexp_replace(phone_number, '\\D', '', 'g') from 3) ELSE regexp_replace(phone_number, '\\D', '', 'g') END = $4) LIMIT 2",
             [managerId, rawPhone, rawDigits, localDigits]
         );
+        if (result.rows.length > 1) {
+            return res.status(409).json({ error: 'Multiple customer records match this phone number; contact Manager', code: 'AMBIGUOUS_CUSTOMER_PHONE' });
+        }
         const customer = result.rows[0];
         if (!customer || !customer.password_hash) return res.status(401).json({ error: 'Invalid credentials' });
         const valid = await bcrypt.compare(password, customer.password_hash);

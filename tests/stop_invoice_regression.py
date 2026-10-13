@@ -33,7 +33,8 @@ ok(
 )
 ok(
     "Stop executes after dialog dismissal",
-    'LaunchedEffect(pendingStopOption)' in MAIN
+    'LaunchedEffect(showStationPauseDialog, pendingStopOption)' in MAIN
+    and 'if (showStationPauseDialog) return@LaunchedEffect' in MAIN
     and 'showStationPauseDialog = false' in MAIN
     and 'pendingStopOption = 2' in MAIN
     and 'pendingStopOption = 3' in MAIN
@@ -46,7 +47,7 @@ ok("Stop background sync cannot block local transition", 'runCatching { saveAndS
 # Invoice regression: server result must be applied to Room immediately, without a manual reload.
 finalize_body = VM[VM.find('suspend fun finalizeSettlementReview'):VM.find('suspend fun refundUnusedPrepayment')]
 ok("settlement finalization calls backend first", 'SelfHostedManager.finalizeSettlementReview(sessionId, decisions)' in finalize_body)
-ok("settlement result is written to Room immediately", 'repository.updateCustomerTransaction(tx.copy(status=status' in finalize_body)
+ok("server-acknowledged invoice state is overlaid before best-effort Room persistence", 'finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + (tx.id to updated)' in finalize_body and finalize_body.find('finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + (tx.id to updated)') < finalize_body.find('repository.upsertCustomerTransactionLocal(updated)'))
 ok("settlement refresh is background-only", 'viewModelScope.launch(Dispatchers.IO)' in finalize_body and 'syncCustomerTransactionsFromServer()' in finalize_body)
 ok("Done closes dialog after authoritative success", 'showPrepaymentDialog = false' in UI and 'if (ok)' in UI)
 ok("Done does not re-submit through legacy status updater", 'Do NOT call the legacy' in UI and 'onUpdateStatus(status)' not in UI[UI.find('if (ok)'):UI.find('if (ok)')+1500])

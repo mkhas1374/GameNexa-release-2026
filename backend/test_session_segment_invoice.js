@@ -47,4 +47,15 @@ assert(vm.includes('BUFFET_ORDER_GUARD station='), 'buffet operation must catch 
 assert(screen.includes('onIncrementProduct = { order -> viewModel.incrementBuffetOrder(station.id, order.productName, order.targetCustomerId, order.targetCustomerName)'), 'station order controls must preserve payer identity for targeted buffet orders');
 assert(vm.includes('targetCustomerName = targetCustomerName,') && vm.includes('sessionId = sessionId'), 'all buffet API call sites must provide session and payer identity');
 assert(fs.readFileSync(__dirname + '/server.js', 'utf8').includes("THEN $2::timestamptz ELSE NULL::timestamptz"), 'pause/resume must bind paused_at as timestamptz, not text');
+
+// Auth/login regression contracts: phone formats may normalize, but passwords remain opaque;
+// invalid JWT and database-validation failures must not be conflated into the same 401.
+assert(vm.includes('val cleanPass = pass'), 'Manager/customer login must not trim or digit-normalize passwords');
+assert(server.includes("replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))"), 'customer login must normalize Persian phone digits');
+assert(server.includes("LIKE '0098%' THEN '0' || substring"), 'customer login must normalize stored international 0098 phone formats');
+assert(server.includes('AMBIGUOUS_CUSTOMER_PHONE'), 'normalized duplicate phone identities must not select an arbitrary customer');
+assert(server.includes('AUTH_VALIDATION_UNAVAILABLE') && server.includes('account validation failed'), 'Manager auth database failures must return service-unavailable, not invalid-token 401');
+assert(server.includes('token_expired') && server.includes('missing_bearer'), 'Manager auth rejection logs must distinguish missing and expired tokens without logging credentials');
+assert(fs.readFileSync(__dirname + '/../app/src/main/java/com/example/data/GameNetRepository.kt', 'utf8').includes('checkAuthenticatedManagerSession()'), 'batch cloud sync must validate cached Manager JWT before writing products');
+
 console.log('PASS: segment commits reset current timer/cost, final settlement avoids duplicate segment charging, and invoices display per-customer segment details');
