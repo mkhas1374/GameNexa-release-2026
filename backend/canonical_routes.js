@@ -1262,7 +1262,13 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
               || (cid===0 ? guestPayers[0] : null))
           : (byId.get(cid) || participants.find(p => Number(p.customer_id||0)===cid && resolvedName && String(p.participant_name||'')===String(resolvedName)));
         if(!participant){await c.query('ROLLBACK');return res.status(422).json({error:'Customer is not a payer in this session',customerId:cid,transactionId:decisionTransactionId||null});}
-        const priorReview=(await c.query("SELECT refund_amount,method,status FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 AND customer_id=$3 LIMIT 1",[mid,sid,cid])).rows[0];
+        // Guest/walk-in payers have no real customer_id. Older app versions stored their
+        // review marker under customer_id=0, which accidentally made every guest in a session
+        // share the same idempotency marker. That caused later guests to take the retry path
+        // and could leave their own invoice UNREVIEWED. Only use the marker shortcut for real
+        // registered customers; guest decisions are safely idempotent through exact invoice and
+        // transaction identity plus the upserted audit marker below.
+        const priorReview=isGuestDecision ? null : (await c.query("SELECT refund_amount,method,status FROM session_review_refunds WHERE manager_id=$1 AND session_id=$2 AND customer_id=$3 LIMIT 1",[mid,sid,cid])).rows[0];
         if(priorReview){
           // Idempotency must not mean "skip repair". Older releases wrote the refund marker
           // before the invoice/transaction queue had converged, so a retry could return 200

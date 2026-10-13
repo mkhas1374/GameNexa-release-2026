@@ -13,6 +13,7 @@ assert(routes.includes("$5='' OR customer_name=$5"), 'older Android clients with
 assert(routes.includes('Number(linkedTxInSession ? linkedTx.amount : (inv.total_amount ?? (gameCost+buffetCost)))'), 'settlement paid amount must follow the payer total, not the component sum');
 assert(routes.includes(`customer_transactions.status IN ('REVIEWED','DEBTOR','PARTIAL') AND EXCLUDED.status='UNREVIEWED'`), 'stale sync must not downgrade finalized status');
 assert(routes.includes('retryGuestInvoiceNumber') && routes.includes('invoice_number=$5 AND customer_id IS NULL'), 'guest retries must finalize only the invoice for that exact participant key');
+assert(routes.includes('const priorReview=isGuestDecision ? null :'), 'guest invoices must not share the legacy customer_id=0 idempotency marker');
 assert(routes.includes('Idempotency must not mean'), 'idempotent retries must repair stale invoice/transaction status');
 assert((routes.match(/CASE WHEN \$1::varchar='REVIEWED'/g) || []).length >= 5, 'settlement retry SQL must cast the repeated status parameter consistently to avoid PostgreSQL inconsistent parameter type errors');
 assert(routes.includes('Legacy sessions may have invoices/transactions but no participant rows'), 'legacy sessions without participant rows must use the actual invoice identity');
@@ -26,6 +27,7 @@ assert(!viewModel.includes('val exact = if (txId > 0L)'), 'server IDs must not b
 
 assert(routes.includes('localTransactionId:Number(exactTransaction?.local_id||resolvedTx?.local_id||0)'), 'finalization response must carry Room local_id so every invoice row can update without an app restart');
 assert(viewModel.includes('responseLocalId > 0L && tx.id == responseLocalId'), 'local invoice rows must match finalization by the Room local_id returned from the server');
+assert(viewModel.includes('exact Room transaction IDs explicitly sent by this screen') && viewModel.includes('decisions.forEach { decision ->'), 'committed finalization must update the exact selected Room invoice even when legacy guest IDs cannot be joined');
 assert(screen.includes('val payableAmount = transaction.amount.toDouble().coerceAtLeast(0.0)'), 'full debtor settlement must pay the persisted invoice total rather than reapplying a preview discount');
 assert(routes.includes('Match local_id together with payer/session identity first'), 'legacy transaction updates must resolve local_id without numeric ID collisions');
 assert(routes.includes('NOT $6::boolean OR'), 'older clients without payer identity must still resolve local_id while newer clients use identity constraints');

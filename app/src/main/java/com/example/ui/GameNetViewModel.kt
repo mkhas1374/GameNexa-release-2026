@@ -6921,9 +6921,18 @@ loadSettings()
                 val cid = r.optLong("customerId", 0L)
                 val customerName = r.optString("customerName", "")
                 val status = r.optString("status", "REVIEWED").uppercase()
-                val requestedLocalId = decisions.firstOrNull { d -> d.optLong("customerId", 0L) == cid }
-                    ?.optLong("transactionId", 0L) ?: 0L
                 val responseLocalId = r.optLong("localTransactionId", 0L)
+                // Guest IDs may be normalized by the backend (legacy 0, synthetic negative
+                // ID, or payer ID reconstructed from an invoice). Match by the returned Room
+                // local_id first, then by exact payer name; customerId alone is not unique for
+                // historical walk-in invoices.
+                val matchedDecision = decisions.firstOrNull { d ->
+                    val decisionTransactionId = d.optLong("transactionId", 0L)
+                    (responseLocalId > 0L && decisionTransactionId == responseLocalId) ||
+                        (cid > 0L && d.optLong("customerId", 0L) == cid) ||
+                        (customerName.isNotBlank() && d.optString("customerName", "") == customerName)
+                }
+                val requestedLocalId = matchedDecision?.optLong("transactionId", 0L) ?: 0L
                 val idsMatch = { tx: CustomerTransaction ->
                     (requestedLocalId > 0L && tx.id == requestedLocalId) ||
                         (responseLocalId > 0L && tx.id == responseLocalId)
@@ -6952,6 +6961,26 @@ loadSettings()
 
         // Optimistic local update is immediate; the server response is the authority.
         applyFinalResultsToLocalRows()
+        // Older backend rows may return a normalized guest ID/name that cannot be joined to
+        // the original decision. Because the endpoint has already committed successfully, use
+        // the exact Room transaction IDs explicitly sent by this screen as a final local join.
+        val committedRows = repository.getAllCustomerTransactionsLocal()
+        decisions.forEach { decision ->
+            val localId = decision.optLong("transactionId", 0L)
+            if (localId <= 0L) return@forEach
+            val decisionStatus = decision.optString("status", "REVIEWED").uppercase()
+                .let { if (it == "PARTIAL") "DEBTOR" else it }
+            val target = committedRows.firstOrNull { it.id == localId && it.status != "DELETED" && (it.sessionId == sessionId || it.sessionId.isBlank()) }
+                ?: return@forEach
+            val serverResult = (0 until results.length()).mapNotNull { results.optJSONObject(it) }
+                .firstOrNull { it.optLong("localTransactionId", 0L) == localId }
+            val finalStatus = serverResult?.optString("status", decisionStatus)?.uppercase() ?: decisionStatus
+            val finalPaid = serverResult?.optLong("paidAmount", decision.optLong("paidAmount", target.paidAmount))
+                ?: decision.optLong("paidAmount", target.paidAmount)
+            val updated = target.copy(status = finalStatus, paidAmount = finalPaid)
+            repository.upsertCustomerTransactionLocal(updated)
+            finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + (target.id to updated)
+        }
 
         // A refresh replaces Room rows and can race the optimistic update. Re-apply the
         // final server decision after refresh completes, so no stale queue state survives
