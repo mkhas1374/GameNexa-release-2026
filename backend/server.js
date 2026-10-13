@@ -294,7 +294,7 @@ app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), a
         : rawDigits.startsWith('98') ? '0' + rawDigits.slice(2) : rawDigits;
     const password = req.body?.password;
     if (!rawPhone || !managerId || typeof password !== 'string') {
-        return res.status(400).json({ error: 'phone_number, manager_id and password are required' });
+        return res.status(400).json({ error: 'phone_number, manager_id, password are required' });
     }
     try {
         const result = await pool.query(
