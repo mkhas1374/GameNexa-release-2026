@@ -450,7 +450,9 @@ object SelfHostedManager {
     suspend fun loginCustomer(phoneNumberOrUsername: String, passwordText: String): Result<Customer> = withContext(Dispatchers.IO) {
         try {
             val cleanInput = toEnglishDigits(phoneNumberOrUsername.trim())
-            val cleanPass = toEnglishDigits(passwordText.trim())
+            // Passwords are opaque secrets: never normalize digits or trim them. Doing so
+            // makes passwords containing Persian/Arabic digits fail against the stored hash.
+            val cleanPass = passwordText
             val normInput = normalizePhone(phoneNumberOrUsername)
 
             if (cleanInput.isBlank() || cleanPass.isBlank()) {
