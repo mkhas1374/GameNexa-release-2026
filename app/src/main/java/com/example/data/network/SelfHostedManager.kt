@@ -459,14 +459,13 @@ object SelfHostedManager {
                 return@withContext Result.failure(Exception("لطفاً نام کاربری/شماره همراه و رمز عبور را وارد کنید."))
             }
 
+            // Manager context is optional for the phone+password login screen. When absent,
+            // the server resolves the tenant from the matching credentials; when present, it
+            // remains an explicit tenant constraint.
             val managerId = currentManagerId.trim()
-            if (managerId.isBlank()) {
-                return@withContext Result.failure(Exception("شناسه مدیر برای ورود مشتری مشخص نشده است."))
-            }
-
             val jsonBody = JSONObject().apply {
                 put("phone_number", normInput.ifBlank { cleanInput })
-                put("manager_id", managerId)
+                if (managerId.isNotBlank()) put("manager_id", managerId)
                 put("password", cleanPass)
             }
 
@@ -485,7 +484,8 @@ object SelfHostedManager {
             val auth = JSONObject(body)
             val token = auth.optString("token", "")
             val customerId = auth.optLong("customerId", 0L)
-            if (token.isBlank() || customerId <= 0L) {
+            val authenticatedManagerId = auth.optString("managerId", auth.optString("manager_id", managerId)).trim()
+            if (token.isBlank() || customerId <= 0L || authenticatedManagerId.isBlank()) {
                 return@withContext Result.failure(Exception("پاسخ احراز هویت مشتری معتبر نیست."))
             }
 
@@ -503,7 +503,7 @@ object SelfHostedManager {
             }
 
             val cust = parseCustomerObject(JSONObject(profileBody))
-            setManagerId(managerId)
+            setManagerId(authenticatedManagerId)
             _currentLoggedInCustomer.value = cust
             _isConnected.value = true
             return@withContext Result.success(cust)

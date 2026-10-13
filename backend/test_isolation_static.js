@@ -16,8 +16,9 @@ assert(financial.includes('WHERE id = $1 AND manager_id = $2'), 'pricing must sc
 assert(financial.includes('AND manager_id = $2 AND customer_id = $3'), 'payment ownership must scope reservation by manager and customer');
 assert(financial.includes('AND customer_id = $3 FOR UPDATE'), 'customer cancellation must scope reservation by customer');
 assert(reservation.includes('WHERE id = $1 AND manager_id = $2 FOR UPDATE'), 'reservation creation must verify customer tenant');
-assert(server.includes('phone_number, manager_id, password'), 'customer login must require a password');
-assert(server.includes("customer.password_hash"), 'customer login must verify a stored password hash');
+const customerLoginRoute = server.slice(server.indexOf("app.post('/api/auth/customer/login'"), server.indexOf('\n});', server.indexOf("app.post('/api/auth/customer/login'")) + 4);
+assert(customerLoginRoute.includes('phone_number and password are required') && !customerLoginRoute.includes('!managerId ||'), 'customer login must require phone/password while allowing manager_id to be resolved securely when absent');
+assert(server.includes('candidate.password_hash') && server.includes('bcrypt.compare(password, candidate.password_hash)'), 'customer login must verify the exact password against stored hashes');
 assert(canonical.includes("/api/v1/manager/customers"), 'canonical manager customer route must exist');
 assert(!server.includes("/api/manager/customers/:id/password"), 'legacy manager customer password route must be removed');
 

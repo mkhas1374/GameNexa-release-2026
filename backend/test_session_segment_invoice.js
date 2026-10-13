@@ -53,7 +53,10 @@ assert(fs.readFileSync(__dirname + '/server.js', 'utf8').includes("THEN $2::time
 assert(vm.includes('val cleanPass = pass'), 'Manager/customer login must not trim or digit-normalize passwords');
 assert(server.includes("replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))"), 'customer login must normalize Persian phone digits');
 assert(server.includes("LIKE '0098%' THEN '0' || substring"), 'customer login must normalize stored international 0098 phone formats');
-assert(server.includes('AMBIGUOUS_CUSTOMER_PHONE'), 'normalized duplicate phone identities must not select an arbitrary customer');
+assert(server.includes('AMBIGUOUS_CUSTOMER_LOGIN'), 'phone+password must resolve exactly one customer tenant when Manager ID is omitted');
+assert(server.includes('managerId: customer.manager_id'), 'customer login response must provide the resolved Manager scope for subsequent customer requests');
+assert(fs.readFileSync(__dirname + '/../app/src/main/java/com/example/ui/UnifiedEntryScreen.kt', 'utf8').includes('viewModel.loginCustomer(custPhone.trim(), custPassword)'), 'customer login UI must not trim the password before server verification');
+assert(!fs.readFileSync(__dirname + '/../app/src/main/java/com/example/data/network/SelfHostedManager.kt', 'utf8').includes('شناسه مدیر برای ورود مشتری مشخص نشده است'), 'customer login must not require a pre-existing Manager session');
 assert(server.includes('AUTH_VALIDATION_UNAVAILABLE') && server.includes('account validation failed'), 'Manager auth database failures must return service-unavailable, not invalid-token 401');
 assert(server.includes('token_expired') && server.includes('missing_bearer'), 'Manager auth rejection logs must distinguish missing and expired tokens without logging credentials');
 assert(fs.readFileSync(__dirname + '/../app/src/main/java/com/example/data/GameNetRepository.kt', 'utf8').includes('checkAuthenticatedManagerSession()'), 'batch cloud sync must validate cached Manager JWT before writing products');

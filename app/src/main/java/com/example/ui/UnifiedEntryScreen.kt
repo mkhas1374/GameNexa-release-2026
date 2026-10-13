@@ -464,12 +464,13 @@ fun UnifiedEntryScreen(
 
                     Button(
                         onClick = {
-                            if (custPhone.trim().isBlank() || custPassword.trim().isBlank()) {
+                            if (custPhone.trim().isBlank() || custPassword.isBlank()) {
                                 errorMessage = "لطفاً شماره همراه و رمز عبور را وارد کنید."
                                 return@Button
                             }
                             isLoggingIn = true
-                            viewModel.loginCustomer(custPhone.trim(), custPassword.trim()) { success, msg ->
+                            // Keep the password byte-for-byte as entered; only the phone is normalized.
+                            viewModel.loginCustomer(custPhone.trim(), custPassword) { success, msg ->
                                 isLoggingIn = false
                                 if (!success) {
                                     errorMessage = msg ?: "خطا در ورود به حساب"

@@ -308,7 +308,7 @@ app.post('/api/auth/customer/register', rateLimit({ windowMs: 60_000, max: 5 }),
 app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), async (req, res) => {
     const rawPhone = String(req.body?.phone_number || req.body?.phoneNumber || req.body?.username || '').trim();
     const managerId = String(req.body?.manager_id || req.body?.managerId || '').trim();
-    // Match common local/international phone formats without changing account passwords.
+    // Normalize ASCII, Persian and Arabic digits consistently on both input and stored values.
     const digitsOnly = value => String(value || '')
         .replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
         .replace(/[٠-٩]/g, d => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
@@ -317,25 +317,52 @@ app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), a
     const localDigits = rawDigits.startsWith('0098') ? '0' + rawDigits.slice(4)
         : rawDigits.startsWith('98') ? '0' + rawDigits.slice(2) : rawDigits;
     const password = req.body?.password;
-    if (!rawPhone || !managerId || typeof password !== 'string' || password.length === 0) {
-        return res.status(400).json({ error: 'phone_number, manager_id, password are required' });
+    if (!rawPhone || typeof password !== 'string' || password.length === 0) {
+        return res.status(400).json({ error: 'phone_number and password are required' });
     }
     try {
+        // A standalone customer login may not have a Manager session or manager_id field.
+        // In that case match phone+password across candidate tenants, and only issue a token
+        // when exactly one credential pair matches. A supplied Manager ID remains a hard scope.
         const result = await pool.query(
-            "SELECT * FROM customers WHERE manager_id = $1 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' AND (phone_number = $2 OR regexp_replace(phone_number, '\\D', '', 'g') = $3 OR CASE WHEN regexp_replace(phone_number, '\\D', '', 'g') LIKE '0098%' THEN '0' || substring(regexp_replace(phone_number, '\\D', '', 'g') from 5) WHEN regexp_replace(phone_number, '\\D', '', 'g') LIKE '98%' THEN '0' || substring(regexp_replace(phone_number, '\\D', '', 'g') from 3) ELSE regexp_replace(phone_number, '\\D', '', 'g') END = $4) LIMIT 2",
-            [managerId, rawPhone, rawDigits, localDigits]
+            `WITH candidates AS (
+                SELECT c.*,
+                    regexp_replace(translate(COALESCE(c.phone_number, ''), '۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789'), '[^0-9]', '', 'g') AS phone_digits
+                FROM customers c
+                WHERE ($1 IS NULL OR c.manager_id = $1)
+                  AND COALESCE(c.description, '') NOT LIKE '[GAMENEX_ARCHIVED:%'
+            )
+            SELECT * FROM candidates
+            WHERE phone_number = $2
+               OR phone_digits = $3
+               OR CASE
+                    WHEN phone_digits LIKE '0098%' THEN '0' || substring(phone_digits from 5)
+                    WHEN phone_digits LIKE '98%' THEN '0' || substring(phone_digits from 3)
+                    ELSE phone_digits
+                  END = $4
+            LIMIT 51`,
+            [managerId || null, rawPhone, rawDigits, localDigits]
         );
-        if (result.rows.length > 1) {
-            return res.status(409).json({ error: 'Multiple customer records match this phone number; contact Manager', code: 'AMBIGUOUS_CUSTOMER_PHONE' });
+        // Bound bcrypt work if this phone is duplicated across an unreasonable number of tenants.
+        if (result.rows.length > 50) {
+            return res.status(409).json({ error: 'Invalid credentials', code: 'AMBIGUOUS_CUSTOMER_LOGIN' });
         }
-        const customer = result.rows[0];
-        if (!customer || !customer.password_hash) return res.status(401).json({ error: 'Invalid credentials' });
-        const valid = await bcrypt.compare(password, customer.password_hash);
-        if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
-
+        const matchingCustomers = [];
+        for (const candidate of result.rows) {
+            if (typeof candidate.password_hash !== 'string' || candidate.password_hash.length === 0) continue;
+            if (await bcrypt.compare(password, candidate.password_hash)) matchingCustomers.push(candidate);
+        }
+        if (matchingCustomers.length !== 1) {
+            if (matchingCustomers.length > 1) {
+                return res.status(409).json({ error: 'Invalid credentials', code: 'AMBIGUOUS_CUSTOMER_LOGIN' });
+            }
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        const customer = matchingCustomers[0];
         const token = jwt.sign({ id: customer.id, managerId: customer.manager_id, role: 'CUSTOMER', tv: Number(customer.token_version || 1) }, JWT_SECRET, { expiresIn: '24h' });
-        res.json({ token, customerId: customer.id });
+        res.json({ token, customerId: customer.id, managerId: customer.manager_id, manager_id: customer.manager_id });
     } catch (e) {
+        console.error('[customer-login] failed:', e?.message || e);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
