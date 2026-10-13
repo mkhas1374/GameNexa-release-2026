@@ -27,7 +27,7 @@ assert(!viewModel.includes('val exact = if (txId > 0L)'), 'server IDs must not b
 
 assert(routes.includes('localTransactionId:Number(exactTransaction?.local_id||resolvedTx?.local_id||0)'), 'finalization response must carry Room local_id so every invoice row can update without an app restart');
 assert(viewModel.includes('responseLocalId > 0L && tx.id == responseLocalId'), 'local invoice rows must match finalization by the Room local_id returned from the server');
-assert(viewModel.includes('exact Room transaction IDs explicitly sent by this screen') && viewModel.includes('decisions.forEach { decision ->'), 'committed finalization must update the exact selected Room invoice even when legacy guest IDs cannot be joined');
+assert(viewModel.includes('decisions.forEach { decision ->') && viewModel.includes('val localId = decision.optLong("transactionId", 0L)') && viewModel.includes('immediateOverrides[target.id] = target.copy('), 'committed finalization must overlay the exact selected Room invoice before best-effort local persistence, even when legacy guest IDs cannot be joined');
 assert(screen.includes('val payableAmount = transaction.amount.toDouble().coerceAtLeast(0.0)'), 'full debtor settlement must pay the persisted invoice total rather than reapplying a preview discount');
 assert(routes.includes('Match local_id together with payer/session identity first'), 'legacy transaction updates must resolve local_id without numeric ID collisions');
 assert(routes.includes('NOT $6::boolean OR'), 'older clients without payer identity must still resolve local_id while newer clients use identity constraints');
