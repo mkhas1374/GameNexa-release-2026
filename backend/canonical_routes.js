@@ -1273,15 +1273,15 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
           const retryPaid=Math.max(0,Math.trunc(Number(d.paidAmount||0)));
           if(isGuestDecision){
             if(linkedTxInSession && Number(linkedTx.id||0)>0){
-              await c.query("UPDATE customer_transactions SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN amount ELSE LEAST(amount,$2) END,session_id=COALESCE(session_id,$3),updated_at=NOW() WHERE id=$4 AND manager_id=$5 AND status<>'DELETED'",[retryStatus,retryPaid,sid,Number(linkedTx.id),mid]);
+              await c.query("UPDATE customer_transactions SET status=$1,paid_amount=CASE WHEN $1::varchar='REVIEWED' THEN amount ELSE LEAST(amount,$2) END,session_id=COALESCE(session_id,$3),updated_at=NOW() WHERE id=$4 AND manager_id=$5 AND status<>'DELETED'",[retryStatus,retryPaid,sid,Number(linkedTx.id),mid]);
             }else{
-              await c.query("UPDATE customer_transactions SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN amount ELSE LEAST(amount,$2) END,session_id=COALESCE(session_id,$3),updated_at=NOW() WHERE manager_id=$4 AND session_id=$3 AND customer_id IS NULL AND customer_name=$5 AND status<>'DELETED'",[retryStatus,retryPaid,sid,mid,participant.participant_name]);
+              await c.query("UPDATE customer_transactions SET status=$1,paid_amount=CASE WHEN $1::varchar='REVIEWED' THEN amount ELSE LEAST(amount,$2) END,session_id=COALESCE(session_id,$3),updated_at=NOW() WHERE manager_id=$4 AND session_id=$3 AND customer_id IS NULL AND customer_name=$5 AND status<>'DELETED'",[retryStatus,retryPaid,sid,mid,participant.participant_name]);
             }
             const retryGuestInvoiceNumber='GN-'+sid+'-'+String(participant.participant_key||('guest-'+(-cid))).replace(/[^A-Za-z0-9_-]/g,'_');
-            await c.query("UPDATE invoices SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN total_amount ELSE LEAST(total_amount,$2) END,updated_at=NOW() WHERE manager_id=$3 AND session_id=$4 AND invoice_number=$5 AND customer_id IS NULL",[retryStatus,retryPaid,mid,sid,retryGuestInvoiceNumber]);
+            await c.query("UPDATE invoices SET status=$1,paid_amount=CASE WHEN $1::varchar='REVIEWED' THEN total_amount ELSE LEAST(total_amount,$2) END,updated_at=NOW() WHERE manager_id=$3 AND session_id=$4 AND invoice_number=$5 AND customer_id IS NULL",[retryStatus,retryPaid,mid,sid,retryGuestInvoiceNumber]);
           }else{
-            await c.query("UPDATE customer_transactions SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN amount ELSE LEAST(amount,$2) END,session_id=COALESCE(session_id,$3),updated_at=NOW() WHERE manager_id=$4 AND session_id=$3 AND customer_id=$5 AND status<>'DELETED'",[retryStatus,retryPaid,sid,mid,cid]);
-            await c.query("UPDATE invoices SET status=$1,paid_amount=CASE WHEN $1='REVIEWED' THEN total_amount ELSE LEAST(total_amount,$2) END,updated_at=NOW() WHERE manager_id=$3 AND session_id=$4 AND customer_id=$5",[retryStatus,retryPaid,mid,sid,cid]);
+            await c.query("UPDATE customer_transactions SET status=$1,paid_amount=CASE WHEN $1::varchar='REVIEWED' THEN amount ELSE LEAST(amount,$2) END,session_id=COALESCE(session_id,$3),updated_at=NOW() WHERE manager_id=$4 AND session_id=$3 AND customer_id=$5 AND status<>'DELETED'",[retryStatus,retryPaid,sid,mid,cid]);
+            await c.query("UPDATE invoices SET status=$1,paid_amount=CASE WHEN $1::varchar='REVIEWED' THEN total_amount ELSE LEAST(total_amount,$2) END,updated_at=NOW() WHERE manager_id=$3 AND session_id=$4 AND customer_id=$5",[retryStatus,retryPaid,mid,sid,cid]);
           }
           const rg=Number((await c.query("SELECT COALESCE(SUM(amount),0) amount FROM gn_ledger WHERE manager_id=$1 AND customer_id=$2 AND reference_type='SESSION_REVIEW' AND reference_id=$3 AND type='CREDIT'",[mid,cid,sid])).rows[0].amount||0);
           const rl=Number((await c.query("SELECT COALESCE(SUM(amount),0) amount FROM lp_ledger WHERE manager_id=$1 AND customer_id=$2 AND reference_type='SESSION_REVIEW' AND reference_id=$3 AND type='CREDIT'",[mid,cid,sid])).rows[0].amount||0);

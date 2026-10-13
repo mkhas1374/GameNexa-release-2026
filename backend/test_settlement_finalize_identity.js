@@ -14,6 +14,7 @@ assert(routes.includes('Number(linkedTxInSession ? linkedTx.amount : (inv.total_
 assert(routes.includes(`customer_transactions.status IN ('REVIEWED','DEBTOR','PARTIAL') AND EXCLUDED.status='UNREVIEWED'`), 'stale sync must not downgrade finalized status');
 assert(routes.includes('retryGuestInvoiceNumber') && routes.includes('invoice_number=$5 AND customer_id IS NULL'), 'guest retries must finalize only the invoice for that exact participant key');
 assert(routes.includes('Idempotency must not mean'), 'idempotent retries must repair stale invoice/transaction status');
+assert((routes.match(/CASE WHEN \$1::varchar='REVIEWED'/g) || []).length >= 5, 'settlement retry SQL must cast the repeated status parameter consistently to avoid PostgreSQL inconsistent parameter type errors');
 assert(routes.includes('Legacy sessions may have invoices/transactions but no participant rows'), 'legacy sessions without participant rows must use the actual invoice identity');
 assert(routes.includes('legacyTx.forEach'), 'legacy sessions without invoice snapshots must fall back to transaction identity');
 assert(routes.includes('status:retryStatus,paidAmount:retryPaid,idempotent:true'), 'idempotent response must return authoritative status and paid amount, not refund-marker status');
