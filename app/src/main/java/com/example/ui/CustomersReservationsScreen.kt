@@ -889,7 +889,11 @@ IconButton(
                                 transactions = transList,
                                 lang = lang,
                                 onUpdateStatus = { trans, st -> onUpdateTransactionStatus(trans, st) },
-                                onUpdatePayment = { trans, pAmount, st -> onUpdateTransactionPayment(trans, pAmount, st) },
+                                onUpdatePayment = { trans, pAmount, st ->
+                                    onUpdateTransactionPayment(trans, pAmount, st) { success, message ->
+                                        if (!success) android.widget.Toast.makeText(context, message ?: "ثبت فاکتور ناموفق بود", android.widget.Toast.LENGTH_LONG).show()
+                                    }
+                                },
                                 onDelete = { trans -> onDeleteTransaction(trans) },
                                 viewModel = viewModel
                             )
