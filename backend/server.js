@@ -283,10 +283,10 @@ app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), a
     const rawDigits = digitsOnly(rawPhone);
     const localDigits = rawDigits.startsWith('0098') ? '0' + rawDigits.slice(4)
         : rawDigits.startsWith('98') ? '0' + rawDigits.slice(2) : rawDigits;
-    if (!rawPhone || !managerId || typeof req.body?.password !== 'string') {
+    const password = req.body?.password;
+    if (!rawPhone || !managerId || typeof password !== 'string') {
         return res.status(400).json({ error: 'phone_number, manager_id and password are required' });
     }
-    const password = req.body.password;
     try {
         const result = await pool.query(
             "SELECT * FROM customers WHERE manager_id = $1 AND COALESCE(description,'') NOT LIKE '[GAMENEX_ARCHIVED:%' AND (phone_number = $2 OR regexp_replace(phone_number, '\\D', '', 'g') = $3 OR CASE WHEN regexp_replace(phone_number, '\\D', '', 'g') LIKE '98%' THEN '0' || substring(regexp_replace(phone_number, '\\D', '', 'g') from 3) ELSE regexp_replace(phone_number, '\\D', '', 'g') END = $4) LIMIT 1",
