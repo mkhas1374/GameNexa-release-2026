@@ -357,8 +357,8 @@ fun AuthDialog(
                                 localErrorMessage = if (isFa) "لطفاً آدرس ایمیل معتبر (مثال: name@domain.com) وارد کنید." else "Please enter a valid email."
                                 return@Button
                             }
-                            if (regPassword.trim().length < 4) {
-                                localErrorMessage = if (isFa) "رمز عبور باید حداقل 4 کاراکتر باشد." else "Password must be at least 4 characters."
+                            if (regPassword.trim().length < 8) {
+                                localErrorMessage = if (isFa) "رمز عبور باید حداقل 8 کاراکتر باشد." else "Password must be at least 4 characters."
                                 return@Button
                             }
                             if (regPassword != regConfirmPassword) {

@@ -35,14 +35,17 @@ fun InvoiceCard(
         0L
     }
 
-    val totalBill = if (trans.paidAmount > 0L) trans.paidAmount else trans.amount
+    // The invoice total is the contractual amount. paidAmount is only what has
+    // been received so far and must never replace the invoice total.
+    val totalBill = trans.amount
     val effectiveGameCost = if (trans.gameCost > 0) {
         trans.gameCost
     } else {
         (totalBill - effectiveFoodCost).coerceAtLeast(0L)
     }
 
-    val isDebtor = trans.status == "DEBTOR"
+    val isFullyPaid = trans.amount >= 0L && trans.paidAmount >= trans.amount
+    val isDebtor = !isFullyPaid
 
     Surface(
         shape = RoundedCornerShape(8.dp),

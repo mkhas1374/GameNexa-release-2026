@@ -68,7 +68,7 @@ class GameNetRepository(private val db: AppDatabase) {
         val id = gnLedgerDao.insert(entry)
         try {
             com.example.data.network.SelfHostedManager.addGnLedgerEntry(entry.copy(id = id))
-        } catch (ignored: Exception) {}
+        } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", ignored) }
         return id
     }
 
@@ -76,7 +76,7 @@ class GameNetRepository(private val db: AppDatabase) {
         gnLedgerDao.update(entry)
         try {
             com.example.data.network.SelfHostedManager.addGnLedgerEntry(entry)
-        } catch (ignored: Exception) {}
+        } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", ignored) }
     }
 
     suspend fun getAllBehaviorRulesList(): List<BehaviorRule> = behaviorRuleDao.getAllRulesList()
@@ -124,7 +124,7 @@ class GameNetRepository(private val db: AppDatabase) {
         if (com.example.data.network.NetworkClient.isTrialMode) return
         try {
             com.example.data.network.SelfHostedManager.addPointLog(log)
-        } catch (ignored: Exception) {}
+        } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", ignored) }
     }
 
     suspend fun getInviteCodeRecord(phone: String, name: String): InviteCodeRecord? {
@@ -146,6 +146,10 @@ class GameNetRepository(private val db: AppDatabase) {
         saveSetting("server_url", secureDefault)
         return "$secureDefault/"
     }
+
+    private fun managerAuthReady(): Boolean =
+        !NetworkClient.managerAuthToken.isNullOrBlank() &&
+            com.example.data.network.SelfHostedManager.currentManagerId.isNotBlank()
 
     suspend fun getApi(): com.example.data.network.GameNetApi? {
         return try {
@@ -186,7 +190,7 @@ class GameNetRepository(private val db: AppDatabase) {
                     for (c in defaultConsoles) consoleTypeDao.insert(c)
                 }
                 for (c in consolesToSync) {
-                    try { api.saveConsoleType(c) } catch (_: Exception) {}
+                    try { api.saveConsoleType(c) } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", e) }
                 }
             }
             anySyncSucceeded = true
@@ -226,7 +230,7 @@ class GameNetRepository(private val db: AppDatabase) {
                     for (p in defaultProducts) productDao.insert(p)
                 }
                 for (p in prodsToSync) {
-                    try { api.saveProduct(p) } catch (_: Exception) {}
+                    try { api.saveProduct(p) } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", e) }
                 }
             }
             anySyncSucceeded = true
@@ -234,55 +238,84 @@ class GameNetRepository(private val db: AppDatabase) {
 
         // 3. Stations
         try {
-            val remoteStations = api.getStations()
+            // station_count is an explicit Manager configuration and is authoritative.
+            // Never let the physical station-row count (including stale legacy rows)
+            // silently replace the configured hall capacity after app relaunch.
+            try {
+                val remoteConfiguredCount = com.example.data.network.SelfHostedManager
+                    .fetchAppConfig("station_count")
+                    ?.toIntOrNull()
+                if (remoteConfiguredCount != null && remoteConfiguredCount > 0) {
+                    appSettingDao.insert(AppSetting("station_count", remoteConfiguredCount.toString()))
+                }
+            } catch (ignored: Exception) {
+                android.util.Log.w("GameNexa", "Could not refresh authoritative station_count", ignored)
+            }
+            val configuredStationCount = appSettingDao.getValue("station_count")
+                ?.toIntOrNull()
+                ?.takeIf { it > 0 }
+            val remoteStationsRaw = api.getStations()
+            val remoteStations = if (configuredStationCount != null) {
+                remoteStationsRaw.sortedBy { it.id }.take(configuredStationCount)
+            } else {
+                remoteStationsRaw
+            }
             if (remoteStations.isNotEmpty()) {
                 stationStateDao.clearAll()
                 stationStateDao.insertAll(remoteStations)
                 // Server is authoritative. Clear the complete local buffet-order cache first.
                 // A FREE/disabled station must never display or upload an old order.
                 for (st in remoteStations) stationOrderDao.clearForStation(st.id)
-                // Update local setting to match the number of active stations, not disabled rows.
-                saveSetting("station_count", remoteStations.count { it.status != "DISABLED" }.toString())
+                // Station rows are the physical resources; station_count is an explicit Manager setting.
+                // Do not overwrite the Manager setting from a transient/legacy station-row count.
                 for (st in remoteStations) {
                     if (st.status == "FREE" || st.status == "DISABLED") continue
                     try {
                         val orders = api.getOrders(st.id)
                         if (orders.isNotEmpty()) stationOrderDao.insertAll(orders)
-                    } catch (ignored: Exception) {}
+                    } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", ignored) }
                 }
             } else {
                 val localStations = stationStateDao.getAll().firstOrNull() ?: emptyList()
                 if (localStations.isNotEmpty()) {
                     for (st in localStations) {
-                        try { api.saveStation(st) } catch (_: Exception) {}
+                        try { api.saveStation(st) } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", e) }
                     }
                 } else {
                     val firstConsole = consoleTypeDao.getAll().firstOrNull()?.firstOrNull()?.name ?: "PlayStation 5"
                     recreateStations(10, firstConsole)
                     val created = stationStateDao.getAll().firstOrNull() ?: emptyList()
                     for (st in created) {
-                        try { api.saveStation(st) } catch (_: Exception) {}
+                        try { api.saveStation(st) } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", e) }
                     }
                 }
             }
             anySyncSucceeded = true
         } catch (e: Exception) { e.printStackTrace() }
 
-        // 4. Customers
+        // 4. Customers — server-authoritative reconciliation.
+        // A successful GET is authoritative even when it returns an empty list.
+        // Do not leave archived/deleted customers visible in Room after sync.
         if (!com.example.data.network.NetworkClient.isTrialMode) {
             try {
                 val remoteCustomers = api.getCustomers()
-                if (remoteCustomers.isNotEmpty()) {
-                    val localCustomers = customerDao.getAllList()
-                    for (remote in remoteCustomers) {
-                        val existing = localCustomers.find { it.phoneNumber == remote.phoneNumber || it.id == remote.id }
-                        if (existing != null) {
-                            customerDao.insert(remote.copy(id = existing.id)) // Update existing to prevent duplicates
-                        } else {
-                            customerDao.insert(remote)
-                        }
+                val localCustomers = customerDao.getAllList()
+                for (remote in remoteCustomers) {
+                    val existing = localCustomers.find { it.phoneNumber == remote.phoneNumber || it.id == remote.id }
+                    if (existing != null && existing.id != remote.id) {
+                        migrateLocalCustomerId(existing.id, remote.id)
+                        customerDao.deleteById(existing.id)
                     }
+                    customerDao.insert(remote)
                 }
+
+                val remotePhones = remoteCustomers.map { it.phoneNumber.trim() }.filter { it.isNotBlank() }.toSet()
+                if (remoteCustomers.isEmpty()) {
+                    customerDao.clearAll()
+                } else if (remotePhones.isNotEmpty()) {
+                    customerDao.deleteCustomersMissingFromServerPhones(remotePhones.toList())
+                }
+                anySyncSucceeded = true
             } catch (e: Exception) { e.printStackTrace() }
         }
 
@@ -314,20 +347,40 @@ class GameNetRepository(private val db: AppDatabase) {
     val allStationStates: Flow<List<StationState>> = stationStateDao.getAll()
     suspend fun getStationStateByIdLocal(id: Int): StationState? = stationStateDao.getById(id)
     suspend fun getStationStateById(id: Int): StationState? {
-        val local = stationStateDao.getById(id)
-        if (local != null) return local
         if (isSyncModeEnabled()) {
             try {
+                // Online reads are server-authoritative. Only fall back to Room when
+                // the server read actually fails, so remote status/pricing changes
+                // cannot remain hidden behind a stale local row.
                 val remote = getApi()?.getStations()?.find { it.id == id }
                 if (remote != null) {
-                    stationStateDao.insert(remote)
-                    return remote
+                    val local = stationStateDao.getById(id)
+                    // /manager/stations is a configuration resource, not the live
+                    // session resource. Its status is derived from `active` and is
+                    // therefore FREE for an enabled station. Never let that config
+                    // response overwrite a locally tracked RUNNING/PAUSED session.
+                    val merged = if (local != null && local.status in setOf("RUNNING", "PAUSED") && remote.status == "FREE") {
+                        local.copy(
+                            controllerCount = remote.controllerCount,
+                            consoleType = remote.consoleType.ifBlank { local.consoleType }
+                        )
+                    } else {
+                        remote
+                    }
+                    stationStateDao.insert(merged)
+                    return merged
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
-        return null
+        return stationStateDao.getById(id)
+    }
+
+    // Local cache writes used by server-authoritative hydration. These methods deliberately
+    // do not call the network; hydration must never echo server data back as a mutation.
+    suspend fun insertStationStateLocal(state: StationState) {
+        stationStateDao.insert(state)
     }
 
     suspend fun insertStationState(state: StationState) {
@@ -369,7 +422,9 @@ class GameNetRepository(private val db: AppDatabase) {
     suspend fun getConsoleTypeByName(name: String) = consoleTypeDao.getByName(name)
     suspend fun insertConsoleType(consoleType: ConsoleType) {
         consoleTypeDao.insert(consoleType)
-        if (isSyncModeEnabled()) {
+        // Keep local edits durable, but never emit an unauthenticated Manager mutation.
+        // The next authenticated sync will reconcile this local value with the server.
+        if (isSyncModeEnabled() && managerAuthReady()) {
             try {
                 getApi()?.saveConsoleType(consoleType)
             } catch (e: Exception) {
@@ -380,7 +435,7 @@ class GameNetRepository(private val db: AppDatabase) {
 
     suspend fun deleteConsoleType(name: String) {
         consoleTypeDao.deleteByName(name)
-        if (isSyncModeEnabled()) {
+        if (isSyncModeEnabled() && managerAuthReady()) {
             try {
                 getApi()?.deleteConsoleType(name)
             } catch (e: Exception) {
@@ -396,7 +451,9 @@ class GameNetRepository(private val db: AppDatabase) {
     suspend fun getProductByName(name: String) = productDao.getByName(name)
     suspend fun insertProduct(product: Product) {
         productDao.insert(product)
-        if (isSyncModeEnabled()) {
+        // Keep local edits durable, but never emit an unauthenticated Manager mutation.
+        // The next authenticated sync will reconcile this local value with the server.
+        if (isSyncModeEnabled() && managerAuthReady()) {
             try {
                 getApi()?.saveProduct(product)
             } catch (e: Exception) {
@@ -407,7 +464,7 @@ class GameNetRepository(private val db: AppDatabase) {
 
     suspend fun deleteProduct(name: String) {
         productDao.deleteByName(name)
-        if (isSyncModeEnabled()) {
+        if (isSyncModeEnabled() && managerAuthReady()) {
             try {
                 getApi()?.deleteProduct(name)
             } catch (e: Exception) {
@@ -440,7 +497,15 @@ class GameNetRepository(private val db: AppDatabase) {
                 ordersArray.put(pJson)
             }
             com.example.data.network.SelfHostedManager.syncStationToCloud(state, ordersArray.toString())
-        } catch (ignored: Exception) {}
+        } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", ignored) }
+    }
+
+    suspend fun insertStationOrderLocal(order: StationOrder) {
+        stationOrderDao.insert(order)
+    }
+
+    suspend fun clearOrdersForStationLocal(stationId: Int) {
+        stationOrderDao.clearForStation(stationId)
     }
 
     suspend fun insertStationOrder(order: StationOrder) {
@@ -531,7 +596,7 @@ class GameNetRepository(private val db: AppDatabase) {
             !com.example.data.network.NetworkClient.authToken.isNullOrBlank() &&
             com.example.data.network.SelfHostedManager.currentManagerId.isNotBlank()) {
             try {
-                getApi()?.saveSetting(mapOf("key" to key, "value" to value))
+                com.example.data.network.SelfHostedManager.saveManagerSetting(key, value)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -704,6 +769,33 @@ class GameNetRepository(private val db: AppDatabase) {
         stationStateDao.insertAll(newStates)
     }
 
+    private suspend fun migrateLocalCustomerId(oldId: Long, newId: Long) {
+        if (oldId <= 0L || newId <= 0L || oldId == newId) return
+        gnLedgerDao.migrateCustomerId(oldId, newId)
+        pointLogDao.migrateCustomerId(oldId, newId)
+        behaviorLogDao.migrateCustomerId(oldId, newId)
+        val stations = stationStateDao.getAll().firstOrNull().orEmpty()
+        for (station in stations) {
+            fun replaceIds(raw: String): String {
+                if (raw.isBlank()) return raw
+                return raw.split(",").joinToString(",") { token ->
+                    if (token.trim().toLongOrNull() == oldId) newId.toString() else token.trim()
+                }
+            }
+            val newSelected = replaceIds(station.selectedCustomerIdsStr)
+            val newPayers = replaceIds(station.payerCustomerIdsStr)
+            val newPrepayments = if (station.customerPrepaymentsJson.isBlank()) "" else {
+                station.customerPrepaymentsJson.split(",").joinToString(",") { token ->
+                    val parts = token.split(":", limit = 2)
+                    if (parts.size == 2 && parts[0].trim().toLongOrNull() == oldId) "\${newId}:\${parts[1].trim()}" else token.trim()
+                }
+            }
+            if (newSelected != station.selectedCustomerIdsStr || newPayers != station.payerCustomerIdsStr || newPrepayments != station.customerPrepaymentsJson) {
+                stationStateDao.insert(station.copy(selectedCustomerIdsStr = newSelected, payerCustomerIdsStr = newPayers, customerPrepaymentsJson = newPrepayments))
+            }
+        }
+    }
+
     // Customers
     fun getMockTrialCustomers(): List<Customer> {
         // Compatibility only; Trial UI now reads the persistent Room customer table.
@@ -741,24 +833,35 @@ class GameNetRepository(private val db: AppDatabase) {
 
             val matchByPhone = if (trimmedPhone.isNotBlank()) existingLocal.find { it.phoneNumber.trim() == trimmedPhone } else null
             val matchById = existingLocal.find { it.id == cloud.id && cloud.id > 0L }
-            val matchByName = if (trimmedName.isNotBlank()) existingLocal.find { it.fullName.trim().equals(trimmedName, ignoreCase = true) } else null
-
-            val targetLocal = matchByPhone ?: matchById ?: matchByName
+            val targetLocal = matchByPhone ?: matchById
             if (targetLocal != null) {
-                val updated = targetLocal.copy(
+                if (targetLocal.id != cloud.id && cloud.id > 0L) {
+                    migrateLocalCustomerId(targetLocal.id, cloud.id)
+                    customerDao.deleteById(targetLocal.id)
+                }
+                val updated = cloud.copy(
                     fullName = if (cloud.fullName.isNotBlank()) cloud.fullName else targetLocal.fullName,
                     phoneNumber = if (cloud.phoneNumber.isNotBlank()) cloud.phoneNumber else targetLocal.phoneNumber,
-                    password = "",
                     debt = cloud.debt,
                     credit = cloud.credit,
                     points = cloud.points,
-                    description = if (cloud.description.isNotBlank()) cloud.description else targetLocal.description,
+                    availableGn = cloud.availableGn,
+                    pendingGn = cloud.pendingGn,
+                    lp = cloud.lp,
+                    tier = if (cloud.tier.isNotBlank()) cloud.tier else targetLocal.tier,
+                    lastActivityTimestamp = cloud.lastActivityTimestamp,
+                    totalQualifiedSpend = cloud.totalQualifiedSpend,
+                    totalVisitsCount = cloud.totalVisitsCount,
+                    lastTierReviewTimestamp = cloud.lastTierReviewTimestamp,
                     inviteCode = if (cloud.inviteCode.isNotBlank()) cloud.inviteCode else targetLocal.inviteCode,
-                    invitedByCode = if (cloud.invitedByCode.isNotBlank()) cloud.invitedByCode else targetLocal.invitedByCode
+                    invitedByCode = if (cloud.invitedByCode.isNotBlank()) cloud.invitedByCode else targetLocal.invitedByCode,
+                    invitePointsAwarded = cloud.invitePointsAwarded,
+                    rewardsConsumed = cloud.rewardsConsumed,
+                    description = if (cloud.description.isNotBlank()) cloud.description else targetLocal.description
                 )
                 customerDao.insert(updated)
             } else {
-                customerDao.insert(cloud.copy(password = ""))
+                customerDao.insert(cloud)
             }
         }
 
@@ -768,7 +871,7 @@ class GameNetRepository(private val db: AppDatabase) {
         for (entry in groupedByPhone) {
             val group = entry.value
             if (group.size > 1) {
-                val sorted = group.sortedByDescending { (if (it.password.isNotBlank()) 10 else 0) + (if (it.credit > 0 || it.debt > 0) 5 else 0) - it.id }
+                val sorted = group.sortedByDescending { (if (it.credit > 0 || it.debt > 0) 5 else 0) - it.id }
                 val toDelete = sorted.drop(1)
                 for (dupe in toDelete) {
                     customerDao.delete(dupe)
@@ -778,48 +881,48 @@ class GameNetRepository(private val db: AppDatabase) {
     }
 
     suspend fun insertCustomer(customer: Customer): Long {
-        val localId = customerDao.insert(customer.copy(password = ""))
-        val finalCust = if (customer.id == 0L) customer.copy(id = localId) else customer
+        val localId = customerDao.insert(customer)
         if (com.example.data.network.NetworkClient.isTrialMode) return if (customer.id == 0L) localId else customer.id
+        // Existing server IDs are already canonical. Keep ordinary local edits instant; the
+        // Manager ViewModel owns their explicit background cloud sync.
+        if (customer.id >= 100_000L) return customer.id
         try {
-            com.example.data.network.SelfHostedManager.upsertCustomer(finalCust)
-        } catch (ignored: Exception) {}
+            val canonical = com.example.data.network.SelfHostedManager.upsertCustomerCanonical(customer)
+            if (canonical != null && canonical.id > 0L && canonical.id != customer.id) {
+                migrateLocalCustomerId(if (customer.id > 0L) customer.id else localId, canonical.id)
+                customerDao.deleteById(if (customer.id > 0L) customer.id else localId)
+                customerDao.insert(canonical)
+                return canonical.id
+            }
+        } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Customer canonical sync failed", ignored) }
         if (isSyncModeEnabled()) {
             try {
-                getApi()?.saveCustomer(finalCust)
+                getApi()?.saveCustomer(customer)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
-        return localId
+        return if (customer.id == 0L) localId else customer.id
     }
 
     suspend fun deleteCustomer(customer: Customer) = withContext(Dispatchers.IO) {
         if (com.example.data.network.NetworkClient.isTrialMode) return@withContext
-        try {
-            customerDao.delete(customer)
-            customerTransactionDao.deleteByCustomerId(customer.id)
-            if (customer.phoneNumber.isNotBlank()) {
-                reservationDao.deleteByPhone(customer.phoneNumber)
-                reservationDao.deleteByPhone(com.example.data.network.SelfHostedManager.normalizePhone(customer.phoneNumber))
-            }
-            pointLogDao.deleteByCustomerId(customer.id)
-            gnLedgerDao.deleteByCustomerId(customer.id)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        try {
-            com.example.data.network.SelfHostedManager.deleteCustomer(customer.id, customer.phoneNumber)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        if (isSyncModeEnabled()) {
-            try {
-                getApi()?.deleteCustomer(customer.id)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        // Local-first archive. Network synchronization is handled by GameNetViewModel so
+        // the Manager UI never waits on a remote request.
+        customerDao.delete(customer)
+    }
+
+    suspend fun purgeCustomerLocally(customer: Customer) = withContext(Dispatchers.IO) {
+        if (com.example.data.network.NetworkClient.isTrialMode) return@withContext
+        val originalPhone = Regex("original_phone=([^ ]+)").find(customer.description)?.groupValues?.getOrNull(1).orEmpty()
+        customerDao.delete(customer)
+        customerTransactionDao.deleteByCustomerId(customer.id)
+        pointLogDao.deleteByCustomerId(customer.id)
+        gnLedgerDao.deleteByCustomerId(customer.id)
+        behaviorLogDao.deleteByCustomerId(customer.id)
+        referralProgressRecordDao.deleteByCustomerId(customer.id)
+        if (customer.phoneNumber.isNotBlank()) reservationDao.deleteByPhone(customer.phoneNumber)
+        if (originalPhone.isNotBlank()) reservationDao.deleteByPhone(originalPhone)
     }
 
     suspend fun deleteCustomersBatch(customers: List<Customer>) = withContext(Dispatchers.IO) {
@@ -906,6 +1009,15 @@ class GameNetRepository(private val db: AppDatabase) {
         }
     }
     suspend fun getAllCustomerTransactionsLocal(): List<CustomerTransaction> = customerTransactionDao.getAllList()
+    suspend fun syncCustomerTransactionsFromServer(): Boolean = withContext(Dispatchers.IO) {
+        val remote = com.example.data.network.SelfHostedManager.fetchManagerCustomerTransactions()
+            ?: return@withContext false
+        // Replace local history only after a successful authenticated response.
+        customerTransactionDao.clearAll()
+        if (remote.isNotEmpty()) customerTransactionDao.insertAll(remote)
+        true
+    }
+
 
     fun getTransactionsByCustomerId(customerId: Long): Flow<List<CustomerTransaction>> =
         customerTransactionDao.getByCustomerId(customerId)
@@ -914,10 +1026,29 @@ class GameNetRepository(private val db: AppDatabase) {
         customerTransactionDao.insert(transaction)
 
     suspend fun updateCustomerTransaction(transaction: CustomerTransaction) =
-        customerTransactionDao.update(transaction)
+        // Use REPLACE/upsert rather than @Update. The server transaction id and the
+        // pre-server local Room id are not guaranteed to be identical; upsert guarantees
+        // the authoritative result is observable by the Flow immediately.
+        customerTransactionDao.insert(transaction)
 
-    suspend fun deleteCustomerTransaction(transaction: CustomerTransaction) =
+    suspend fun upsertCustomerTransactionLocal(transaction: CustomerTransaction) =
+        customerTransactionDao.insert(transaction)
+
+    suspend fun deleteCustomerTransactionLocal(transaction: CustomerTransaction) = withContext(Dispatchers.IO) {
         customerTransactionDao.delete(transaction)
+    }
+
+    suspend fun restoreCustomerTransactionLocal(transaction: CustomerTransaction) = withContext(Dispatchers.IO) {
+        customerTransactionDao.insert(transaction)
+    }
+
+    suspend fun deleteCustomerTransaction(transaction: CustomerTransaction): Boolean = withContext(Dispatchers.IO) {
+        if (!com.example.data.network.NetworkClient.isTrialMode && transaction.id > 0L) {
+            if (!com.example.data.network.SelfHostedManager.deleteManagerCustomerTransaction(transaction.id)) return@withContext false
+        }
+        customerTransactionDao.delete(transaction)
+        true
+    }
 
     // License Cache
     suspend fun getLicenseCache(): LicenseCacheEntity? = licenseCacheDao.getLicenseCache()
@@ -957,7 +1088,7 @@ class GameNetRepository(private val db: AppDatabase) {
                         }
                     }
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", e) }
         }
 
         return@withContext com.example.data.network.NetworkClient.getApi().getSuperManagers()
@@ -1060,7 +1191,7 @@ class GameNetRepository(private val db: AppDatabase) {
                 if (parsed != null) return@withContext parsed
             }
             throw Exception("Failed to parse manager response")
-        } catch (_: Exception) {}
+        } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetRepository.kt", e) }
 
         if (lastStatusCode in 200..299) {
             throw Exception("Failed to parse manager response")

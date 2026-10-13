@@ -748,7 +748,7 @@ fun BaseGnRulesSubScreen(viewModel: GameNetViewModel, lang: String) {
                     OutlinedTextField(
                         value = gameRewardInput,
                         onValueChange = { gameRewardInput = it },
-                        label = { Text(if (lang == "fa") "GN بازی (به ازای 100هزار تومان)" else "Game GN (per 100k T)", fontSize = 10.sp) },
+                        label = { Text(if (lang == "fa") "GN بازی (به ازای 10,000 تومان)" else "Game GN (per 10k T)", fontSize = 10.sp) },
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
@@ -757,7 +757,7 @@ fun BaseGnRulesSubScreen(viewModel: GameNetViewModel, lang: String) {
                     OutlinedTextField(
                         value = buffetRewardInput,
                         onValueChange = { buffetRewardInput = it },
-                        label = { Text(if (lang == "fa") "GN بوفه (به ازای 100هزار تومان)" else "Buffet GN (per 100k T)", fontSize = 10.sp) },
+                        label = { Text(if (lang == "fa") "GN بوفه (به ازای 10,000 تومان)" else "Buffet GN (per 10k T)", fontSize = 10.sp) },
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
@@ -874,8 +874,8 @@ fun BaseGnRulesSubScreen(viewModel: GameNetViewModel, lang: String) {
 
                         Button(
                             onClick = {
-                                val g = gameRewardInput.toLongOrNull() ?: 100L
-                                val b = buffetRewardInput.toLongOrNull() ?: 50L
+                                val g = gameRewardInput.toLongOrNull() ?: 10L
+                                val b = buffetRewardInput.toLongOrNull() ?: 5L
                                 val r = refRewardInput.toLongOrNull() ?: 100L
                                 val rq = refQualInput.toLongOrNull() ?: 100000L
                                 val gt = gnTomanRateInput.toLongOrNull() ?: 400L
@@ -3092,10 +3092,12 @@ fun CustomerHistoryModalDialog(
 @Composable
 fun LpRulesSubScreen(viewModel: GameNetViewModel, lang: String) {
     val lpTomanRate by viewModel.lpTomanRate.collectAsState()
+    val buffetLpPer10000 by viewModel.buffetLpPer10000.collectAsState()
     val customers by viewModel.customers.collectAsState()
     val behaviorRules by viewModel.allBehaviorRules.collectAsState()
 
     var lpRateInput by remember(lpTomanRate) { mutableStateOf(lpTomanRate.toInt().toString()) }
+    var buffetLpInput by remember(buffetLpPer10000) { mutableStateOf(buffetLpPer10000.toInt().toString()) }
     var showAddLpRuleDialog by remember { mutableStateOf(false) }
     var editingLpRule by remember { mutableStateOf<BehaviorRule?>(null) }
     
@@ -3138,8 +3140,8 @@ fun LpRulesSubScreen(viewModel: GameNetViewModel, lang: String) {
                 }
 
                 Text(
-                    text = if (lang == "fa") "تعیین کنید به ازای پرداخت چه مبلغی از طرف مشتری (بازی یا بوفه)، 1 امتیاز LP اعطا شود:"
-                    else "Specify how much money spent by customer (gaming or buffet) grants 1 LP point:",
+                    text = if (lang == "fa") "نرخ LP بازی را تعیین کنید؛ نرخ LP بوفه در فیلد جداگانه قابل تنظیم است:"
+                    else "Set the game LP grant rate; buffet LP has a separate configurable rate:",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -3168,6 +3170,33 @@ fun LpRulesSubScreen(viewModel: GameNetViewModel, lang: String) {
                         Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(if (lang == "fa") "ذخیره نرخ LP" else "Save LP Rate", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = buffetLpInput,
+                        onValueChange = { buffetLpInput = it },
+                        label = { Text(if (lang == "fa") "LP بوفه (به ازای 10,000 تومان)" else "Buffet LP (per 10k Toman)", fontSize = 10.sp) },
+                        modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        shape = RoundedCornerShape(8.dp)
+                    )
+                    Button(
+                        onClick = {
+                            val rate = buffetLpInput.toLongOrNull()?.coerceAtLeast(0L) ?: 5L
+                            viewModel.saveBuffetLpPer10000(rate)
+                        },
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(if (lang == "fa") "ذخیره LP بوفه" else "Save Buffet LP", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
 

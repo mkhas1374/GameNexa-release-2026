@@ -286,7 +286,7 @@ fun openAppInfoSettings(context: Context) {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
-        } catch (ex: Exception) {}
+        } catch (ex: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in FirstLaunchGuide.kt", ex) }
     }
 }
 

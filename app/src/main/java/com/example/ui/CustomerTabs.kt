@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.*
 import com.example.data.network.SelfHostedManager
+import com.example.util.JalaliCalendarHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -244,7 +245,7 @@ fun CustomerWalletTab(viewModel: GameNetViewModel) {
                         ) {
                             Text("امتیاز باشگاه (LP)", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(
-                                text = "${numberFormat.format(matchedCustomer.points)} LP",
+                                text = "${numberFormat.format(matchedCustomer.lp)} LP",
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Black,
                                 color = MaterialTheme.colorScheme.secondary
@@ -568,12 +569,8 @@ fun CustomerHistoryTab(viewModel: GameNetViewModel) {
 
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
-                                val earnedGnPoints = remember(trans) {
-                                    val playHours = trans.playMinutes / 60.0
-                                    val pPts = playHours * 20.0
-                                    val sPts = (trans.amount / 1000.0) * 1.0
-                                    (pPts + sPts).toInt()
-                                }
+                                val earnedGnPoints = trans.earnedGn
+                                val earnedLpPoints = trans.earnedLp
 
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
@@ -591,6 +588,22 @@ fun CustomerHistoryTab(viewModel: GameNetViewModel) {
                                             Text("پاداش GN دریافتی این نشست:", fontSize = 11.sp, color = Color(0xFF3B82F6), fontWeight = FontWeight.Bold)
                                         }
                                         Text("+$earnedGnPoints GN", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF3B82F6))
+                                    }
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFF42A5F5).copy(alpha = 0.10f),
+                                    border = BorderStroke(0.5.dp, Color(0xFF42A5F5).copy(alpha = 0.3f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("🏆 LP دریافتی از این نشست:", fontSize = 11.sp, color = Color(0xFF1565C0), fontWeight = FontWeight.Bold)
+                                        Text("+$earnedLpPoints LP", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF1565C0))
                                     }
                                 }
 
@@ -644,6 +657,7 @@ fun CustomerHistoryTab(viewModel: GameNetViewModel) {
                                                 appendLine("✅ وضعیت: تسویه کامل")
                                             }
                                             appendLine("💎 پاداش GN کسب شده: +$earnedGnPoints GN")
+                                            appendLine("🏆 پاداش LP کسب شده: +$earnedLpPoints LP")
                                             appendLine("================================")
                                             appendLine("    با تشکر از حضور گرم شما!")
                                         }
@@ -849,7 +863,17 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
     var showSuccessDialog by remember { mutableStateOf(false) }
     var successMessage by remember { mutableStateOf("") }
     var selectedPrice by remember { mutableDoubleStateOf(0.0) }
+    var selectedIsVip by remember { mutableStateOf(false) }
     var lastReservationId by remember { mutableLongStateOf(0L) }
+    var showStationReservations by remember { mutableStateOf(false) }
+    var stationReservationRows by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    var showJalaliDatePicker by remember { mutableStateOf(false) }
+    val todayJalali = remember { com.example.util.JalaliCalendarHelper.currentJalali() }
+    var selectedJalali by remember { mutableStateOf(todayJalali) }
+    val jalaliMonths = listOf("فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور","مهر","آبان","آذر","دی","بهمن","اسفند")
+    val customerTier = currentCustomerAuth?.tier?.uppercase().orEmpty()
+    val directVipAllowed = customerTier == "GOLD" || customerTier == "DIAMOND"
+
     var lastReservationAmount by remember { mutableLongStateOf(0L) }
     var paymentMethodText by remember { mutableStateOf("") }
     var paymentTrackingCode by remember { mutableStateOf("") }
@@ -892,25 +916,27 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
         val a = rulesObject.optJSONArray("normalDurationsMinutes") ?: org.json.JSONArray()
         buildList { for (i in 0 until a.length()) if (a.optInt(i) > 0) add(a.optInt(i)) }
     }
+    val vipMinDuration = rulesObject.optInt("vipMinDurationMinutes", 180)
     val vipDurations = remember(rulesObject) {
         val a = rulesObject.optJSONArray("vipDurationsMinutes") ?: org.json.JSONArray()
-        buildList { for (i in 0 until a.length()) if (a.optInt(i) > 0) add(a.optInt(i)) }
+        buildList { for (i in 0 until a.length()) if (a.optInt(i) >= vipMinDuration) add(a.optInt(i)) }
     }
+    val durationOptions = if (selectedIsVip) vipDurations else normalDurations
     val cancellation = remember(rulesObject) { rulesObject.optJSONObject("cancellation") ?: org.json.JSONObject() }
     val messages = remember(rulesObject) { rulesObject.optJSONObject("messages") ?: org.json.JSONObject() }
     val selectedDurationLabel = remember(selectedDuration) {
         if (selectedDuration <= 0) "انتخاب نشده" else if (selectedDuration % 60 == 0) "${selectedDuration / 60} ساعت" else "$selectedDuration دقیقه"
     }
     val selectedStartLabel = remember(selectedStartMillis) {
-        if (selectedStartMillis <= 0L) "زمان شروع را انتخاب کنید" else SimpleDateFormat("yyyy/MM/dd - HH:mm", Locale.US).apply { timeZone = TimeZone.getTimeZone("Asia/Tehran") }.format(Date(selectedStartMillis))
+        if (selectedStartMillis <= 0L) "زمان شروع را انتخاب کنید" else JalaliCalendarHelper.formatJalaliDateTime(selectedStartMillis)
     }
 
-    LaunchedEffect(selectedStationId, selectedDuration, selectedPlayerCount, selectedStartMillis) {
-        if (selectedStationId > 0 && selectedDuration > 0 && selectedStartMillis > 0L) {
+    LaunchedEffect(selectedStationId, selectedDuration, selectedPlayerCount, selectedStartMillis, selectedIsVip) {
+        if (selectedDuration > 0 && selectedStartMillis > 0L && (selectedIsVip || selectedStationId > 0)) {
             val preview = SelfHostedManager.previewReservationPricing(
                 com.example.data.network.PricingPreviewRequest(
-                    reservationType = "NORMAL_RESERVATION",
-                    stationId = selectedStationId.toLong(),
+                    reservationType = if (selectedIsVip) "VIP" else "NORMAL_RESERVATION",
+                    stationId = if (selectedIsVip) null else selectedStationId.toLong(),
                     durationMinutes = selectedDuration,
                     reservationTimeMillis = selectedStartMillis,
                     controllersCount = selectedPlayerCount
@@ -992,16 +1018,33 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
                             containerColor = if (hasPriorReservation) MaterialTheme.colorScheme.error else Color(0xFF2E7D32)
                         ) {
                             Text(
-                                text = if (hasPriorReservation) "⚠ سابقه رزرو" else "بدون رزرو",
+                                text = if (hasPriorReservation) "!" else "سبز",
                                 fontSize = 9.sp,
                                 color = Color.White,
                                 modifier = Modifier.padding(2.dp)
                             )
                         }
+                        if (hasPriorReservation) {
+                            TextButton(onClick = {
+                                reservationScope.launch {
+                                    stationReservationRows = SelfHostedManager.fetchCustomerStationReservations(stationId.toLong())
+                                    showStationReservations = true
+                                }
+                            }, contentPadding = PaddingValues(0.dp)) { Text("نمایش رزروها", fontSize = 9.sp) }
+                        }
                     }
                 }
             }
         }
+
+        // Reservation type is part of the same single reservation page; direct VIP is role-gated by the server too.
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = !selectedIsVip, onClick = { selectedIsVip = false }, label = { Text("رزرو عادی") }, modifier = Modifier.weight(1f))
+            if (directVipAllowed) {
+                FilterChip(selected = selectedIsVip, onClick = { selectedIsVip = true; selectedStationId = 0; if (vipDurations.isNotEmpty()) selectedDuration = vipDurations.first() }, label = { Text("VIP / Full Game") }, modifier = Modifier.weight(1f))
+            }
+        }
+        if (!directVipAllowed) Text("درخواست مستقیم VIP فقط برای مشتریان Gold و Diamond فعال است.", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         // Reservation Form Card
         Card(
@@ -1060,17 +1103,17 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
                 }
 
                 // Duration options are supplied by the Manager's server-side reservation configuration.
-                Text("مدت زمان درخواستی:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(if (selectedIsVip) "مدت VIP:" else "مدت زمان درخواستی:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 if (rulesLoading) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                } else if (normalDurations.isEmpty()) {
+                } else if (durationOptions.isEmpty()) {
                     Text(rulesError ?: "مدت‌های رزرو برای این مدیریت تنظیم نشده است.", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
                 } else {
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        normalDurations.forEach { min ->
+                        durationOptions.forEach { min ->
                             val isSel = selectedDuration == min
                             Surface(
                                 onClick = { selectedDuration = min },
@@ -1128,47 +1171,37 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
                     }
                 }
 
-                OutlinedButton(
-                    onClick = {
-                        val tz = TimeZone.getTimeZone("Asia/Tehran")
-                        val calendar = Calendar.getInstance(tz).apply {
-                            if (selectedStartMillis > 0L) timeInMillis = selectedStartMillis
-                        }
-                        DatePickerDialog(
-                            context,
-                            { _, year, month, day ->
-                                val picked = Calendar.getInstance(tz).apply {
-                                    set(Calendar.YEAR, year)
-                                    set(Calendar.MONTH, month)
-                                    set(Calendar.DAY_OF_MONTH, day)
-                                    set(Calendar.HOUR_OF_DAY, calendar.get(Calendar.HOUR_OF_DAY))
-                                    set(Calendar.MINUTE, calendar.get(Calendar.MINUTE))
-                                    set(Calendar.SECOND, 0)
-                                    set(Calendar.MILLISECOND, 0)
-                                }
-                                TimePickerDialog(
-                                    context,
-                                    { _, hour, minute ->
-                                        picked.set(Calendar.HOUR_OF_DAY, hour)
-                                        picked.set(Calendar.MINUTE, minute)
-                                        selectedStartMillis = picked.timeInMillis
-                                    },
-                                    calendar.get(Calendar.HOUR_OF_DAY),
-                                    calendar.get(Calendar.MINUTE),
-                                    true
-                                ).show()
-                            },
-                            calendar.get(Calendar.YEAR),
-                            calendar.get(Calendar.MONTH),
-                            calendar.get(Calendar.DAY_OF_MONTH)
-                        ).show()
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Default.Schedule, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("زمان شروع: $selectedStartLabel")
+                Text("تاریخ حضور", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    listOf("امروز" to 0, "فردا" to 1, "پس‌فردا" to 2).forEach { (label, offset) ->
+                        OutlinedButton(onClick = {
+                            val c = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran")); c.add(Calendar.DAY_OF_YEAR, offset)
+                            val j = JalaliCalendarHelper.formatJalaliDateTime(c.timeInMillis, false).split("/").map { it.toInt() }
+                            selectedJalali = intArrayOf(j[0], j[1], j[2])
+                            selectedStartMillis = JalaliCalendarHelper.jalaliToGregorianMillis(j[0], j[1], j[2], Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran")).get(Calendar.HOUR_OF_DAY), Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran")).get(Calendar.MINUTE)) ?: 0L
+                        }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 2.dp)) { Text(label, fontSize = 9.sp) }
+                    }
                 }
+                OutlinedButton(onClick = { showJalaliDatePicker = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("${selectedJalali[0]}/${String.format(Locale.US, "%02d", selectedJalali[1])}/${String.format(Locale.US, "%02d", selectedJalali[2])} — ${jalaliMonths[selectedJalali[1]-1]}")
+                }
+                if (showJalaliDatePicker) JalaliReservationDatePicker(
+                    year=selectedJalali[0], month=selectedJalali[1], day=selectedJalali[2], months=jalaliMonths,
+                    onSelect={y,m,d -> selectedJalali=intArrayOf(y,m,d); selectedStartMillis=JalaliCalendarHelper.jalaliToGregorianMillis(y,m,d,12,0)?:0L},
+                    onDismiss={showJalaliDatePicker=false}
+                )
+                Text("زمان شروع: $selectedStartLabel", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                if (selectedStartMillis > 0L && selectedDuration > 0) {
+                    val endMillis = selectedStartMillis + selectedDuration * 60_000L
+                    Text("زمان پایان خودکار: ${JalaliCalendarHelper.formatJalaliDateTime(endMillis)}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                }
+                OutlinedButton(onClick = {
+                    val tz = TimeZone.getTimeZone("Asia/Tehran")
+                    val cal = Calendar.getInstance(tz).apply { if (selectedStartMillis > 0L) timeInMillis = selectedStartMillis }
+                    TimePickerDialog(context, { _, h, m ->
+                        selectedStartMillis = JalaliCalendarHelper.jalaliToGregorianMillis(selectedJalali[0], selectedJalali[1], selectedJalali[2], h, m) ?: 0L
+                    }, cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE), true).show()
+                }, Modifier.fillMaxWidth()) { Text("انتخاب ساعت حضور: ${SimpleDateFormat("HH:mm", Locale.US).apply { timeZone = TimeZone.getTimeZone("Asia/Tehran") }.format(Date(selectedStartMillis.takeIf { it > 0 } ?: System.currentTimeMillis()))}") }
 
                 OutlinedTextField(
                     value = noteText,
@@ -1180,7 +1213,7 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
                 )
 
                 Button(
-                    enabled = !rulesLoading && selectedStationId > 0 && normalDurations.contains(selectedDuration) && selectedStartMillis > System.currentTimeMillis() && currentCustomerAuth != null,
+                    enabled = !rulesLoading && currentCustomerAuth != null && durationOptions.contains(selectedDuration) && selectedStartMillis > System.currentTimeMillis() && (selectedIsVip && directVipAllowed || !selectedIsVip && selectedStationId > 0),
                     onClick = {
                         val customer = currentCustomerAuth ?: return@Button
                         reservationScope.launch {
@@ -1193,8 +1226,8 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
                             val key = "customer-reservation:" + java.util.UUID.randomUUID()
                             val response = SelfHostedManager.submitAtomicReservation(
                                 com.example.data.network.AtomicReservationRequest(
-                                    reservationType = "NORMAL_RESERVATION",
-                                    stationId = selectedStationId.toLong(),
+                                    reservationType = if (selectedIsVip) "VIP" else "NORMAL_RESERVATION",
+                                    stationId = if (selectedIsVip) null else selectedStationId.toLong(),
                                     durationMinutes = selectedDuration,
                                     controllersCount = selectedPlayerCount,
                                     reservationTimeMillis = startMillis,
@@ -1349,6 +1382,24 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
         }
     }
 
+    if (showStationReservations) {
+        AlertDialog(
+            onDismissRequest = { showStationReservations = false },
+            title = { Text("رزروهای این جایگاه") },
+            text = {
+                Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (stationReservationRows.isEmpty()) Text("رزرو فعالی برای نمایش وجود ندارد.")
+                    stationReservationRows.forEach { row ->
+                        val start = runCatching { java.time.Instant.parse(row.optString("start_time")).toEpochMilli() }.getOrDefault(0L)
+                        val end = runCatching { java.time.Instant.parse(row.optString("end_time")).toEpochMilli() }.getOrDefault(0L)
+                        Text("${JalaliCalendarHelper.formatJalaliDateTime(start)} تا ${JalaliCalendarHelper.formatJalaliDateTime(end)}\nمدت: ${row.optInt("duration_minutes")} دقیقه | وضعیت: ${row.optString("status")}", fontSize = 10.sp)
+                    }
+                }
+            },
+            confirmButton = { Button(onClick = { showStationReservations = false }) { Text("بستن") } }
+        )
+    }
+
     if (showSuccessDialog) {
         AlertDialog(
             onDismissRequest = { showSuccessDialog = false },
@@ -1369,6 +1420,7 @@ fun CustomerReservationTab(viewModel: GameNetViewModel) {
 @Composable
 fun CustomerClubRulesTab(viewModel: GameNetViewModel) {
     val lpTomanRate by viewModel.lpTomanRate.collectAsState()
+    val buffetLpPer10000 by viewModel.buffetLpPer10000.collectAsState()
     val minInviteSpendAmount by viewModel.minInviteSpendAmount.collectAsState()
     val scoringRules by viewModel.scoringRules.collectAsState()
     val behaviorRules by viewModel.allBehaviorRules.collectAsState()
@@ -1441,7 +1493,7 @@ fun CustomerClubRulesTab(viewModel: GameNetViewModel) {
                         Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFFE65100), modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "به ازای هر ${decimalFormat.format(lpTomanRate)} تومان پرداخت در گیم‌نت ⬅️ 1 امتیاز LP تعلق می‌گیرد.",
+                            text = "بازی: هر ${decimalFormat.format(lpTomanRate)} تومان ⬅️ 1 LP | بوفه: هر 10,000 تومان ⬅️ ${decimalFormat.format(buffetLpPer10000)} LP",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFFE65100)

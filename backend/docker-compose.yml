@@ -10,6 +10,9 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
+    networks:
+      - default
+      - proxy_shared
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U gamenet_admin -d gamenexa_db"]
       interval: 10s
@@ -18,7 +21,9 @@ services:
       start_period: 20s
 
   gamenet_api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: gamenet_api
     env_file:
       - .env
@@ -35,9 +40,12 @@ services:
       retries: 3
       start_period: 15s
     restart: unless-stopped
+    networks:
+      - default
+      - proxy_shared
 
   gamenet_nginx:
-    image: nginx:latest
+    image: nginx:1.29-alpine
     container_name: gamenet_nginx
     ports:
       - "80:80"
@@ -50,8 +58,16 @@ services:
       gamenet_api:
         condition: service_healthy
     restart: unless-stopped
+    networks:
+      - default
+      - proxy_shared
 
 volumes:
   pgdata:
     name: vps-backend_pgdata
     external: true
+
+networks:
+  proxy_shared:
+    external: true
+    name: gamenexa-prod_default

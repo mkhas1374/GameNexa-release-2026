@@ -44,6 +44,73 @@ object JalaliCalendarHelper {
         return String.format(Locale.US, "%02d:%02d", hour, minute)
     }
 
+    fun currentJalali(): IntArray {
+        val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran"))
+        return gregorianToJalali(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH))
+    }
+
+    fun jalaliMonthDays(year: Int, month: Int): Int = when {
+        month in 1..6 -> 31
+        month in 7..11 -> 30
+        else -> if (isJalaliLeapYear(year)) 30 else 29
+    }
+
+    fun isJalaliLeapYear(year: Int): Boolean = jalaliToGregorian(year, 12, 30) != null
+
+    fun jalaliToGregorianMillis(year: Int, month: Int, day: Int, hour: Int = 0, minute: Int = 0): Long? {
+        val g = jalaliToGregorian(year, month, day) ?: return null
+        val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Tehran"))
+        cal.clear()
+        cal.set(g[0], g[1] - 1, g[2], hour.coerceIn(0, 23), minute.coerceIn(0, 59), 0)
+        return cal.timeInMillis
+    }
+
+    private fun jalaliToGregorian(jyIn: Int, jm: Int, jd: Int): IntArray? {
+        if (jm !in 1..12 || jd < 1 || jd > jalaliMonthDaysRaw(jyIn, jm)) return null
+        var jy = jyIn - 979
+        var jDayNo = 365 * jy + jy / 33 * 8 + (jy % 33 + 3) / 4
+        for (i in 1 until jm) jDayNo += if (i <= 6) 31 else 30
+        jDayNo += jd - 1
+        var gDayNo = jDayNo + 79
+        var gy = 1600 + 400 * (gDayNo / 146097)
+        gDayNo %= 146097
+        var leap = true
+        if (gDayNo >= 36525) {
+            gDayNo--
+            gy += 100 * (gDayNo / 36524)
+            gDayNo %= 36524
+            if (gDayNo >= 365) gDayNo++ else leap = false
+        }
+        gy += 4 * (gDayNo / 1461)
+        gDayNo %= 1461
+        if (gDayNo >= 366) {
+            leap = false
+            gDayNo--
+            gy += gDayNo / 365
+            gDayNo %= 365
+        }
+        val gDays = intArrayOf(31, if (leap) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+        var gm = 1
+        var gd = gDayNo + 1
+        for (days in gDays) {
+            if (gd <= days) break
+            gd -= days
+            gm++
+        }
+        return intArrayOf(gy, gm, gd)
+    }
+
+    private fun jalaliMonthDaysRaw(year: Int, month: Int): Int = when {
+        month <= 6 -> 31
+        month <= 11 -> 30
+        else -> if (jalaliLeapByCycle(year)) 30 else 29
+    }
+
+    private fun jalaliLeapByCycle(year: Int): Boolean {
+        val r = Math.floorMod(year - 474, 2820) + 474
+        return ((r + 38) * 682) % 2816 < 682
+    }
+
     fun getPlanTitleFa(planType: String): String {
         return when (planType.uppercase()) {
             "TRIAL" -> "اشتراک تست رایگان 24 ساعته"

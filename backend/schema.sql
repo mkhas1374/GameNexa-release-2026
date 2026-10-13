@@ -167,7 +167,7 @@ ALTER SEQUENCE public.customer_point_logs_id_seq OWNED BY public.customer_point_
 CREATE TABLE public.customer_transactions (
     id bigint NOT NULL,
     manager_id character varying(50) NOT NULL,
-    customer_id integer NOT NULL,
+    customer_id integer,
     customer_name character varying(150) DEFAULT ''::character varying NOT NULL,
     station_name character varying(150) DEFAULT ''::character varying NOT NULL,
     title character varying(255) DEFAULT ''::character varying NOT NULL,
@@ -183,6 +183,7 @@ CREATE TABLE public.customer_transactions (
     game_cost numeric(30,10) DEFAULT 0 NOT NULL,
     food_cost numeric(30,10) DEFAULT 0 NOT NULL,
     local_id bigint,
+    session_id uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -225,6 +226,7 @@ CREATE TABLE public.customers (
     restricted_until timestamp with time zone,
     pending_surcharge_percent numeric(5,2) DEFAULT 0,
     password_hash character varying(255),
+    token_version integer NOT NULL DEFAULT 1,
     debt numeric(30,10) DEFAULT 0 NOT NULL,
     credit numeric(30,10) DEFAULT 0 NOT NULL,
     description text DEFAULT ''::text NOT NULL,
@@ -405,6 +407,22 @@ CREATE TABLE public.invoices (
 
 
 --
+CREATE TABLE IF NOT EXISTS public.session_review_refunds (
+    id BIGSERIAL NOT NULL,
+    manager_id character varying(50) NOT NULL,
+    session_id uuid NOT NULL,
+    customer_id integer NOT NULL,
+    refund_amount numeric NOT NULL DEFAULT 0,
+    method character varying(20) NOT NULL,
+    status character varying(30) NOT NULL DEFAULT 'FINALIZED'::character varying,
+    idempotency_key character varying(200) NOT NULL,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT session_review_refunds_pkey PRIMARY KEY (id),
+    CONSTRAINT session_review_refunds_manager_session_customer_key UNIQUE (manager_id, session_id, customer_id),
+    CONSTRAINT session_review_refunds_idempotency_key_key UNIQUE (idempotency_key)
+);
+
 -- Name: lp_ledger; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -569,6 +587,7 @@ CREATE TABLE public.managers (
     id character varying(50) NOT NULL,
     username character varying(100) NOT NULL,
     password_hash character varying(255) NOT NULL,
+    token_version integer NOT NULL DEFAULT 1,
     token character varying(255),
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),

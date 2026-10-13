@@ -76,6 +76,14 @@ ok('manager device registration enforces max_devices transactionally', 'DEVICE_L
 ok('station settlement applies participant prepayments', 'appliedPrepayment' in SERVER and 'prepaymentAmount' in SERVER[SERVER.find('/api/station/settle'):SERVER.find('/api/station/settle')+25000])
 ok('guest payers are included in settlement invoices', 'Guest payers are valid invoice principals' in SERVER and 'customer_id remains NULL' in SERVER)
 ok('invoice customer_id is nullable for guest settlement', 'ALTER TABLE invoices ALTER COLUMN customer_id DROP NOT NULL' in SERVER and 'customer_id integer,\n    session_id uuid' in (BACK/'schema.sql').read_text(errors='ignore'))
+ok('JWTs carry server-side token version', 'tv: Number(manager.token_version || 1)' in SERVER and "role: 'CUSTOMER', tv:" in SERVER)
+ok('manager/customer middleware enforces token version', 'TOKEN_REVOKED' in SERVER and 'token_version FROM managers' in SERVER and 'token_version FROM customers' in SERVER)
+ok('server logout revokes token version', "app.post('/api/auth/logout'" in SERVER and 'token_version=token_version+1' in SERVER)
+ok('customer registration enforces 8-char password', 'password.length < 8' in SERVER)
+ok('customer login does not enumerate account existence', "error: 'Invalid credentials'" in SERVER and 'Customer not found' not in SERVER)
+ok('customer password is never copied to clipboard', 'رمز عبور: $password' not in (ROOT/'app/src/main/java/com/example/ui/CustomersReservationsScreen.kt').read_text(errors='ignore'))
+ok('token-version schema is declarative', 'token_version integer NOT NULL DEFAULT 1' in (BACK/'schema.sql').read_text(errors='ignore'))
+
 
 
 failed=[n for n,v in checks if not v]

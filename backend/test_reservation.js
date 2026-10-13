@@ -22,13 +22,13 @@ async function runTests() {
         client.release();
     }
     
-    // Use a future Tehran-local time that is valid for the manager's configured VIP window.
-    // This keeps the test deterministic and avoids depending on the VPS wall-clock hour.
-    const nowTehran = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tehran' }));
-    const baseDate = new Date(nowTehran);
-    baseDate.setHours(15, 0, 0, 0);
-    if (baseDate.getTime() <= Date.now()) baseDate.setDate(baseDate.getDate() + 1);
-    const startIso = new Date(baseDate.getTime() - (3.5 * 60 * 60 * 1000)).toISOString();
+    // Build a deterministic future 15:00 Tehran instant without parsing a localized
+    // date string through the runner timezone. The default VIP window is 14:00-24:00.
+    const tehranParts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit'
+    }).formatToParts(new Date()).filter(p => p.type !== 'literal').map(p => [p.type, Number(p.value)]));
+    const baseDate = new Date(Date.UTC(tehranParts.year, tehranParts.month - 1, tehranParts.day + 1, 15, 0, 0) - (3.5 * 60 * 60 * 1000));
+    const startIso = baseDate.toISOString();
     
     // 1. State Machine
     try {
@@ -94,7 +94,7 @@ async function runTests() {
     
     // 6. VIP Rejection Wallet Refund
     try {
-        const res = await pool.query("SELECT id FROM reservations WHERE manager_id = 'mgr_res' AND status = 'PAYMENT_PENDING' LIMIT 1");
+        const res = await pool.query("SELECT id FROM reservations WHERE manager_id = 'mgr_res' AND status = 'VIP_PENDING_PAYMENT' ORDER BY id DESC LIMIT 1");
         if (res.rows.length === 0) throw new Error('VIP Reservation missing');
         const vipId = res.rows[0].id;
         await pool.query(`INSERT INTO payment_transactions (manager_id, customer_id, reservation_id, amount, status, idempotency_key) VALUES ('mgr_res', 888, ${vipId}, 100, 'SUCCESS', 'fake_pay_' || ${vipId}::text)`);

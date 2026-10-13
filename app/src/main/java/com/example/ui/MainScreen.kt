@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.ConsoleType
+import com.example.data.Customer
 import com.example.data.Product
 import com.example.data.StationState
 import java.util.*
@@ -61,6 +62,7 @@ fun MainScreen(
     modifier: Modifier = Modifier
 ) {
     val stations by viewModel.stationStates.collectAsState()
+    val startingStationIds by viewModel.startingStationIds.collectAsState()
     val consoleList by viewModel.consoleTypes.collectAsState()
     val productList by viewModel.products.collectAsState()
     val ordersMap by viewModel.stationOrdersMap.collectAsState()
@@ -108,13 +110,14 @@ fun MainScreen(
             }
         } else {
             Column(modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
-            val licenseState by viewModel.licenseState.collectAsState()
             val isServerConnected by viewModel.isServerConnected.collectAsState()
             val coroutineScope = rememberCoroutineScope()
 
             var selectedFilter by remember { mutableStateOf("ALL") } // "ALL", "READY", "ACTIVE"
 
             val accessState by viewModel.accessState.collectAsState()
+            val licenseState by viewModel.licenseState.collectAsState()
+            val isAdminAuthenticated by viewModel.isAdminAuthenticated.collectAsState()
             val isTrialActive by viewModel.isTrialModeFlow.collectAsState()
             val currentRole by viewModel.currentAdminRole.collectAsState()
             val isTrialMode = isTrialActive || currentRole == "TRIAL_USER" || viewModel.isTrialUser
@@ -170,9 +173,14 @@ fun MainScreen(
                     }
                 }
                 is AppAccessState.Denied -> {
-                    LaunchedEffect(state) {
-                        viewModel.setLicenseExpired(state.message)
-                        viewModel.handleAccessDenied()
+                    LaunchedEffect(state, licenseState, isAdminAuthenticated) {
+                        // A freshly authenticated Manager can briefly carry a stale Denied
+                        // access snapshot while the authoritative login state is being published.
+                        // Never turn that transient UI race into an automatic logout.
+                        if (!isAdminAuthenticated || licenseState !is LicenseState.Active) {
+                            viewModel.setLicenseExpired(state.message)
+                            viewModel.handleAccessDenied()
+                        }
                     }
                 }
                                 is AppAccessState.Allowed -> {
@@ -184,6 +192,16 @@ fun MainScreen(
                     )
                 }
             }
+
+            // SUPER_MANAGER is lifetime-entitled, but still needs an explicit visible
+            // reconnect warning when the GameNexa API itself becomes unreachable.
+            if (currentRole == "SUPER_MANAGER" && !isServerConnected) {
+                SuperManagerOfflineBanner(
+                    lang = lang,
+                    remainingSeconds = viewModel.superManagerOfflineBannerSecondsRemaining.collectAsState().value
+                )
+            }
+
             Spacer(modifier = Modifier.height(4.dp))
 
             // Station Filter Summary Row with 3 Colored Circle Badges
@@ -259,6 +277,7 @@ fun MainScreen(
 
                         StationCard(
                             station = station,
+                            isStarting = station.id in startingStationIds,
                             displayStationNumber = displayStationNumber,
                             orders = orders,
                             consoleList = consoleList,
@@ -275,8 +294,8 @@ fun MainScreen(
                             onConsoleChange = { name -> viewModel.updateStationConsole(station.id, name) },
                             onControllersChange = { count -> viewModel.updateStationControllers(station.id, count) },
                             onAddProduct = { pName -> viewModel.addBuffetOrder(station.id, pName) },
-                            onIncrementProduct = { pName -> viewModel.incrementBuffetOrder(station.id, pName) },
-                            onDecrementProduct = { pName -> viewModel.decrementBuffetOrder(station.id, pName) }
+                            onIncrementProduct = { order -> viewModel.incrementBuffetOrder(station.id, order.productName, order.targetCustomerId, order.targetCustomerName) },
+                            onDecrementProduct = { order -> viewModel.decrementBuffetOrder(station.id, order.productName, order.targetCustomerId, order.targetCustomerName) }
                         )
                     }
                 }
@@ -290,6 +309,7 @@ fun MainScreen(
 @Composable
 fun StationCard(
     station: StationState,
+    isStarting: Boolean = false,
     displayStationNumber: Int,
     orders: List<com.example.data.StationOrder>,
     consoleList: List<ConsoleType>,
@@ -304,8 +324,8 @@ fun StationCard(
     onConsoleChange: (String) -> Unit,
     onControllersChange: (Int) -> Unit,
     onAddProduct: (String) -> Unit,
-    onIncrementProduct: (String) -> Unit,
-    onDecrementProduct: (String) -> Unit
+    onIncrementProduct: (com.example.data.StationOrder) -> Unit,
+    onDecrementProduct: (com.example.data.StationOrder) -> Unit
 ) {
     val isRunning = station.status == "RUNNING"
     val isPaused = station.status == "PAUSED"
@@ -324,7 +344,10 @@ fun StationCard(
     }
 
     val segmentsDurationMs = remember(station.segmentsJson) {
-        station.getSegmentsList().sumOf { it.endTimeMs - it.startTimeMs }
+        station.getSegmentsList().sumOf { segment ->
+            if (segment.durationSeconds > 0L) segment.durationSeconds * 1000L
+            else (segment.endTimeMs - segment.startTimeMs).coerceAtLeast(0L)
+        }
     }
     val currentElapsedMs by remember(isRunning, isPaused, currentTime, station.elapsedPlayingTimeMillis, station.lastStateChangeTimeMillis) {
         derivedStateOf {
@@ -547,13 +570,40 @@ fun StationCard(
             }
 
             var showCustomerSelectionDialog by remember { mutableStateOf(false) }
+            var showStationPauseDialog by remember { mutableStateOf(false) }
             var showPayerAllocationDialog by remember { mutableStateOf(false) }
             var showBehaviorDialog by remember { mutableStateOf(false) }
-            var showStationPauseDialog by remember { mutableStateOf(false) }
             var showMultiPrepaymentDialog by remember { mutableStateOf(false) }
             var pendingFinishAction by remember { mutableStateOf(false) }
             var isFinishingAction by remember(station.status) { mutableStateOf(false) }
             var selectedProductForBuffetCustomer by remember { mutableStateOf<String?>(null) }
+            // Execute the selected Stop action only after the dialog has fully left the
+            // composition. This prevents the dialog-dismiss/recomposition and station-state
+            // mutation from happening in the same Compose callback.
+            var pendingStopOption by remember { mutableStateOf<Int?>(null) }
+            var pendingStopPayerIds by remember { mutableStateOf<List<Long>>(emptyList()) }
+            var pendingStopPayerNames by remember { mutableStateOf<List<String>>(emptyList()) }
+
+            LaunchedEffect(showStationPauseDialog, pendingStopOption) {
+                // Never execute the Stop mutation while the AlertDialog is still in the
+                // composition. The previous implementation keyed only on pendingStopOption,
+                // which could race the dialog-dismiss recomposition on some Compose versions.
+                if (showStationPauseDialog) return@LaunchedEffect
+                val option = pendingStopOption ?: return@LaunchedEffect
+                val payerIds = pendingStopPayerIds.toList()
+                val payerNames = pendingStopPayerNames.toList()
+                // Clear the transient action before launching the ViewModel mutation so a
+                // recomposition can never execute it twice.
+                pendingStopOption = null
+                pendingStopPayerIds = emptyList()
+                pendingStopPayerNames = emptyList()
+                kotlinx.coroutines.yield()
+                when (option) {
+                    1 -> viewModel.pauseStation(station.id)
+                    2 -> viewModel.commitSegmentAndPause(station.id, payerIds, payerNames)
+                    3 -> viewModel.commitSegmentAndContinue(station.id, payerIds, payerNames)
+                }
+            }
 
             if (showCustomerSelectionDialog) {
                 CustomerSelectionDialog(
@@ -583,16 +633,53 @@ fun StationCard(
             }
 
             if (showMultiPrepaymentDialog) {
-                val stationCustomers = station.getStationCustomers(allCustomers)
+                val stationCustomers = selectedCustomerIds.mapIndexed { index, id ->
+                    val name = selectedCustomerNames.getOrNull(index)?.takeIf { it.isNotBlank() }
+                        ?: allCustomers.find { it.id == id }?.fullName
+                        ?: if (id < 0) "مهمان " + (-id) else "مشتری " + id
+                    Customer(id = id, fullName = name, phoneNumber = "")
+                }
                 MultiCustomerPrepaymentDialog(
                     selectedCustomers = stationCustomers,
                     initialPrepayments = pendingCustomerPrepayments,
+                    totalPrepayment = payInput.filter(Char::isDigit).toLongOrNull() ?: 0L,
                     onDismiss = { showMultiPrepaymentDialog = false },
                     onConfirm = { prepayMap, totalSum ->
                         showMultiPrepaymentDialog = false
                         pendingCustomerPrepayments = prepayMap
                         payInput = totalSum.toInt().toString()
                         viewModel.updateStationCustomerPrepayments(station.id, prepayMap, totalSum)
+                    }
+                )
+            }
+
+            if (showStationPauseDialog) {
+                val stationCustomers = station.getStationCustomers(allCustomers)
+                StationPauseDialog(
+                    stationId = station.id,
+                    stationCustomers = stationCustomers,
+                    allCustomers = allCustomers,
+                    gameCost = gameCost,
+                    prepaymentTotal = station.prepaymentAmount,
+                    customerPrepaymentsMap = station.getEffectiveCustomerPrepaymentsMap(),
+                    onDismiss = { showStationPauseDialog = false },
+                    onSimplePause = {
+                        showStationPauseDialog = false
+                        pendingStopPayerIds = emptyList()
+                        pendingStopPayerNames = emptyList()
+                        pendingStopOption = 1
+                    },
+                    onCommitSegmentAndPause = { payerIds, payerNames ->
+                        showStationPauseDialog = false
+                        pendingStopPayerIds = payerIds.distinct()
+                        pendingStopPayerNames = payerNames
+                        pendingStopOption = 2
+                    },
+                    onCommitSegmentAndContinue = { payerIds, payerNames ->
+                        showStationPauseDialog = false
+                        pendingStopPayerIds = payerIds.distinct()
+                        pendingStopPayerNames = payerNames
+                        pendingStopOption = 3
                     }
                 )
             }
@@ -613,31 +700,6 @@ fun StationCard(
                             isFinishingAction = true
                             viewModel.finishStation(station.id, payerIds, payerNames)
                         }
-                    }
-                )
-            }
-
-            if (showStationPauseDialog) {
-                val stationCustomers = station.getStationCustomers(allCustomers)
-                StationPauseDialog(
-                    stationId = station.id,
-                    stationCustomers = stationCustomers,
-                    allCustomers = allCustomers,
-                    gameCost = gameCost,
-                    prepaymentTotal = station.prepaymentAmount,
-                    customerPrepaymentsMap = station.getEffectiveCustomerPrepaymentsMap(),
-                    onDismiss = { showStationPauseDialog = false },
-                    onSimplePause = {
-                        showStationPauseDialog = false
-                        onPause()
-                    },
-                    onCommitSegmentAndPause = { payerIds, payerNames ->
-                        showStationPauseDialog = false
-                        viewModel.commitSegmentAndPause(station.id, payerIds, payerNames)
-                    },
-                    onCommitSegmentAndContinue = { payerIds, payerNames ->
-                        showStationPauseDialog = false
-                        viewModel.commitSegmentAndContinue(station.id, payerIds, payerNames)
                     }
                 )
             }
@@ -875,17 +937,24 @@ fun StationCard(
                         }
 
                         val inputPrice = payInput.toLongOrNull() ?: 0L
-                        val amountDurationMillis = exactPrepaymentDurationMillis(inputPrice, hourlyRate, 0)
-                        val durationFeedback = if (inputPrice > 0L && hourlyRate > 0L) {
-                            if (lang == "fa") "زمان معادل: ${formatTime(amountDurationMillis)}" else "Equivalent time: ${formatTime(amountDurationMillis)}"
-                        } else ""
-
-                        if (durationFeedback.isNotEmpty()) {
+                        val inputMinutes = durationInput.toIntOrNull()?.coerceAtLeast(0) ?: 0
+                        val amountDurationMillis = ExactBilling.durationMillisForAmount(inputPrice, hourlyRate)
+                        val durationCostExact = ExactBilling.costForMinutes(hourlyRate, inputMinutes)
+                        if (inputPrice > 0L && hourlyRate > 0L) {
                             Text(
-                                text = durationFeedback,
+                                text = if (lang == "fa") "زمان معادل: ${formatTime(amountDurationMillis)}" else "Equivalent time: ${formatTime(amountDurationMillis)}",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(bottom = 1.dp)
+                            )
+                        }
+                        if (inputMinutes > 0 && hourlyRate > 0L) {
+                            Text(
+                                text = if (lang == "fa") "هزینه این مدت: ${ExactBilling.formatToman(durationCostExact)}" else "Cost for this duration: ${ExactBilling.formatToman(durationCostExact)}",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.secondary,
                                 modifier = Modifier.padding(bottom = 2.dp)
                             )
                         }
@@ -1121,7 +1190,7 @@ fun StationCard(
                         val timerText = when {
                             isTimeUp -> "+${formatTime(overtimeMillis)}"
                             isCountdown -> formatTime(remainingMillis)
-                            else -> formatTime(elapsedMillis)
+                            else -> formatTime(currentElapsedMs)
                         }
 
                         // Row 1: Live Timer & Hourly Rate
@@ -1178,6 +1247,28 @@ fun StationCard(
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
+                        }
+
+                        if (!isFree && station.getSegmentsList().isNotEmpty()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (lang == "fa") "هزینه بخش فعلی:" else "Current Segment Cost:",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = if (lang == "fa") ExactBilling.formatToman(ExactBilling.costForMillis(hourlyRate, currentElapsedMs)) else ExactBilling.formatToman(ExactBilling.costForMillis(hourlyRate, currentElapsedMs)).replace(" تومان", " T"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                         }
 
                         // Row 3: مقدار پرداختی اولیه (Initial Prepayment)
@@ -1310,7 +1401,9 @@ fun StationCard(
                 when {
                     isFree -> {
                         Button(
+                            enabled = !isStarting,
                             onClick = {
+                                if (isStarting) return@Button
                                 if (conflictingCustomerId != null) {
                                     val busyStationId = occupiedCustomerStationMap[conflictingCustomerId]
                                     val conflictCust = allCustomers.find { it.id == conflictingCustomerId }
@@ -1342,10 +1435,18 @@ fun StationCard(
                                 contentColor = MaterialTheme.colorScheme.onPrimary
                             )
                         ) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(12.dp))
+                            if (isStarting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(12.dp),
+                                    strokeWidth = 1.5.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                            } else {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(12.dp))
+                            }
                             Spacer(modifier = Modifier.width(2.dp))
                             Text(
-                                text = Localization.get("start", lang).uppercase(Locale.getDefault()),
+                                text = if (isStarting) "در حال شروع…" else Localization.get("start", lang).uppercase(Locale.getDefault()),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
@@ -1355,8 +1456,15 @@ fun StationCard(
                     }
                     isRunning -> {
                         Button(
-                            onClick = { 
-                                showStationPauseDialog = true 
+                            onClick = {
+                                // A configured prepayment or fixed duration is a single
+                                // continuous billing session: Stop means pause the clock/cost only.
+                                // Without either, preserve the legacy three-option Stop workflow.
+                                if (station.prepaymentAmount > 0L || station.durationLimitMinutes > 0) {
+                                    onPause()
+                                } else {
+                                    showStationPauseDialog = true
+                                }
                             },
                             modifier = Modifier.weight(1.2f).height(30.dp),
                             shape = RoundedCornerShape(6.dp),
@@ -1418,12 +1526,16 @@ fun StationCard(
                 Button(
                     onClick = {
                         if (isFinishingAction) return@Button
+                        isFinishingAction = true
+                        // Final settlement is always based on the complete participant set.
+                        // Backend settlement divides the session invoice across every payer;
+                        // opening a second payer-selection dialog created both a crash path
+                        // and a local/server allocation mismatch.
                         val cIds = station.getCustomerIds()
-                        if (cIds.isNotEmpty() && station.status != "PAUSED") {
-                            pendingFinishAction = true
-                            showPayerAllocationDialog = true
+                        val cNames = station.getCustomerNames()
+                        if (cIds.isNotEmpty()) {
+                            viewModel.finishStation(station.id, cIds, cNames)
                         } else {
-                            isFinishingAction = true
                             onFinish()
                         }
                     },
@@ -1732,7 +1844,7 @@ fun StationCard(
                                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                                 ) {
                                     IconButton(
-                                        onClick = { onDecrementProduct(order.productName) },
+                                        onClick = { onDecrementProduct(order) },
                                         modifier = Modifier.size(22.dp)
                                     ) {
                                         Icon(Icons.Default.Remove, contentDescription = "Decrease", modifier = Modifier.size(12.dp))
@@ -1746,7 +1858,7 @@ fun StationCard(
                                         modifier = Modifier.padding(horizontal = 4.dp)
                                     )
                                     IconButton(
-                                        onClick = { onIncrementProduct(order.productName) },
+                                        onClick = { onIncrementProduct(order) },
                                         modifier = Modifier.size(22.dp)
                                     ) {
                                         Icon(Icons.Default.Add, contentDescription = "Increase", modifier = Modifier.size(12.dp))
@@ -1914,6 +2026,67 @@ private fun ServerClockWarningOverlay(
 
 
 
+
+@Composable
+private fun SuperManagerOfflineBanner(
+    lang: String,
+    remainingSeconds: Long
+) {
+    val safeSeconds = remainingSeconds.coerceAtLeast(0L)
+    val hours = safeSeconds / 3600L
+    val minutes = (safeSeconds % 3600L) / 60L
+    val seconds = safeSeconds % 60L
+    val timer = String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds)
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF8A1C1C)),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (lang == "fa") "⚠️ اتصال سرور قطع است" else "⚠️ Server connection is offline",
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFB91C1C)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        text = timer,
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Black,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+            Text(
+                text = if (lang == "fa")
+                    "ارتباط اینترنتی برنامه با سرور GameNexa برقرار نیست. تا ۲۴ ساعت فرصت اتصال مجدد دارید. VPN، اینترنت موبایل، Wi‑Fi یا پروکسی را بررسی کنید."
+                else
+                    "GameNexa cannot reach its server. You have up to 24 hours to reconnect. Check Wi‑Fi, mobile data, VPN or proxy.",
+                color = Color.White.copy(alpha = 0.96f),
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
+        }
+    }
+}
 
 @Composable
 fun SubscriptionWarningBanner(

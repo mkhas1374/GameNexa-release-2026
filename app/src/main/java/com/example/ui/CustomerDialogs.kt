@@ -20,6 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.example.data.Customer
 import java.util.Locale
 
@@ -538,11 +539,14 @@ fun PayerAllocationDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 200.dp),
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 200.dp)
+                        .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    items(customers, key = { it.id }) { cust ->
+                    customers.distinctBy { it.id }.forEach { cust ->
                         val isSelected = selectedPayerId == cust.id
                         Surface(
                             onClick = {
@@ -746,30 +750,33 @@ fun StationPauseDialog(
     onCommitSegmentAndPause: (List<Long>, List<String>) -> Unit,
     onCommitSegmentAndContinue: (List<Long>, List<String>) -> Unit = { _, _ -> }
 ) {
-    var selectedOption by remember { mutableStateOf(2) } // 1: Simple Pause, 2: Commit & Pause, 3: Commit & Continue
+    var selectedOption by remember { mutableStateOf(1) } // 1: Simple Pause, 2: Commit & Pause, 3: Commit & Continue
     val selectedPayerIds = remember { mutableStateListOf<Long>() }
     val selectedPayerNamesMap = remember { mutableStateMapOf<Long, String>() }
 
     val availableCustomers = remember(stationCustomers, allCustomers) {
-        if (stationCustomers.isNotEmpty()) {
+        val source = if (stationCustomers.isNotEmpty()) {
             stationCustomers
-        } else if (allCustomers.isNotEmpty()) {
-            allCustomers
         } else {
-            // Fallback guest options so operator is never blocked
+            // Stop decisions must never silently assign the cost to every customer in the hall.
+            // With no station participant, expose only explicit guest payers for the Manager to choose.
             (1..4).map { num ->
                 Customer(id = -num.toLong(), fullName = "مهمان $num", phoneNumber = "")
             }
         }
+        // A malformed/legacy local customer list may contain the same ID more than once.
+        // Compose LazyColumn keys must be unique; deduplicate before rendering the Stop dialog.
+        source.distinctBy { it.id }
     }
 
+    // Never auto-select synthetic guest payers. In a no-customer session the Manager
+    // must explicitly choose a payer, or leave it empty so settlement is treated as a
+    // true walk-in. This avoids injecting negative guest IDs into the pause segment.
     LaunchedEffect(availableCustomers) {
-        if (selectedPayerIds.isEmpty() && availableCustomers.isNotEmpty()) {
-            availableCustomers.forEach { cust ->
-                if (!selectedPayerIds.contains(cust.id)) {
-                    selectedPayerIds.add(cust.id)
-                    selectedPayerNamesMap[cust.id] = cust.fullName
-                }
+        if (selectedPayerIds.isEmpty() && stationCustomers.isNotEmpty()) {
+            stationCustomers.distinctBy { it.id }.forEach { cust ->
+                selectedPayerIds.add(cust.id)
+                selectedPayerNamesMap[cust.id] = cust.fullName
             }
         }
     }
@@ -833,7 +840,7 @@ fun StationPauseDialog(
                                     color = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
-                                    text = "هزینه بازی تا الان: %,.0f تومان".format(java.util.Locale.US, gameCost),
+                                    text = "هزینه بازی تا الان: %,d تومان".format(java.util.Locale.US, gameCost),
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1022,11 +1029,17 @@ fun StationPauseDialog(
                             color = MaterialTheme.colorScheme.error
                         )
                     } else {
-                        LazyColumn(
-                            modifier = Modifier.heightIn(max = 150.dp),
+                        // This is a short payer list (max 4 guests / station participants).
+                        // Keep it as a bounded scrollable Column instead of a nested LazyColumn
+                        // inside AlertDialog; this removes the remaining Compose crash path seen
+                        // when Stop is opened/confirmed on legacy station data.
+                        Column(
+                            modifier = Modifier
+                                .heightIn(max = 150.dp)
+                                .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            items(availableCustomers, key = { it.id }) { cust ->
+                            availableCustomers.forEach { cust ->
                                 val isChecked = selectedPayerIds.contains(cust.id)
                                 Surface(
                                     onClick = {
@@ -1083,12 +1096,14 @@ fun StationPauseDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    val ids = selectedPayerIds.toList()
-                    val names = ids.mapNotNull { selectedPayerNamesMap[it] }
+                    val ids = selectedPayerIds.distinct().toList()
+                    val names = ids.map { selectedPayerNamesMap[it].orEmpty() }
+                    // Dismiss first, then invoke the operation. A malformed legacy station
+                    // must never be able to keep the modal in an unstable Compose state.
                     when (selectedOption) {
-                        1 -> onSimplePause()
-                        2 -> onCommitSegmentAndPause(ids, names)
-                        3 -> onCommitSegmentAndContinue(ids, names)
+                        1 -> { onDismiss(); onSimplePause() }
+                        2 -> { onDismiss(); onCommitSegmentAndPause(ids, names) }
+                        3 -> { onDismiss(); onCommitSegmentAndContinue(ids, names) }
                     }
                 },
                 enabled = if (selectedOption == 2 || selectedOption == 3) selectedPayerIds.isNotEmpty() else true,
@@ -1117,28 +1132,50 @@ fun StationPauseDialog(
 fun MultiCustomerPrepaymentDialog(
     selectedCustomers: List<Customer>,
     initialPrepayments: Map<Long, Long>,
+    totalPrepayment: Long = 0L,
     onDismiss: () -> Unit,
     onConfirm: (Map<Long, Long>, Long) -> Unit
 ) {
-    val prepayMap = remember {
-        mutableStateMapOf<Long, String>().apply {
-            selectedCustomers.forEach { cust ->
-                val initVal = initialPrepayments[cust.id]?.takeIf { it > 0 }?.toString() ?: ""
-                put(cust.id, initVal)
+    val selectedCustomerIdsKey = selectedCustomers.map { it.id }
+    var prepayMap by remember(selectedCustomerIdsKey, initialPrepayments, totalPrepayment) {
+        mutableStateOf(
+            buildMap<Long, String> {
+                val uniqueCustomers = selectedCustomers.distinctBy { it.id }
+                val hasExplicitAllocation = initialPrepayments.values.any { it > 0L }
+                val base = if (!hasExplicitAllocation && totalPrepayment > 0L && uniqueCustomers.isNotEmpty()) totalPrepayment / uniqueCustomers.size else 0L
+                val remainder = if (!hasExplicitAllocation && totalPrepayment > 0L && uniqueCustomers.isNotEmpty()) totalPrepayment % uniqueCustomers.size else 0L
+                uniqueCustomers.forEachIndexed { index, cust ->
+                    val initVal = initialPrepayments[cust.id]?.takeIf { it > 0L }?.toString()
+                        ?: if (!hasExplicitAllocation && totalPrepayment > 0L) {
+                            (base + if (index == uniqueCustomers.lastIndex) remainder else 0L).toString()
+                        } else ""
+                    put(cust.id, initVal)
+                }
             }
-        }
+        )
+    }
+    val totalSum = prepayMap.values.sumOf { it.toLongOrNull() ?: 0L }
+    fun updatePrepayment(customerId: Long, value: String) {
+        prepayMap = prepayMap.toMutableMap().apply { put(customerId, value.filter(Char::isDigit)) }
     }
 
-    val totalSum = remember {
-        derivedStateOf {
-            prepayMap.values.sumOf { it.toLongOrNull() ?: 0L }
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Column {
+    // Do not put a scrollable Column/LazyColumn inside Material3 AlertDialog. Compose's
+    // intrinsic measurement path for dialog content has historically produced runtime
+    // measurement crashes for scrollable children. A platform Dialog + bounded LazyColumn
+    // gives the same Manager UX without that measurement contract.
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 520.dp)
+                .padding(horizontal = 16.dp, vertical = 24.dp),
+            shape = RoundedCornerShape(20.dp),
+            tonalElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 Text(
                     text = "تخصیص پیش‌پرداخت مخاطبان",
                     style = MaterialTheme.typography.titleMedium,
@@ -1150,24 +1187,18 @@ fun MultiCustomerPrepaymentDialog(
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-            }
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 320.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+
                 LazyColumn(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 80.dp, max = 300.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(selectedCustomers, key = { it.id }) { cust ->
+                    items(selectedCustomers.distinctBy { it.id }, key = { it.id }) { cust ->
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                         ) {
                             Row(
                                 modifier = Modifier
@@ -1182,14 +1213,13 @@ fun MultiCustomerPrepaymentDialog(
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.weight(1f)
                                 )
-
                                 OutlinedTextField(
                                     value = prepayMap[cust.id] ?: "",
-                                    onValueChange = { prepayMap[cust.id] = it },
+                                    onValueChange = { updatePrepayment(cust.id, it) },
                                     placeholder = { Text("مبلغ (تومان)", fontSize = 10.sp) },
                                     singleLine = true,
-                                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
-                                    modifier = Modifier.width(130.dp).height(48.dp),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier.width(130.dp).height(52.dp),
                                     shape = RoundedCornerShape(8.dp)
                                 )
                             }
@@ -1198,7 +1228,6 @@ fun MultiCustomerPrepaymentDialog(
                 }
 
                 HorizontalDivider()
-
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1206,29 +1235,28 @@ fun MultiCustomerPrepaymentDialog(
                 ) {
                     Text(text = "مجموع کل پیش‌پرداخت:", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Text(
-                        text = "%,.0f تومان".format(java.util.Locale.US, totalSum.value),
+                        text = "%,d تومان".format(Locale.US, totalSum),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Black,
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val resultMap = prepayMap.mapValues { it.value.toLongOrNull() ?: 0L }
-                    onConfirm(resultMap, totalSum.value)
-                },
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                Text("ثبت پیش‌پرداخت", fontWeight = FontWeight.Bold)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("انصراف")
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onDismiss) { Text("انصراف") }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            val resultMap = prepayMap.mapValues { it.value.toLongOrNull() ?: 0L }
+                            onConfirm(resultMap, totalSum)
+                        }
+                    ) { Text("ثبت پیش‌پرداخت", fontWeight = FontWeight.Bold) }
+                }
             }
         }
-    )
+    }
 }

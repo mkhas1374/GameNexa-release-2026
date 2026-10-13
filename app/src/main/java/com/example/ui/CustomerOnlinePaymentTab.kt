@@ -47,7 +47,7 @@ fun parseCards(jsonStr: String): List<PaymentCard> {
                 )
             }
         }
-    } catch (e: Exception) {}
+    } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in CustomerOnlinePaymentTab.kt", e) }
     return list
 }
 
@@ -66,7 +66,7 @@ fun parseGateways(jsonStr: String): List<PaymentGateway> {
                 )
             )
         }
-    } catch (e: Exception) {}
+    } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in CustomerOnlinePaymentTab.kt", e) }
     return list
 }
 
@@ -86,7 +86,7 @@ fun parseCryptos(jsonStr: String): List<PaymentCrypto> {
                 )
             )
         }
-    } catch (e: Exception) {}
+    } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in CustomerOnlinePaymentTab.kt", e) }
     return list
 }
 
@@ -272,7 +272,7 @@ fun ChargeAccountSection(viewModel: GameNetViewModel) {
                         .fillMaxWidth()
                         .clickable {
                             selectedPaymentMethod = "درگاه آنلاین (${gw.name})"
-                            try { uriHandler.openUri(gw.url) } catch (e: Exception) {}
+                            try { uriHandler.openUri(gw.url) } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in CustomerOnlinePaymentTab.kt", e) }
                         },
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -473,7 +473,7 @@ fun ChargeAccountSection(viewModel: GameNetViewModel) {
             val bale = viewModel.gnContactBale.collectAsState().value
 
             OutlinedButton(
-                onClick = { try { uriHandler.openUri("sms:$sms") } catch (e: Exception) {} },
+                onClick = { try { uriHandler.openUri("sms:$sms") } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in CustomerOnlinePaymentTab.kt", e) } },
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(10.dp)
             ) {
@@ -481,7 +481,7 @@ fun ChargeAccountSection(viewModel: GameNetViewModel) {
             }
 
             OutlinedButton(
-                onClick = { try { uriHandler.openUri("https://ble.ir/${bale.removePrefix("@")}") } catch (e: Exception) {} },
+                onClick = { try { uriHandler.openUri("https://ble.ir/${bale.removePrefix("@")}") } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in CustomerOnlinePaymentTab.kt", e) } },
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(10.dp)
             ) {
