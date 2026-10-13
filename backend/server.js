@@ -293,7 +293,7 @@ app.post('/api/auth/customer/login', rateLimit({ windowMs: 60_000, max: 10 }), a
     const localDigits = rawDigits.startsWith('0098') ? '0' + rawDigits.slice(4)
         : rawDigits.startsWith('98') ? '0' + rawDigits.slice(2) : rawDigits;
     const password = req.body?.password;
-    if (!rawPhone || !managerId || typeof password !== 'string') {
+    if (!rawPhone || !managerId || typeof password !== 'string' || password.length === 0) {
         return res.status(400).json({ error: 'phone_number, manager_id, password are required' });
     }
     try {
