@@ -3636,65 +3636,89 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun updateCustomerTransactionPayment(transaction: CustomerTransaction, paidAmount: Long, newStatus: String) {
+    fun updateCustomerTransactionPayment(
+        transaction: CustomerTransaction,
+        paidAmount: Long,
+        newStatus: String,
+        onResult: (Boolean, String?) -> Unit = { _, _ -> }
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
-            val custs = repository.allCustomers.firstOrNull() ?: emptyList()
-            val cust = custs.find { it.id == transaction.customerId }
-            
-            var finalTxAmount = transaction.amount
-            var discountDiff = 0L
-            
-            if (cust != null && transaction.status == "UNREVIEWED" && newStatus != "UNREVIEWED") {
-                val clubLevelsVal = _clubLevels.value
-                val sortedLevels = clubLevelsVal.sortedByDescending { it.requiredPoints }
-                val activeLevel = sortedLevels.find { cust.points >= it.requiredPoints } ?: clubLevelsVal.firstOrNull()
-                
-                val gameDiscPct = activeLevel?.gameDiscountPercent ?: 0L
-                val buffetDiscPct = activeLevel?.buffetDiscountPercent ?: 0L
-                val fixedDiscTom = activeLevel?.fixedDiscountToman ?: 0L
-                
-                val origGameCost = if (transaction.gameCost > 0L) transaction.gameCost else (transaction.amount - transaction.foodCost)
-                val origFoodCost = transaction.foodCost
-                val origTotal = if (transaction.amount > 0L) transaction.amount else (origGameCost + origFoodCost)
-                
-                val discountedGameCost = origGameCost * (1L - gameDiscPct / 100L)
-                val discountedFoodCost = origFoodCost * (1L - buffetDiscPct / 100L)
-                finalTxAmount = ((discountedGameCost + discountedFoodCost) - fixedDiscTom).coerceAtLeast(0L)
-                
-                discountDiff = origTotal - finalTxAmount
-            }
+            try {
+                val custs = repository.allCustomers.firstOrNull() ?: emptyList()
+                val cust = custs.find { it.id == transaction.customerId }
 
-            val updated = transaction.copy(paidAmount = paidAmount, status = newStatus, amount = finalTxAmount)
-            repository.updateCustomerTransaction(updated)
-            queueOrSyncCustomerTransaction(updated)
+                var finalTxAmount = transaction.amount
+                var discountDiff = 0L
 
-            if (cust != null) {
-                val newDebt = if (newStatus == "REVIEWED") {
-                    val remainingUnpaid = transaction.amount - transaction.paidAmount
-                    (cust.debt - remainingUnpaid).coerceAtLeast(0L)
-                } else {
-                    (cust.debt - (paidAmount - transaction.paidAmount) - discountDiff).coerceAtLeast(0L)
+                if (cust != null && transaction.status == "UNREVIEWED" && newStatus != "UNREVIEWED") {
+                    val clubLevelsVal = _clubLevels.value
+                    val sortedLevels = clubLevelsVal.sortedByDescending { it.requiredPoints }
+                    val activeLevel = sortedLevels.find { cust.points >= it.requiredPoints } ?: clubLevelsVal.firstOrNull()
+
+                    val gameDiscPct = (activeLevel?.gameDiscountPercent ?: 0L).coerceIn(0L, 100L)
+                    val buffetDiscPct = (activeLevel?.buffetDiscountPercent ?: 0L).coerceIn(0L, 100L)
+                    val fixedDiscTom = activeLevel?.fixedDiscountToman ?: 0L
+
+                    val origGameCost = if (transaction.gameCost > 0L) transaction.gameCost else (transaction.amount - transaction.foodCost).coerceAtLeast(0L)
+                    val origFoodCost = transaction.foodCost.coerceAtLeast(0L)
+                    val origTotal = if (transaction.amount > 0L) transaction.amount else (origGameCost + origFoodCost)
+
+                    // Avoid integer division (e.g. 15 / 100 becoming zero) when applying discounts.
+                    val discountedGameCost = origGameCost * (100L - gameDiscPct) / 100L
+                    val discountedFoodCost = origFoodCost * (100L - buffetDiscPct) / 100L
+                    finalTxAmount = ((discountedGameCost + discountedFoodCost) - fixedDiscTom).coerceAtLeast(0L)
+                    discountDiff = (origTotal - finalTxAmount).coerceAtLeast(0L)
                 }
-                
-                var updatedCust = cust.copy(debt = newDebt)
 
-                if (newStatus == "REVIEWED" && transaction.status != "REVIEWED") {
-                    val refId = "SESSION_${transaction.timestamp}_CUST_${transaction.customerId}"
-                    val pendingEntry = repository.getGnLedgerEntryByRef(refId)
-                    if (pendingEntry != null && pendingEntry.status == "PENDING") {
-                        val gnAmt = pendingEntry.gnAmount
-                        if (gnAmt > 0) {
-                            updatedCust = updatedCust.copy(
-                                availableGn = updatedCust.availableGn + gnAmt,
-                                pendingGn = (updatedCust.pendingGn - gnAmt).coerceAtLeast(0L)
-                            )
-                            val availableEntry = pendingEntry.copy(status = "AVAILABLE")
-                            repository.updateGnLedgerEntry(availableEntry)
+                val updated = transaction.copy(
+                    paidAmount = paidAmount.coerceAtLeast(0L),
+                    status = newStatus,
+                    amount = finalTxAmount
+                )
+
+                // For real customer invoices, do not report finalization until the server
+                // has accepted the status/payment update. Guests and trial data remain local.
+                val isLocalOnly = transaction.customerId <= 0L || NetworkClient.isTrialMode
+                if (!isLocalOnly && !SelfHostedManager.syncCustomerTransactionToCloud(updated)) {
+                    withContext(Dispatchers.Main) {
+                        onResult(false, "ثبت فاکتور روی سرور انجام نشد؛ وضعیت قبلی حفظ شد. اتصال و ورود مدیریت را بررسی کنید.")
+                    }
+                    return@launch
+                }
+
+                repository.updateCustomerTransaction(updated)
+
+                if (cust != null) {
+                    val newDebt = if (newStatus == "REVIEWED") {
+                        (cust.debt - (transaction.amount - transaction.paidAmount).coerceAtLeast(0L)).coerceAtLeast(0L)
+                    } else {
+                        (cust.debt - (paidAmount - transaction.paidAmount) - discountDiff).coerceAtLeast(0L)
+                    }
+
+                    var updatedCust = cust.copy(debt = newDebt)
+                    if (newStatus == "REVIEWED" && transaction.status != "REVIEWED") {
+                        val refId = "SESSION_${transaction.timestamp}_CUST_${transaction.customerId}"
+                        val pendingEntry = repository.getGnLedgerEntryByRef(refId)
+                        if (pendingEntry != null && pendingEntry.status == "PENDING") {
+                            val gnAmt = pendingEntry.gnAmount
+                            if (gnAmt > 0) {
+                                updatedCust = updatedCust.copy(
+                                    availableGn = updatedCust.availableGn + gnAmt,
+                                    pendingGn = (updatedCust.pendingGn - gnAmt).coerceAtLeast(0L)
+                                )
+                                repository.updateGnLedgerEntry(pendingEntry.copy(status = "AVAILABLE"))
+                            }
                         }
                     }
+                    repository.insertCustomer(updatedCust)
                 }
-                
-                repository.insertCustomer(updatedCust)
+
+                withContext(Dispatchers.Main) { onResult(true, null) }
+            } catch (e: Exception) {
+                android.util.Log.e("GameNexaInvoice", "Invoice finalization failed", e)
+                withContext(Dispatchers.Main) {
+                    onResult(false, "ثبت فاکتور ناموفق بود: ${e.message ?: "خطای نامشخص"}")
+                }
             }
         }
     }
