@@ -4927,7 +4927,8 @@ loadSettings()
         invitedByCode: String = "",
         id: Long = 0L,
         manualPoints: Long = 0L,
-        password: String = ""
+        password: String = "",
+        onPasswordSyncResult: ((Boolean) -> Unit)? = null
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             var inviteCode = ""
@@ -4979,10 +4980,19 @@ loadSettings()
             }
             checkAndAwardInvitePoints()
 
-            // Real-time Cloud sync to self-hosted server
+            // Real-time Cloud sync to self-hosted server. Password entry is an explicit account
+            // operation: report the actual server acknowledgement instead of silently showing
+            // "saved" when the password hash was never persisted remotely.
+            var passwordSyncSucceeded = false
             try {
-                SelfHostedManager.upsertCustomer(customer.copy(id = finalCustomerId), finalPassword.takeIf { it.isNotEmpty() })
-            } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
+                val synced = SelfHostedManager.upsertCustomer(customer.copy(id = finalCustomerId), finalPassword.takeIf { it.isNotEmpty() })
+                if (finalPassword.isNotEmpty()) passwordSyncSucceeded = synced
+            } catch (ignored: Exception) {
+                android.util.Log.e("GameNexa", "Customer cloud sync failed", ignored)
+            }
+            if (finalPassword.isNotEmpty()) {
+                withContext(Dispatchers.Main) { onPasswordSyncResult?.invoke(passwordSyncSucceeded) }
+            }
 
             logOperatorActivity(
                 actionTitle = if (id == 0L) "افزودن مشتری جدید" else "ویرایش اطلاعات مشتری",

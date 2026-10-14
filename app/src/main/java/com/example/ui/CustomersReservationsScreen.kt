@@ -371,13 +371,13 @@ fun CustomersReservationsScreen(viewModel: GameNetViewModel) {
             lang = lang,
             viewModel = viewModel,
             onDismiss = { showCustomerDialog = false },
-            onSave = { name, phone, debt, credit, desc, invitedByCode, manualPoints, password ->
+            onSave = { name, phone, debt, credit, desc, invitedByCode, manualPoints, password, onPasswordSyncResult ->
                 if (editingCustomer != null) {
                     // Update preserving the original ID
-                    viewModel.addCustomer(name, phone, debt.toLong(), credit.toLong(), desc, invitedByCode, editingCustomer!!.id, manualPoints.toLong(), password)
+                    viewModel.addCustomer(name, phone, debt.toLong(), credit.toLong(), desc, invitedByCode, editingCustomer!!.id, manualPoints.toLong(), password, onPasswordSyncResult)
                 } else {
                     // Create
-                    viewModel.addCustomer(name, phone, debt.toLong(), credit.toLong(), desc, invitedByCode, 0L, manualPoints.toLong(), password)
+                    viewModel.addCustomer(name, phone, debt.toLong(), credit.toLong(), desc, invitedByCode, 0L, manualPoints.toLong(), password, onPasswordSyncResult)
                 }
                 showCustomerDialog = false
                 Toast.makeText(context, Localization.get("customer_saved", lang), Toast.LENGTH_SHORT).show()
@@ -3042,7 +3042,7 @@ fun CustomerFormDialog(
     customer: Customer?,
     lang: String,
     onDismiss: () -> Unit,
-    onSave: (name: String, phone: String, debt: Double, credit: Double, desc: String, invitedByCode: String, manualPoints: Double, password: String) -> Unit,
+    onSave: (name: String, phone: String, debt: Double, credit: Double, desc: String, invitedByCode: String, manualPoints: Double, password: String, onPasswordSyncResult: (Boolean) -> Unit) -> Unit,
     viewModel: GameNetViewModel
 ) {
     val context = LocalContext.current
@@ -3362,7 +3362,14 @@ fun CustomerFormDialog(
                         val debt = debtInput.toDoubleOrNull() ?: 0.0
                         val credit = creditInput.toDoubleOrNull() ?: 0.0
                         val manualPoints = manualPointsInput.toDoubleOrNull() ?: 0.0
-                        onSave(fullName, phoneNumber, debt, credit, description, invitedByCode, manualPoints, password)
+                        onSave(fullName, phoneNumber, debt, credit, description, invitedByCode, manualPoints, password) { synced ->
+                            Toast.makeText(
+                                context,
+                                if (synced) "رمز عبور مشتری با موفقیت روی سرور ثبت شد."
+                                else "مشتری ذخیره شد، اما رمز عبور روی سرور ثبت نشد؛ اتصال/دسترسی مدیریت را بررسی کنید.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
                     }
                 },
                 enabled = fullName.isNotBlank(),
