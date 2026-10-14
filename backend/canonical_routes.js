@@ -117,6 +117,9 @@ module.exports = function registerCanonicalRoutes({ app, pool, requireManagerAut
   app.post('/api/v1/manager/customers', requireManagerAuth, requireActiveEntitlement, async (req,res)=>{ try {
     const mid=manager(req), b=req.body||{}; const phone=String(b.phoneNumber||b.phone_number||b.customer_phone||'').trim();
     const name=String(b.fullName||b.full_name||b.customer_name||'').trim(); if(!phone||!name) return res.status(400).json({error:'fullName and phoneNumber are required'});
+    if (b.password !== undefined && b.password !== null && String(b.password).length > 0 && String(b.password).length < 8) {
+      return res.status(400).json({ error: 'Customer password must be at least 8 characters.' });
+    }
     const existing=await pool.query('SELECT id FROM customers WHERE manager_id=$1 AND phone_number=$2 LIMIT 1',[mid,phone]);
     let q;
     if(existing.rows[0]) q=await pool.query("UPDATE customers SET full_name=$1,debt=COALESCE($2,debt),wallet_balance=COALESCE($3,wallet_balance),credit=COALESCE($3,credit),description=COALESCE($4,description),club_tier=COALESCE($5,club_tier),invite_code=COALESCE(NULLIF($6,''),invite_code),invited_by_code=COALESCE(NULLIF($7,''),invited_by_code),lp_balance=GREATEST(0,COALESCE($8,lp_balance)),gn_balance=GREATEST(0,COALESCE($9,gn_balance)),pending_gn=GREATEST(0,COALESCE($10,pending_gn)),updated_at=NOW() WHERE id=$11 AND manager_id=$12 RETURNING *",[name,b.debt,b.credit,b.description,b.tier,b.inviteCode,b.invitedByCode,b.lp,b.availableGn,b.pendingGn,existing.rows[0].id,mid]);

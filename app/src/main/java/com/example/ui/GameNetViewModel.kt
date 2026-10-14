@@ -4933,7 +4933,7 @@ loadSettings()
             var inviteCode = ""
             var existingPoints = 0L
             var invitePointsAwarded = false
-            var finalPassword = password.trim()
+            val finalPassword = password
 
             if (id != 0L) {
                 val existing = repository.getCustomerById(id)
@@ -4981,7 +4981,7 @@ loadSettings()
 
             // Real-time Cloud sync to self-hosted server
             try {
-                SelfHostedManager.upsertCustomer(customer.copy(id = finalCustomerId))
+                SelfHostedManager.upsertCustomer(customer.copy(id = finalCustomerId), finalPassword.takeIf { it.isNotEmpty() })
             } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
 
             logOperatorActivity(
@@ -5004,7 +5004,7 @@ loadSettings()
         viewModelScope.launch(Dispatchers.IO) {
             val trimmedName = fullName.trim().ifBlank { guestName.trim() }
             val trimmedPhone = phoneNumber.trim()
-            val cleanPass = password.trim()
+            val cleanPass = password
             var inviteCode = ""
             if (trimmedName.isNotBlank() && trimmedPhone.isNotBlank()) {
                 val record = repository.getInviteCodeRecord(trimmedPhone, trimmedName)
@@ -5037,7 +5037,7 @@ loadSettings()
 
             // Real-time Cloud sync to self-hosted server
             try {
-                SelfHostedManager.upsertCustomer(newCustomer.copy(id = newId))
+                SelfHostedManager.upsertCustomer(newCustomer.copy(id = newId), cleanPass.takeIf { it.isNotEmpty() })
             } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
 
             logOperatorActivity("تبدیل مهمان به مشتری", "نام: $trimmedName | تلفن: $trimmedPhone")

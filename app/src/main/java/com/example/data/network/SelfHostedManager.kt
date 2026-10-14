@@ -611,13 +611,16 @@ object SelfHostedManager {
         _allCloudCustomers.value.any { it.id == customerId || (normPhone.isNotBlank() && normalizePhone(it.phoneNumber) == normPhone) }
     }
 
-    suspend fun upsertCustomerCanonical(customer: Customer): Customer? = withContext(Dispatchers.IO) {
+    suspend fun upsertCustomerCanonical(customer: Customer, password: String? = null): Customer? = withContext(Dispatchers.IO) {
         try {
             val json=JSONObject().apply {
                 put("id",customer.id); put("fullName",customer.fullName); put("phoneNumber",customer.phoneNumber)
                 put("debt",customer.debt); put("credit",customer.credit); put("tier",customer.tier)
                 if (customer.lp > 0L) put("lp", customer.lp)
                 put("availableGn",customer.availableGn); put("pendingGn",customer.pendingGn); put("inviteCode",customer.inviteCode); put("invitedByCode",customer.invitedByCode); put("description",customer.description)
+                // Never persist a password locally or send it during background sync. Only an explicit
+                // Manager password submission is sent to the server for bcrypt hashing.
+                if (!password.isNullOrEmpty()) put("password", password)
             }
             val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).post(json.toString().toRequestBody(JSON_MEDIA)).build()
             client.newCall(req).execute().use { resp ->
@@ -634,8 +637,8 @@ object SelfHostedManager {
         } catch(e:Exception){Log.e(TAG,"upsertCustomerCanonical error: \${e.message}",e);null}
     }
 
-    suspend fun upsertCustomer(customer: Customer): Boolean = withContext(Dispatchers.IO) {
-        upsertCustomerCanonical(customer) != null
+    suspend fun upsertCustomer(customer: Customer, password: String? = null): Boolean = withContext(Dispatchers.IO) {
+        upsertCustomerCanonical(customer, password) != null
     }
 
     suspend fun deleteCustomer(customerId: Long, phoneNumber: String = ""): Boolean = withContext(Dispatchers.IO) {
@@ -1362,16 +1365,32 @@ object SelfHostedManager {
     }
 
     suspend fun finalizeSettlementReview(sessionId: String, decisions: List<JSONObject>): JSONObject? = withContext(Dispatchers.IO) {
-        try {
-            val arr=JSONArray(); decisions.forEach { arr.put(it) }
-            val body=JSONObject().apply { put("decisions",arr) }
-            val req=Request.Builder().url("$SERVER_URL/api/v1/manager/sessions/$sessionId/review-finalize").headers(getBaseHeaders()).post(body.toString().toRequestBody(JSON_MEDIA)).build()
-            client.newCall(req).execute().use { resp ->
-                val raw=resp.body?.string().orEmpty()
-                if(!resp.isSuccessful) { Log.w(TAG,"finalizeSettlementReview HTTP ${resp.code}: $raw"); return@withContext null }
-                JSONObject(raw)
+        val arr=JSONArray(); decisions.forEach { arr.put(it) }
+        val body=JSONObject().apply { put("decisions",arr) }.toString().toRequestBody(JSON_MEDIA)
+        val req=Request.Builder().url("$SERVER_URL/api/v1/manager/sessions/$sessionId/review-finalize").headers(getBaseHeaders()).post(body).build()
+        // Finalization is server-idempotent. If the server commits but the response is lost (the
+        // exact symptom seen when the invoice changes after force-close), retry the same request
+        // once so the idempotent backend can return the committed result to Android.
+        for (attempt in 1..2) {
+            try {
+                client.newCall(req).execute().use { resp ->
+                    val raw=resp.body?.string().orEmpty()
+                    if (resp.isSuccessful) {
+                        val parsed = runCatching { JSONObject(raw) }.getOrNull()
+                        if (parsed != null) return@withContext parsed
+                        Log.w(TAG,"finalizeSettlementReview returned invalid JSON on attempt $attempt")
+                    } else {
+                        Log.w(TAG,"finalizeSettlementReview HTTP ${resp.code} on attempt $attempt: $raw")
+                        if (resp.code < 500 || attempt == 2) return@withContext null
+                    }
+                }
+            } catch(e:Exception) {
+                Log.w(TAG,"finalizeSettlementReview error on attempt $attempt: ${e.message}",e)
+                if (attempt == 2) return@withContext null
             }
-        } catch(e:Exception){ Log.w(TAG,"finalizeSettlementReview error: ${e.message}"); null }
+            if (attempt == 1) delay(250L)
+        }
+        null
     }
 
     suspend fun refundSessionPrepayment(sessionId: String, allocations: Map<Long,Long>): Boolean = withContext(Dispatchers.IO) {

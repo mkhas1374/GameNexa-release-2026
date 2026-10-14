@@ -3185,12 +3185,17 @@ fun CustomerFormDialog(
                                     fontWeight = FontWeight.Medium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                Text(
+                                    text = "برای مشتریانی که قبلاً رمز روی سرور ثبت نشده، یک رمز جدید حداقل ۸ نویسه تعیین کنید. خالی گذاشتن این فیلد رمز قبلی را تغییر نمی‌دهد.",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
 
                                 OutlinedTextField(
                                     value = password,
                                     onValueChange = { password = viewModel.toEnglishDigits(it) },
                                     label = { Text("رمز عبور اختصاصی مشتری", fontSize = 11.sp) },
-                                    placeholder = { Text("مثلاً 123456 یا دکمه تولید خودکار", fontSize = 11.sp) },
+                                    placeholder = { Text("حداقل ۸ نویسه؛ یا تولید خودکار", fontSize = 11.sp) },
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(10.dp),
                                     singleLine = true,
@@ -3346,6 +3351,14 @@ fun CustomerFormDialog(
             Button(
                 onClick = {
                     if (fullName.isNotBlank()) {
+                        if (password.isNotEmpty() && password.length < 8) {
+                            Toast.makeText(context, "رمز عبور مشتری باید حداقل ۸ نویسه باشد.", Toast.LENGTH_LONG).show()
+                            return@Button
+                        }
+                        if (phoneNumber.isBlank()) {
+                            Toast.makeText(context, "برای حساب مشتری، شماره همراه/نام کاربری الزامی است.", Toast.LENGTH_LONG).show()
+                            return@Button
+                        }
                         val debt = debtInput.toDoubleOrNull() ?: 0.0
                         val credit = creditInput.toDoubleOrNull() ?: 0.0
                         val manualPoints = manualPointsInput.toDoubleOrNull() ?: 0.0
