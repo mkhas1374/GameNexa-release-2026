@@ -3193,7 +3193,7 @@ fun CustomerFormDialog(
 
                                 OutlinedTextField(
                                     value = password,
-                                    onValueChange = { password = viewModel.toEnglishDigits(it) },
+                                    onValueChange = { password = it },
                                     label = { Text("رمز عبور اختصاصی مشتری", fontSize = 11.sp) },
                                     placeholder = { Text("حداقل ۸ نویسه؛ یا تولید خودکار", fontSize = 11.sp) },
                                     modifier = Modifier.fillMaxWidth(),

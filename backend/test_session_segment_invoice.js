@@ -63,6 +63,7 @@ assert(managerApi.includes('if (!password.isNullOrEmpty()) put("password", passw
 assert(vm.includes('SelfHostedManager.upsertCustomer(customer.copy(id = finalCustomerId), finalPassword.takeIf { it.isNotEmpty() })'), 'Manager-entered customer password must reach the backend on create/edit');
 assert(vm.includes('onPasswordSyncResult?.invoke(passwordSyncSucceeded)'), 'Android must report whether the customer password was actually acknowledged by the server');
 assert(invoice.includes('رمز عبور مشتری با موفقیت روی سرور ثبت شد') && invoice.includes('رمز عبور روی سرور ثبت نشد'), 'Manager UI must distinguish local customer save from remote password save');
+assert(invoice.includes('onValueChange = { password = it }') && !invoice.includes('onValueChange = { password = viewModel.toEnglishDigits(it) }'), 'customer passwords must be treated as opaque strings and not digit-normalized in the Manager UI');
 assert(vm.includes('SelfHostedManager.upsertCustomer(newCustomer.copy(id = newId), cleanPass.takeIf { it.isNotEmpty() })'), 'guest-to-customer conversion must send an explicitly assigned password');
 assert(backend.includes('Customer password must be at least 8 characters.'), 'backend must reject too-short passwords instead of silently ignoring them');
 assert(managerApi.includes('for (attempt in 1..2)') && managerApi.includes('server commits but the response is lost'), 'invoice finalization must retry one ambiguous/5xx result through the idempotent backend');
