@@ -590,10 +590,18 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
                  WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id),'[]'::json) AS participants
         FROM game_sessions gs
         WHERE gs.manager_id=$1 AND gs.status IN ('ACTIVE','PAUSED')
-          AND (
-            EXISTS (SELECT 1 FROM session_participants sp WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id AND sp.customer_id=$2 AND sp.is_guest=FALSE)
-            OR EXISTS (SELECT 1 FROM customer_transactions ct WHERE ct.session_id=gs.id AND ct.manager_id=gs.manager_id AND ct.customer_id=$2 AND ct.status<>'DELETED')
-            OR EXISTS (SELECT 1 FROM invoices i WHERE i.session_id=gs.id AND i.manager_id=gs.manager_id AND i.customer_id=$2)
+          -- Historic transactions/invoices must never resurrect a previous live session.
+          AND EXISTS (
+            SELECT 1 FROM session_participants sp
+            WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id
+              AND sp.customer_id=$2 AND sp.is_guest=FALSE
+          )
+          -- If a settlement response was lost and a new session started, expose only the newest
+          -- active session on that station to customer profiles.
+          AND NOT EXISTS (
+            SELECT 1 FROM game_sessions newer
+            WHERE newer.manager_id=gs.manager_id AND newer.station_id=gs.station_id
+              AND newer.status IN ('ACTIVE','PAUSED') AND newer.started_at>gs.started_at
           )
         ORDER BY gs.started_at DESC`,[mid,cid]);
       const stations=q.rows.map(row=>{

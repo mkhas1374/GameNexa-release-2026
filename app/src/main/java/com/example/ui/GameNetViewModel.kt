@@ -6954,7 +6954,7 @@ loadSettings()
         // showed HTTP 200 for review-finalize, followed by the updated Manager transaction
         // list, even though Android displayed a connection error. Reconcile against the
         // server's authoritative queue before reporting failure to the Manager.
-        val result = if (directResult == null || !directResult.optBoolean("success", true)) {
+        val result = if (directResult == null || !directResult.optBoolean("success", false)) {
             // A reverse proxy can drop the POST response after PostgreSQL commits. One immediate
             // GET can race the commit becoming visible, so poll the authoritative transaction
             // queue briefly before telling the Manager that finalization failed.

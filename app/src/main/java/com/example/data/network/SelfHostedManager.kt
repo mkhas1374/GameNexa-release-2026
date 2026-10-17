@@ -1444,8 +1444,11 @@ object SelfHostedManager {
                     val raw=resp.body?.string().orEmpty()
                     if (resp.isSuccessful) {
                         val parsed = runCatching { JSONObject(raw) }.getOrNull()
-                        if (parsed != null) return@withContext parsed
-                        Log.w(TAG,"finalizeSettlementReview returned invalid JSON on attempt $attempt")
+                        if (parsed != null && parsed.optBoolean("success", false)) return@withContext parsed
+                        // HTTP 200 alone is not proof of finalization. Retry the same idempotent
+                        // request when the response body is empty or explicitly unsuccessful.
+                        Log.w(TAG,"finalizeSettlementReview returned non-success payload on attempt $attempt: $raw")
+                        if (attempt == 2) return@withContext null
                     } else {
                         Log.w(TAG,"finalizeSettlementReview HTTP ${resp.code} on attempt $attempt: $raw")
                         if (resp.code < 500 || attempt == 2) return@withContext null
