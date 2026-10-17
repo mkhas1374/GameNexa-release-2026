@@ -46,7 +46,6 @@ fun CustomerDashboardTab(
     val context = LocalContext.current
     val customers by viewModel.customers.collectAsState()
     val allCloudCustomers by SelfHostedManager.allCloudCustomers.collectAsState()
-    val stationStates by viewModel.stationStates.collectAsState()
     val cloudLiveStations by SelfHostedManager.allLiveStations.collectAsState()
     val ownerBroadcastAnnouncement by viewModel.ownerBroadcastAnnouncement.collectAsState()
     val ownerBroadcastMessage by viewModel.ownerBroadcastMessage.collectAsState()
@@ -63,7 +62,11 @@ fun CustomerDashboardTab(
         val cloudCust = allCloudCustomers.find { 
             (phone.isNotBlank() && it.phoneNumber.trim() == phone) || (authId > 0 && it.id == authId) 
         }
-        if (cloudCust != null) {
+        // The authenticated customer profile is the server-authoritative identity/balance.
+        // A stale Manager customer cache must never override it in GN Customers.
+        if (currentCustomerAuth != null && authId > 0L) {
+            currentCustomerAuth
+        } else if (cloudCust != null) {
             cloudCust
         } else {
             customers.find { (phone.isNotBlank() && it.phoneNumber.trim() == phone) || (authId > 0 && it.id == authId) }
@@ -74,63 +77,33 @@ fun CustomerDashboardTab(
 
     val customer = matchedCustomer
 
-    // Find active station for this customer from local state or cloud live stations
-    val activeStation = remember(stationStates, cloudLiveStations, customer, currentCustomerAuth) {
-        val targetName = customer.fullName.trim()
-        val targetPhone = customer.phoneNumber.trim()
-        val targetId = customer.id
-        val authId = currentCustomerAuth?.id ?: 0L
-        val authPhone = currentCustomerAuth?.phoneNumber?.trim() ?: ""
-
-        val localMatch = stationStates.find { station ->
-            (station.status == "RUNNING" || station.status == "PAUSED") && (
-                (targetName.isNotBlank() && station.selectedCustomerNamesStr.split(",").any { name ->
-                    val clean = name.trim()
-                    clean.isNotBlank() && (clean.equals(targetName, ignoreCase = true) || targetName.contains(clean, ignoreCase = true) || clean.contains(targetName, ignoreCase = true))
-                }) ||
-                (targetPhone.isNotBlank() && (station.selectedCustomerNamesStr.contains(targetPhone) || station.selectedCustomerIdsStr.contains(targetPhone))) ||
-                (authPhone.isNotBlank() && (station.selectedCustomerNamesStr.contains(authPhone) || station.selectedCustomerIdsStr.contains(authPhone))) ||
-                (targetId > 0 && (station.getCustomerIds().contains(targetId) || station.selectedCustomerIdsStr.contains(targetId.toString()))) ||
-                (authId > 0 && (station.getCustomerIds().contains(authId) || station.selectedCustomerIdsStr.contains(authId.toString())))
-            )
-        }
-        if (localMatch != null) return@remember localMatch
-
-        val cloudMatch = cloudLiveStations.find { st ->
-            (st.status == "RUNNING" || st.status == "PAUSED") && (
-                (targetName.isNotBlank() && st.customerNamesStr.split(",").any { name ->
-                    val clean = name.trim()
-                    clean.isNotBlank() && (clean.equals(targetName, ignoreCase = true) || targetName.contains(clean, ignoreCase = true) || clean.contains(targetName, ignoreCase = true))
-                }) ||
-                (targetPhone.isNotBlank() && (st.customerNamesStr.contains(targetPhone) || st.customerIdsStr.contains(targetPhone))) ||
-                (authPhone.isNotBlank() && (st.customerNamesStr.contains(authPhone) || st.customerIdsStr.contains(authPhone))) ||
-                (targetId > 0 && st.customerIdsStr.isNotBlank() && st.customerIdsStr.split(",").map { it.trim() }.contains(targetId.toString())) ||
-                (authId > 0 && st.customerIdsStr.isNotBlank() && st.customerIdsStr.split(",").map { it.trim() }.contains(authId.toString()))
-            )
-        }
-        if (cloudMatch != null) {
+    // The backend endpoint is already scoped to the authenticated customer. Never infer
+    // an active session from stale local Manager station state or fuzzy name/phone matches.
+    val activeStation = remember(cloudLiveStations) {
+        cloudLiveStations.firstOrNull { it.status == "RUNNING" || it.status == "PAUSED" }?.let { live ->
             StationState(
-                id = cloudMatch.stationId,
-                status = cloudMatch.status,
-                consoleType = cloudMatch.consoleType,
-                controllerCount = cloudMatch.controllerCount,
-                startTimeMillis = cloudMatch.startTimeMillis,
-                lastStateChangeTimeMillis = cloudMatch.lastStateChangeMillis,
-                elapsedPlayingTimeMillis = cloudMatch.elapsedPlayingTimeMillis,
-                prepaymentAmount = cloudMatch.prepaymentAmount,
-                durationLimitMinutes = cloudMatch.durationLimitMinutes,
-                selectedCustomerIdsStr = cloudMatch.customerIdsStr,
-                selectedCustomerNamesStr = cloudMatch.customerNamesStr
+                id = live.stationId,
+                status = live.status,
+                consoleType = live.consoleType,
+                controllerCount = live.controllerCount,
+                startTimeMillis = live.startTimeMillis,
+                lastStateChangeTimeMillis = live.lastStateChangeMillis,
+                elapsedPlayingTimeMillis = live.elapsedPlayingTimeMillis,
+                prepaymentAmount = live.prepaymentAmount,
+                durationLimitMinutes = live.durationLimitMinutes,
+                selectedCustomerIdsStr = live.customerIdsStr,
+                selectedCustomerNamesStr = live.customerNamesStr
             )
-        } else null
+        }
     }
 
-    // Real-time background sync loop while customer is in app
+    // Real-time background sync loop while customer is in app. These endpoints use the
+    // customer token and are tenant-scoped by the backend.
     LaunchedEffect(Unit) {
         while (isActive) {
             try {
-                SelfHostedManager.fetchLiveStationsFromCloud()
-                // Refresh the authenticated customer with the server token; never re-login with a locally stored password.
+                SelfHostedManager.fetchCustomerLiveSessionFromCloud()
+                // Refresh balances/profile from the server; never re-login with a locally stored password.
                 SelfHostedManager.refreshCurrentCustomerProfile()
             } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in CustomerAppContent.kt", e) }
             delay(3000L) // Polling every 3s for Real-Time Experience
@@ -138,13 +111,14 @@ fun CustomerDashboardTab(
     }
 
     val numberFormat = remember { DecimalFormat("#,###") }
-    val customerLedger by produceState<List<GnLedgerEntry>>(initialValue = emptyList(), key1 = customer.id) {
-        if (customer.id > 0) {
-            value = SelfHostedManager.fetchGnLedgerForCustomer(customer.id)
-        }
+    val customerLedger by produceState<List<GnLedgerEntry>>(initialValue = emptyList(), key1 = customer.id, key2 = customer.availableGn) {
+        if (customer.id > 0) value = SelfHostedManager.fetchGnLedgerForCustomer(customer.id)
+    }
+    val customerLpLedger by produceState<List<com.example.data.network.ManagerLpHistory>>(initialValue = emptyList(), key1 = customer.id, key2 = customer.lp) {
+        if (customer.id > 0) value = SelfHostedManager.fetchLpLedgerForCustomer(customer.id)
     }
 
-    val currentLp = maxOf(customer.points, customer.lp)
+    val currentLp = customer.lp
     val sortedLevels = remember(clubLevels) { clubLevels.sortedBy { it.requiredPoints } }
 
     val currentLevelIndex = remember(sortedLevels, currentLp, customer.tier) {
@@ -288,7 +262,7 @@ fun CustomerDashboardTab(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "${numberFormat.format(customer.points)} LP",
+                            text = "${numberFormat.format(customer.lp)} LP",
                             fontSize = 22.sp,
                             fontWeight = FontWeight.ExtraBold,
                             color = MaterialTheme.colorScheme.secondary
@@ -1115,6 +1089,27 @@ fun CustomerLoyaltyProgressDialog(
                                         fontWeight = FontWeight.Bold,
                                         color = if (isEarn) Color(0xFF2E7D32) else Color(0xFFC2410C)
                                     )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (customerLpLedger.isNotEmpty()) {
+                    Text("🏆 تاریخچه امتیازهای LP:", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        customerLpLedger.take(5).forEach { entry ->
+                            Surface(
+                                shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surface,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(modifier = Modifier.padding(8.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(entry.referenceType.ifBlank { entry.type }, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                                        if (entry.timestamp > 0L) Text(java.text.SimpleDateFormat("yyyy/MM/dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(entry.timestamp)), fontSize = 8.sp, color = MaterialTheme.colorScheme.outline)
+                                    }
+                                    Text("${if (entry.amount >= 0) "+" else ""}${numberFormat.format(entry.amount)} LP", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (entry.amount >= 0) Color(0xFF2E7D32) else Color(0xFFC2410C))
                                 }
                             }
                         }

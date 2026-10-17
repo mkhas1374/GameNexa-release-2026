@@ -756,6 +756,7 @@ object SelfHostedManager {
     }
 
     suspend fun fetchArchivedCustomersFromCloud(): Boolean = withContext(Dispatchers.IO) {
+        if (NetworkClient.managerAuthToken.isNullOrBlank()) return@withContext false
         try {
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/manager/customers/archived")
@@ -779,6 +780,10 @@ object SelfHostedManager {
     }
 
     suspend fun fetchAllFromCloud(): Boolean = withContext(Dispatchers.IO) {
+        if (NetworkClient.managerAuthToken.isNullOrBlank()) {
+            Log.d(TAG, "Skip Manager cloud hydration: no authenticated Manager session")
+            return@withContext false
+        }
         try {
             val req=Request.Builder().url("$SERVER_URL/api/v1/manager/customers").headers(getBaseHeaders()).get().build()
             client.newCall(req).execute().use{resp->
@@ -792,6 +797,10 @@ object SelfHostedManager {
     }
 
     suspend fun fetchLiveStationsFromCloud() = withContext(Dispatchers.IO) {
+        if (NetworkClient.managerAuthToken.isNullOrBlank()) {
+            _allLiveStations.value = emptyList()
+            return@withContext
+        }
         try {
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/manager/live-stations")
@@ -833,6 +842,41 @@ object SelfHostedManager {
             }
         } catch (e: Exception) {
             Log.e(TAG, "fetchLiveStationsFromCloud error: ${e.message}", e)
+        }
+    }
+
+    /** Customer-safe live feed; do not call Manager-only live-stations from the customer profile. */
+    suspend fun fetchCustomerLiveSessionFromCloud(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            if (NetworkClient.customerAuthToken.isNullOrBlank()) {
+                _allLiveStations.value = emptyList()
+                return@withContext false
+            }
+            val request = Request.Builder()
+                .url("$SERVER_URL/api/v1/customer/live-session")
+                .headers(getCustomerHeaders())
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful || body.isBlank()) {
+                    if (response.code == 401 || response.code == 403) _allLiveStations.value = emptyList()
+                    Log.w(TAG, "fetchCustomerLiveSessionFromCloud HTTP ${response.code}: ${body.take(180)}")
+                    return@withContext false
+                }
+                val root = JSONObject(body)
+                val array = root.optJSONArray("stations") ?: JSONArray()
+                val stations = mutableListOf<CloudLiveStation>()
+                for (i in 0 until array.length()) {
+                    val item = array.optJSONObject(i) ?: continue
+                    stations += parseCloudLiveStation(item)
+                }
+                _allLiveStations.value = stations
+                true
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchCustomerLiveSessionFromCloud failed: ${e.message}")
+            false
         }
     }
 
@@ -947,7 +991,7 @@ object SelfHostedManager {
             debt = obj.optLong("debt", 0L),
             credit = obj.optLong("wallet_balance", obj.optLong("credit", 0L)),
             points = obj.optLong("points", 0L),
-            availableGn = obj.optLong("availableGn", obj.optLong("available_gn", 0L)),
+            availableGn = obj.optLong("availableGn", obj.optLong("available_gn", obj.optLong("gn_balance", 0L))),
             pendingGn = obj.optLong("pendingGn", obj.optLong("pending_gn", 0L)),
             lp = obj.optLong("lp", obj.optLong("lp_balance", 0L)),
             tier = obj.optString("tier", "BRONZE"),
@@ -1123,7 +1167,29 @@ object SelfHostedManager {
         }
     }
 
+    suspend fun fetchCustomerAppConfig(key: String): String? = withContext(Dispatchers.IO) {
+        if (NetworkClient.customerAuthToken.isNullOrBlank()) return@withContext null
+        try {
+            val request = Request.Builder()
+                .url("$SERVER_URL/api/v1/customer/config/${java.net.URLEncoder.encode(key, "UTF-8")}")
+                .headers(getCustomerHeaders())
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val root = JSONObject(response.body?.string().orEmpty())
+                val value = root.optString("value", "")
+                if (value.isNotBlank()) _cloudAppConfigs.value = _cloudAppConfigs.value + (key to value)
+                value.takeIf { it.isNotBlank() }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchCustomerAppConfig failed: ${e.message}")
+            null
+        }
+    }
+
     suspend fun fetchAppConfig(key: String): String? = withContext(Dispatchers.IO) {
+        if (NetworkClient.managerAuthToken.isNullOrBlank()) return@withContext null
         _cloudAppConfigs.value[key]?.let { return@withContext it }
         try {
             val customerIdParam = _currentLoggedInCustomer.value?.id?.let { "?customerId=$it" } ?: ""
@@ -1240,6 +1306,7 @@ object SelfHostedManager {
     }
 
     suspend fun fetchManagerCustomerActivity(customerId: Long): ManagerCustomerActivity = withContext(Dispatchers.IO) {
+        if (NetworkClient.managerAuthToken.isNullOrBlank()) return@withContext ManagerCustomerActivity()
         try {
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/manager/customers/$customerId/activity")
@@ -1449,13 +1516,17 @@ object SelfHostedManager {
                             id = obj.optLong("id", 0L),
                             customerId = obj.optLong("customerId", obj.optLong("customer_id", 0L)),
                             customerName = obj.optString("customerName", obj.optString("customer_name", "")),
-                            gnAmount = obj.optLong("gnAmount", obj.optLong("gn_amount", 0L)),
-                            transactionType = obj.optString("transactionType", obj.optString("transaction_type", "")),
-                            source = obj.optString("source", "EARNED"),
+                            gnAmount = run {
+                                val rawAmount = obj.optLong("gnAmount", obj.optLong("gn_amount", obj.optLong("amount", 0L)))
+                                val type = obj.optString("type", obj.optString("transactionType", obj.optString("transaction_type", "")))
+                                if (type.equals("DEBIT", true) || type.equals("SPENT", true) || type.equals("PENALTY", true)) -kotlin.math.abs(rawAmount) else rawAmount
+                            },
+                            transactionType = obj.optString("type", obj.optString("transactionType", obj.optString("transaction_type", ""))),
+                            source = obj.optString("reference_type", obj.optString("source", "EARNED")),
                             status = obj.optString("status", "AVAILABLE"),
-                            timestamp = obj.optLong("timestamp", 0L),
-                            referenceId = obj.optString("referenceId", obj.optString("reference_id", "")),
-                            description = obj.optString("description", "")
+                            timestamp = obj.optLong("timestamp", 0L).takeIf { it > 0L } ?: runCatching { java.time.OffsetDateTime.parse(obj.optString("created_at")).toInstant().toEpochMilli() }.getOrDefault(0L),
+                            referenceId = obj.optString("reference_id", obj.optString("referenceId", "")),
+                            description = obj.optString("description", obj.optString("reference_type", obj.optString("type", "")))
                         )
                     )
                 }
@@ -1465,6 +1536,39 @@ object SelfHostedManager {
             Log.w(TAG, "fetchGnLedgerForCustomer error: ${e.message}")
         }
         emptyList<GnLedgerEntry>()
+    }
+
+    suspend fun fetchLpLedgerForCustomer(customerId: Long): List<ManagerLpHistory> = withContext(Dispatchers.IO) {
+        if (customerId <= 0L || NetworkClient.customerAuthToken.isNullOrBlank()) return@withContext emptyList()
+        try {
+            val request = Request.Builder()
+                .url("$SERVER_URL/api/v1/customer/club/lp-ledger")
+                .headers(getCustomerHeaders())
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext emptyList()
+                val raw = response.body?.string().orEmpty()
+                val rows = if (raw.trim().startsWith("[")) JSONArray(raw) else JSONObject(raw).optJSONArray("data") ?: JSONArray()
+                val result = mutableListOf<ManagerLpHistory>()
+                for (i in 0 until rows.length()) {
+                    val row = rows.optJSONObject(i) ?: continue
+                    val type = row.optString("type", "")
+                    val rawAmount = row.optLong("amount", 0L)
+                    val signedAmount = if (type.equals("DEBIT", true) || type.equals("SPENT", true) || type.equals("PENALTY", true)) -kotlin.math.abs(rawAmount) else rawAmount
+                    val timestamp = row.optLong("timestamp", 0L).takeIf { it > 0L } ?: runCatching { java.time.OffsetDateTime.parse(row.optString("created_at")).toInstant().toEpochMilli() }.getOrDefault(0L)
+                    result += ManagerLpHistory(
+                        id = row.optLong("id", 0L), customerId = row.optLong("customer_id", row.optLong("customerId", customerId)),
+                        amount = signedAmount, type = type, referenceType = row.optString("reference_type", ""),
+                        referenceId = row.optString("reference_id", ""), timestamp = timestamp
+                    )
+                }
+                result.sortedByDescending { it.timestamp }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchLpLedgerForCustomer failed: ${e.message}")
+            emptyList()
+        }
     }
 
     suspend fun syncCustomerToCloud(customer: Customer): Boolean = withContext(Dispatchers.IO) {
@@ -1659,6 +1763,7 @@ object SelfHostedManager {
 
     /** Manager-scoped financial history. A successful empty response is authoritative. */
     suspend fun fetchManagerCustomerTransactions(): List<CustomerTransaction>? = withContext(Dispatchers.IO) {
+        if (NetworkClient.managerAuthToken.isNullOrBlank()) return@withContext null
         try {
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/manager/customer-transactions")
@@ -1741,28 +1846,31 @@ object SelfHostedManager {
             val list = mutableListOf<CustomerTransaction>()
             for (i in 0 until data.length()) {
                 val item = data.getJSONObject(i)
-                val cid = item.optLong("customerId", 0L)
+                val cid = item.optLong("customer_id", item.optLong("customerId", 0L))
                 if (cid == customerId) {
-                    val localId = if (item.has("id")) item.optLong("id", 0L) else item.optLong("localId", 0L)
-                    val ts = item.optLong("timestamp", 0L)
-                    val finalId = if (localId > 0L) localId else if (ts > 0L) ts else (i + 1).toLong()
+                    val localId = item.optLong("local_id", item.optLong("localId", item.optLong("id", 0L)))
+                    val ts = item.optLong("event_timestamp", item.optLong("timestamp", 0L)).takeIf { it > 0L } ?: runCatching { java.time.OffsetDateTime.parse(item.optString("created_at")).toInstant().toEpochMilli() }.getOrDefault(0L)
+                    val finalId = if (localId > 0L) localId else if (item.optLong("id", 0L) > 0L) item.optLong("id") else if (ts > 0L) ts else (i + 1).toLong()
                     list.add(CustomerTransaction(
                         id = finalId,
                         customerId = cid,
-                        customerName = item.optString("customerName", ""),
-                        stationName = item.optString("stationName", ""),
+                        customerName = item.optString("customer_name", item.optString("customerName", "")),
+                        stationName = item.optString("station_name", item.optString("stationName", "")),
                         title = item.optString("title", ""),
                         amount = item.optLong("amount", 0L),
-                        paidAmount = item.optLong("paidAmount", 0L),
+                        paidAmount = item.optLong("paid_amount", item.optLong("paidAmount", 0L)),
                         status = item.optString("status", ""),
-                        dateStr = item.optString("dateStr", ""),
-                        timeStr = item.optString("timeStr", ""),
-                        segmentDetails = item.optString("segmentDetails", ""),
-                        buffetDetails = item.optString("buffetDetails", ""),
+                        dateStr = item.optString("date_str", item.optString("dateStr", "")),
+                        timeStr = item.optString("time_str", item.optString("timeStr", "")),
+                        segmentDetails = item.optString("segment_details", item.optString("segmentDetails", "")),
+                        buffetDetails = item.optString("buffet_details", item.optString("buffetDetails", "")),
                         timestamp = ts,
-                        playMinutes = item.optInt("playMinutes", item.optInt("play_minutes", 0)),
-                        gameCost = item.optLong("gameCost", item.optLong("game_cost", 0L)),
-                        foodCost = item.optLong("foodCost", item.optLong("food_cost", 0L))
+                        playMinutes = item.optInt("play_minutes", item.optInt("playMinutes", 0)),
+                        gameCost = item.optLong("game_cost", item.optLong("gameCost", 0L)),
+                        foodCost = item.optLong("food_cost", item.optLong("foodCost", 0L)),
+                        sessionId = item.optString("session_id", item.optString("sessionId", "")),
+                        earnedGn = item.optLong("earned_gn", item.optLong("earnedGn", 0L)),
+                        earnedLp = item.optLong("earned_lp", item.optLong("earnedLp", 0L))
                     ))
                 }
             }
@@ -1773,6 +1881,7 @@ object SelfHostedManager {
     }
 
     suspend fun fetchManagerStations(): org.json.JSONArray? = withContext(Dispatchers.IO) {
+        if (NetworkClient.managerAuthToken.isNullOrBlank()) return@withContext null
         try {
             val req = Request.Builder()
                 .url("$SERVER_URL/api/v1/manager/stations")

@@ -1065,13 +1065,16 @@ fun CustomerTransactionCard(
     
     var expanded by remember { mutableStateOf(isAlwaysExpanded) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
-    var showPrepaymentDialog by remember { mutableStateOf(false) }
-    var settlementReview by remember { mutableStateOf<com.example.data.network.SettlementReview?>(null) }
+    var showPrepaymentDialog by remember(transaction.id) { mutableStateOf(false) }
+    var settlementReview by remember(transaction.id) { mutableStateOf<com.example.data.network.SettlementReview?>(null) }
+    var settlementReviewLoading by remember(transaction.id) { mutableStateOf(false) }
+    var settlementReviewError by remember(transaction.id) { mutableStateOf(false) }
+    var settlementReload by remember(transaction.id) { mutableIntStateOf(0) }
     var prepaymentAllocations by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
     var refundMethods by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
     var reviewStatuses by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
     var refundRequested by remember { mutableStateOf(false) }
-    var isSubmitting by remember(transaction) { mutableStateOf(false) }
+    var isSubmitting by remember(transaction.id) { mutableStateOf(false) }
     var isPayFieldFocused by remember { mutableStateOf(false) }
     val payFieldBringIntoViewRequester = remember { BringIntoViewRequester() }
     fun partialPaymentKey(customerId: Long): Long = Long.MIN_VALUE + kotlin.math.abs(customerId.coerceAtLeast(Long.MIN_VALUE + 1L))
@@ -1084,7 +1087,7 @@ fun CustomerTransactionCard(
     val customer = remember(customers, transaction.customerId) {
         customers.find { it.id == transaction.customerId }
     }
-    val custPoints = customer?.points ?: 0L
+    val custPoints = customer?.lp ?: 0L
     val sortedLevels = remember(clubLevels) { clubLevels.sortedByDescending { it.requiredPoints } }
     val activeLevel = remember(sortedLevels, custPoints) {
         sortedLevels.find { custPoints >= it.requiredPoints } ?: clubLevels.firstOrNull()
@@ -1097,15 +1100,29 @@ fun CustomerTransactionCard(
         }
     }
 
-    LaunchedEffect(showPrepaymentDialog, transaction.sessionId) {
-        if (showPrepaymentDialog && transaction.sessionId.isNotBlank()) {
-            settlementReview = viewModel.fetchSettlementReview(
-                transaction.sessionId,
-                transaction.customerId,
-                transaction.customerName.takeIf { transaction.customerId <= 0L && it.isNotBlank() },
-                transaction
-            )
+    LaunchedEffect(showPrepaymentDialog, transaction.id, transaction.sessionId, settlementReload) {
+        if (showPrepaymentDialog) {
+            settlementReview = null
+            settlementReviewError = false
             prepaymentAllocations = emptyMap()
+            if (transaction.sessionId.isBlank()) {
+                settlementReviewError = true
+                return@LaunchedEffect
+            }
+            settlementReviewLoading = true
+            val fetched = runCatching {
+                viewModel.fetchSettlementReview(
+                    transaction.sessionId,
+                    transaction.customerId,
+                    transaction.customerName.takeIf { transaction.customerId <= 0L && it.isNotBlank() },
+                    transaction
+                )
+            }.onFailure { android.util.Log.e("GameNexaInvoice", "Failed to load settlement review for transaction=${transaction.id}", it) }.getOrNull()
+            settlementReview = fetched
+            settlementReviewLoading = false
+            settlementReviewError = fetched == null
+        } else {
+            settlementReviewLoading = false
         }
     }
 
@@ -1702,7 +1719,17 @@ fun CustomerTransactionCard(
                                 ) {
                                     val review = settlementReview
                                     if (review == null) {
-                                        Text("در حال دریافت اطلاعات فاکتور از سرور...")
+                                        if (settlementReviewLoading) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                                Text("در حال دریافت اطلاعات فاکتور از سرور...")
+                                            }
+                                        } else if (settlementReviewError) {
+                                            Text("جزئیات فاکتور دریافت نشد. پنجره باز است؛ اتصال را بررسی و دوباره تلاش کنید.", color = MaterialTheme.colorScheme.error)
+                                            TextButton(onClick = { settlementReload++ }) { Text("تلاش مجدد") }
+                                        } else {
+                                            Text("در انتظار دریافت اطلاعات فاکتور...")
+                                        }
                                     } else {
                                         val invoiceTotal = review.payers.sumOf { it.invoiceTotal }
                                         val grandTotal = if (invoiceTotal > 0L) invoiceTotal else review.gameCost + review.buffetCost

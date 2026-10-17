@@ -1018,6 +1018,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                 // Establish the complete authenticated Manager session BEFORE publishing
                 // Authenticated to the UI. This prevents early 401s and false logout/offline.
                 NetworkClient.isTrialMode = false
+                NetworkClient.customerAuthToken = null
+                SelfHostedManager.setCurrentCustomer(null)
                 encryptSetting("enc_session_type", "ADMIN")
                 encryptSetting("enc_admin_role", finalRole)
                 encryptSetting("enc_manager_id", finalManagerId)
@@ -1070,6 +1072,8 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
 
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
+                            NetworkClient.customerAuthToken = null
+                            SelfHostedManager.setCurrentCustomer(null)
                             encryptSetting("enc_session_type", "ADMIN")
                             encryptSetting("enc_admin_role", finalRole)
                             encryptSetting("enc_manager_id", finalManagerId)
@@ -1174,7 +1178,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     fun fetchCustomerAppConfigsFromCloud() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val cards = com.example.data.network.SelfHostedManager.fetchAppConfig("gn_payment_cards")
+                val cards = com.example.data.network.SelfHostedManager.fetchCustomerAppConfig("gn_payment_cards")
                 if (!cards.isNullOrBlank()) {
                     _gnPaymentCards.value = cards
                 }
@@ -1215,11 +1219,18 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
                     repository.insertCustomer(cloudCust)
                 } catch (ignored: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in GameNetViewModel.kt", ignored) }
 
+                // Switching into Customer mode invalidates the in-memory Manager auth token.
+                // This prevents background Manager polling from generating 401s and misleading
+                // global "server unavailable" banners while customer endpoints are succeeding.
+                NetworkClient.managerAuthToken = null
+                NetworkClient.authToken = null
+                SelfHostedManager.setCurrentCustomer(cloudCust)
                 withContext(Dispatchers.Main) {
                     _isCustomerAuthenticated.value = true
                     _isAdminAuthenticated.value = false
-                    SelfHostedManager.setCurrentCustomer(cloudCust)
                 }
+                encryptSetting("enc_auth_token", "")
+                encryptSetting("enc_admin_role", "")
                 encryptSetting("enc_session_type", "CUSTOMER")
                 encryptSetting("enc_customer_phone", cloudCust.phoneNumber.ifBlank { cleanPhone })
                 encryptSetting("enc_manager_id", SelfHostedManager.currentManagerId)
@@ -6429,6 +6440,8 @@ loadSettings()
                         encryptSetting("enc_user_phone", effectivePhone)
                     }
 
+                    NetworkClient.customerAuthToken = null
+                    SelfHostedManager.setCurrentCustomer(null)
                     NetworkClient.authToken = token
 
                     _authState.value = AuthState.Authenticated(

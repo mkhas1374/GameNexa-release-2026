@@ -557,8 +557,68 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
 
   // Customer-facing canonical profile, reservations, history and GN ledger.
   app.get('/api/v1/customer/profile', requireCustomerAuth, async(req,res)=>{try{const q=await pool.query('SELECT * FROM customers WHERE id=$1 AND manager_id=$2',[req.user.id,req.user.managerId]);if(!q.rows[0])return res.status(404).json({error:'Not found'});res.json(normalizeCustomer(q.rows[0]));}catch(e){res.status(500).json({error:'Internal server error'});} });
+  // Customer-safe read access to only the payment-instruction config used by GN Customers.
+  app.get('/api/v1/customer/config/:key', requireCustomerAuth, async(req,res)=>{
+    const key=String(req.params.key||'');
+    if(key!=='gn_payment_cards') return res.status(404).json({error:'Customer config not found'});
+    try { const settings=await cfgGet(req.user.managerId); return res.json({key,value:settings[key]??''}); }
+    catch(e){ return res.status(500).json({error:'Customer config lookup failed'}); }
+  });
+
+  // Customer-safe active session feed. The previous Android client polled the Manager-only
+  // /manager/live-stations route from the customer screen, which necessarily returned 401.
+  // Only sessions linked to this authenticated customer in the same Manager tenant are returned.
+  app.get('/api/v1/customer/live-session', requireCustomerAuth, async(req,res)=>{
+    try {
+      const mid=req.user.managerId, cid=Number(req.user.id);
+      const q=await pool.query(`
+        SELECT gs.id AS session_id,gs.station_id,gs.status,gs.console_type,gs.controller_count,
+               gs.started_at,gs.paused_at,gs.game_cost,gs.buffet_cost,gs.total_cost,gs.pricing_snapshot,
+               (SELECT c.full_name FROM customers c WHERE c.id=$2 AND c.manager_id=$1 LIMIT 1) AS customer_name,
+               COALESCE((SELECT json_agg(json_build_object(
+                 'customerId',sp.customer_id,'participantKey',sp.participant_key,
+                 'participantName',sp.participant_name,'isGuest',sp.is_guest,
+                 'isPayer',sp.is_payer,'prepaymentAmount',sp.prepayment_amount
+               ) ORDER BY sp.id) FROM session_participants sp
+                 WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id),'[]'::json) AS participants
+        FROM game_sessions gs
+        WHERE gs.manager_id=$1 AND gs.status IN ('ACTIVE','PAUSED')
+          AND (
+            EXISTS (SELECT 1 FROM session_participants sp WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id AND sp.customer_id=$2 AND sp.is_guest=FALSE)
+            OR EXISTS (SELECT 1 FROM customer_transactions ct WHERE ct.session_id=gs.id AND ct.manager_id=gs.manager_id AND ct.customer_id=$2 AND ct.status<>'DELETED')
+            OR EXISTS (SELECT 1 FROM invoices i WHERE i.session_id=gs.id AND i.manager_id=gs.manager_id AND i.customer_id=$2)
+          )
+        ORDER BY gs.started_at DESC`,[mid,cid]);
+      const stations=q.rows.map(row=>{
+        const participants=Array.isArray(row.participants)?row.participants:[];
+        const own=participants.find(p=>Number(p.customerId||0)===cid);
+        const participantIds=participants.map(p=>Number(p.customerId||0)).filter(id=>id>0);
+        if(!participantIds.includes(cid)) participantIds.push(cid);
+        const participantNames=participants.map(p=>String(p.participantName||'').trim()).filter(Boolean);
+        if(!own && String(row.customer_name||'').trim() && !participantNames.includes(String(row.customer_name).trim())) participantNames.push(String(row.customer_name).trim());
+        const snap=row.pricing_snapshot && typeof row.pricing_snapshot==='object'?row.pricing_snapshot:{};
+        const startMs=new Date(row.started_at).getTime();
+        const lastMs=new Date(row.paused_at||row.started_at).getTime();
+        return {
+          stationId:Number(row.station_id),status:row.status==='PAUSED'?'PAUSED':'RUNNING',
+          consoleType:String(row.console_type||''),controllerCount:Number(row.controller_count||1),
+          startTimeMillis:Number.isFinite(startMs)?startMs:0,
+          lastStateChangeMillis:Number.isFinite(lastMs)?lastMs:0,
+          elapsedPlayingTimeMillis:0,prepaymentAmount:Number(own?.prepaymentAmount||0),
+          durationLimitMinutes:Number(snap.durationLimitMinutes||snap.duration_minutes||0),
+          customerIdsStr:participantIds.join(','),
+          customerNamesStr:participantNames.join(','),
+          currentGameCost:Number(row.game_cost||0),currentBuffetCost:Number(row.buffet_cost||0),
+          hourlyRate:Number(snap.hourlyRate||snap.hourly_rate||0),sessionId:String(row.session_id)
+        };
+      });
+      return res.json({success:true,stations});
+    } catch(e){console.error('[customer-live-session]',e?.message||e);return res.status(500).json({error:'Customer live session lookup failed'});}
+  });
+
   app.get('/api/v1/customer/reservations', requireCustomerAuth, async(req,res)=>{try{const q=await pool.query('SELECT * FROM reservations WHERE customer_id=$1 AND manager_id=$2 ORDER BY start_time DESC',[req.user.id,req.user.managerId]);res.json(q.rows);}catch(e){res.status(500).json({error:'Internal server error'});} });
   app.get('/api/v1/customer/club/ledger', requireCustomerAuth, async(req,res)=>{try{const q=await pool.query('SELECT * FROM gn_ledger WHERE customer_id=$1 AND manager_id=$2 ORDER BY created_at DESC',[req.user.id,req.user.managerId]);res.json(q.rows);}catch(e){res.status(500).json({error:'Internal server error'});} });
+  app.get('/api/v1/customer/club/lp-ledger', requireCustomerAuth, async(req,res)=>{try{const q=await pool.query('SELECT * FROM lp_ledger WHERE customer_id=$1 AND manager_id=$2 ORDER BY created_at DESC LIMIT 500',[req.user.id,req.user.managerId]);res.json(q.rows);}catch(e){res.status(500).json({error:'Customer LP ledger lookup failed'});} });
   app.post('/api/v1/manager/club/ledger', requireManagerAuth, requireActiveEntitlement, async(req,res)=>{const c=await pool.connect();try{const b=req.body||{},mid=manager(req),key=String(req.headers['idempotency-key']||b.idempotencyKey||'').trim();const amount=Number(b.gnAmount||0);const type=String(b.transactionType||'ADMIN_ADJUSTMENT').toUpperCase();const sign=['PENALTY','SPENT','DEBIT','TRANSFERRED'].includes(type)?-1:1;if(!key||!Number.isFinite(amount)||amount<=0)return res.status(400).json({error:'Valid amount and idempotency key are required'});await c.query('BEGIN');const prior=await c.query('SELECT * FROM gn_ledger WHERE manager_id=$1 AND idempotency_key=$2 LIMIT 1 FOR UPDATE',[mid,key]);if(prior.rows[0]){await c.query('COMMIT');return res.json({...prior.rows[0],idempotent:true});}const customer=await c.query('SELECT id FROM customers WHERE id=$1 AND manager_id=$2 FOR UPDATE',[b.customerId,mid]);if(!customer.rows[0]){await c.query('ROLLBACK');return res.status(404).json({error:'Customer not found'});}const q=await c.query(`INSERT INTO gn_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,[mid,b.customerId,Math.abs(amount),sign<0?'DEBIT':'CREDIT',type,b.referenceId||null,key]);await c.query('UPDATE customers SET gn_balance=GREATEST(0,gn_balance+$1),updated_at=NOW() WHERE id=$2 AND manager_id=$3',[sign*amount,b.customerId,mid]);await c.query('COMMIT');res.json(q.rows[0]);}catch(e){try{await c.query('ROLLBACK')}catch(_){}res.status(500).json({error:'Internal server error'});}finally{c.release();}});
   app.post('/api/v1/customer/club/transfer', requireCustomerAuth, async(req,res)=>{const c=await pool.connect();try{const mid=req.user.managerId,from=Number(req.user.id),amount=Number(req.body?.gnAmount||0),toPhone=String(req.body?.receiverPhone||'').trim(),key=String(req.headers['idempotency-key']||req.body?.idempotencyKey||'').trim();if(amount<=0||!Number.isFinite(amount)||!toPhone||!key)return res.status(400).json({error:'Valid amount, recipient and idempotency key are required'});await c.query('BEGIN');const prior=await c.query('SELECT customer_id,reference_id FROM gn_ledger WHERE manager_id=$1 AND idempotency_key=$2 LIMIT 1 FOR UPDATE',[mid,key]);if(prior.rows[0]){await c.query('COMMIT');return res.json({success:true,idempotent:true,referenceId:prior.rows[0].reference_id});}const s=await c.query('SELECT gn_balance FROM customers WHERE id=$1 AND manager_id=$2 FOR UPDATE',[from,mid]);const t=await c.query('SELECT id FROM customers WHERE phone_number=$1 AND manager_id=$2 FOR UPDATE',[toPhone,mid]);if(!s.rows[0]||!t.rows[0]||Number(s.rows[0].gn_balance)<amount){await c.query('ROLLBACK');return res.status(400).json({error:'Insufficient balance or recipient not found'});}const referenceId='transfer:'+key;await c.query('UPDATE customers SET gn_balance=gn_balance-$1 WHERE id=$2 AND manager_id=$3',[amount,from,mid]);await c.query('UPDATE customers SET gn_balance=gn_balance+$1 WHERE id=$2 AND manager_id=$3',[amount,t.rows[0].id,mid]);await c.query('INSERT INTO gn_ledger(manager_id,customer_id,amount,type,reference_type,reference_id,idempotency_key) VALUES($1,$2,$3,\'DEBIT\',\'TRANSFER\',$4,$5),($1,$6,$3,\'CREDIT\',\'TRANSFER\',$4,$7)',[mid,from,amount,referenceId,key,t.rows[0].id,key+':credit']);await c.query('COMMIT');res.json({success:true,idempotent:false,referenceId});}catch(e){try{await c.query('ROLLBACK')}catch(_){}res.status(500).json({error:'Internal server error'});}finally{c.release();}});
 
