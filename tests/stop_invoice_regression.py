@@ -55,6 +55,10 @@ ok("manager transaction PATCH is server-authoritative", "app.patch('/api/v1/mana
 ok("PATCH clamps paid amount and derives final status on server", "const status=amount<=0||paid>=amount?'REVIEWED':(requested==='UNREVIEWED'?'UNREVIEWED':'DEBTOR')" in CANON)
 ok("settlement finalization persists transaction status", 'customer_transactions SET status=$1,paid_amount=$2' in CANON)
 ok("settlement debt reconciliation is idempotent", 'debtBeforeOutstanding' in CANON and 'debtAfterOutstanding' in CANON and 'debtDelta=debtAfterOutstanding-debtBeforeOutstanding' in CANON)
+ok("finalization response includes server-authoritative invoice totals", 'paidAmount,amount:total,gameCost,foodCost:buffetCost' in CANON)
+ok("immediate invoice overlay reconciles amount and cost components", 'amount = serverResult?.optLong("amount", target.amount) ?: target.amount' in finalize_body and 'foodCost = serverResult?.optLong("foodCost", target.foodCost) ?: target.foodCost' in finalize_body)
+ok("Room invoice reconciliation reconciles server-authoritative total", 'amount = r.optLong("amount", tx.amount)' in finalize_body)
+ok("customer live session can resolve by active customer claim", 'FROM active_session_customer_claims claim' in CANON and 'claim.customer_id=$2' in CANON)
 
 failed = [name for name, value in checks if not value]
 for name, value in checks:

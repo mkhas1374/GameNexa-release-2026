@@ -6988,6 +6988,9 @@ loadSettings()
                         put("localTransactionId", target.id)
                         put("status", target.status)
                         put("paidAmount", target.paidAmount)
+                        put("amount", target.amount)
+                        put("gameCost", target.gameCost)
+                        put("foodCost", target.foodCost)
                         put("earnedGn", target.earnedGn)
                         put("earnedLp", target.earnedLp)
                     })
@@ -7026,7 +7029,10 @@ loadSettings()
                 ?: decision.optLong("paidAmount", if (status == "REVIEWED") target.amount else target.paidAmount)
             immediateOverrides[target.id] = target.copy(
                 status = status,
+                amount = serverResult?.optLong("amount", target.amount) ?: target.amount,
                 paidAmount = paid,
+                gameCost = serverResult?.optLong("gameCost", target.gameCost) ?: target.gameCost,
+                foodCost = serverResult?.optLong("foodCost", target.foodCost) ?: target.foodCost,
                 earnedGn = serverResult?.optLong("earnedGn", target.earnedGn) ?: target.earnedGn,
                 earnedLp = serverResult?.optLong("earnedLp", target.earnedLp) ?: target.earnedLp
             )
@@ -7070,9 +7076,12 @@ loadSettings()
                     val paid = r.optLong("paidAmount", if (status == "REVIEWED") tx.amount else tx.paidAmount)
                     val updated = tx.copy(
                         status = status,
+                        amount = r.optLong("amount", tx.amount),
                         paidAmount = paid,
-                        earnedGn = r.optLong("earnedGn", 0L),
-                        earnedLp = r.optLong("earnedLp", 0L)
+                        gameCost = r.optLong("gameCost", tx.gameCost),
+                        foodCost = r.optLong("foodCost", tx.foodCost),
+                        earnedGn = r.optLong("earnedGn", tx.earnedGn),
+                        earnedLp = r.optLong("earnedLp", tx.earnedLp)
                     )
                     finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + (tx.id to updated)
                     runCatching { repository.upsertCustomerTransactionLocal(updated) }
@@ -7102,7 +7111,15 @@ loadSettings()
             val finalStatus = serverResult?.optString("status", decisionStatus)?.uppercase() ?: decisionStatus
             val finalPaid = serverResult?.optLong("paidAmount", decision.optLong("paidAmount", target.paidAmount))
                 ?: decision.optLong("paidAmount", target.paidAmount)
-            val updated = target.copy(status = finalStatus, paidAmount = finalPaid)
+            val updated = target.copy(
+                status = finalStatus,
+                amount = serverResult?.optLong("amount", target.amount) ?: target.amount,
+                paidAmount = finalPaid,
+                gameCost = serverResult?.optLong("gameCost", target.gameCost) ?: target.gameCost,
+                foodCost = serverResult?.optLong("foodCost", target.foodCost) ?: target.foodCost,
+                earnedGn = serverResult?.optLong("earnedGn", target.earnedGn) ?: target.earnedGn,
+                earnedLp = serverResult?.optLong("earnedLp", target.earnedLp) ?: target.earnedLp
+            )
             finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + (target.id to updated)
             runCatching { repository.upsertCustomerTransactionLocal(updated) }
                 .onFailure { android.util.Log.e("GameNetViewModel", "Invoice committed but explicit Room update failed for id=$localId", it) }

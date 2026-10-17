@@ -591,10 +591,17 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
         FROM game_sessions gs
         WHERE gs.manager_id=$1 AND gs.status IN ('ACTIVE','PAUSED')
           -- Historic transactions/invoices must never resurrect a previous live session.
-          AND EXISTS (
-            SELECT 1 FROM session_participants sp
-            WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id
-              AND sp.customer_id=$2 AND sp.is_guest=FALSE
+          AND (
+            EXISTS (
+              SELECT 1 FROM session_participants sp
+              WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id
+                AND sp.customer_id=$2 AND sp.is_guest=FALSE
+            )
+            OR EXISTS (
+              SELECT 1 FROM active_session_customer_claims claim
+              WHERE claim.session_id=gs.id AND claim.manager_id=gs.manager_id
+                AND claim.customer_id=$2
+            )
           )
           -- If a settlement response was lost and a new session started, expose only the newest
           -- active session on that station to customer profiles.
@@ -1482,7 +1489,7 @@ app.post('/api/v1/manager/stations/purge-extra', requireManagerAuth, requireActi
           if(debtDelta!==0) await c.query("UPDATE customers SET debt=GREATEST(0,COALESCE(debt,0)+$1),updated_at=NOW() WHERE id=$2 AND manager_id=$3",[debtDelta,cid,mid]);
         }
         const resolvedTx=(await c.query("SELECT id,local_id FROM customer_transactions WHERE manager_id=$1 AND session_id=$2 AND status<>'DELETED' AND ((customer_id=$3 AND $3>0) OR (customer_id IS NULL AND $3<=0 AND customer_name=$4)) ORDER BY id DESC LIMIT 1",[mid,sid,cid,participant.participant_name])).rows[0];
-        results.push({customerId:cid,customerName:participant.participant_name,transactionId:Number(resolvedTx?.id||exactTransactionId||0),localTransactionId:Number(exactTransaction?.local_id||resolvedTx?.local_id||0),refundAmount:String(refund),refundMethod:method,earnedGn,earnedLp,status:finalStatus,paidAmount});
+        results.push({customerId:cid,customerName:participant.participant_name,transactionId:Number(resolvedTx?.id||exactTransactionId||0),localTransactionId:Number(exactTransaction?.local_id||resolvedTx?.local_id||0),refundAmount:String(refund),refundMethod:method,earnedGn,earnedLp,status:finalStatus,paidAmount,amount:total,gameCost,foodCost:buffetCost});
       }
       await c.query('COMMIT');
       return res.json({success:true,sessionId:sid,results});
