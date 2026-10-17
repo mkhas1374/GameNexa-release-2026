@@ -75,7 +75,7 @@ fun CustomerDashboardTab(
         }
     }
 
-    val customer = matchedCustomer
+    val customer = matchedCustomer ?: Customer(fullName = "مشتری عزیز", phoneNumber = "", availableGn = 0L)
 
     // The backend endpoint is already scoped to the authenticated customer. Never infer
     // an active session from stale local Manager station state or fuzzy name/phone matches.
@@ -816,6 +816,7 @@ fun CustomerDashboardTab(
             lpTomanRate = effectiveLpRate,
             buffetLpPer10000 = buffetLpPer10000,
             customerLedger = customerLedger,
+            customerLpLedger = customerLpLedger,
             onDismiss = { showProgressDetailsDialog = false }
         )
     }
@@ -833,6 +834,7 @@ fun CustomerLoyaltyProgressDialog(
     lpTomanRate: Long,
     buffetLpPer10000: Long,
     customerLedger: List<GnLedgerEntry>,
+    customerLpLedger: List<com.example.data.network.ManagerLpHistory>,
     onDismiss: () -> Unit
 ) {
     val numberFormat = remember { DecimalFormat("#,###") }
