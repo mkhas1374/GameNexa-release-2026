@@ -575,6 +575,13 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
         SELECT gs.id AS session_id,gs.station_id,gs.status,gs.console_type,gs.controller_count,
                gs.started_at,gs.paused_at,gs.game_cost,gs.buffet_cost,gs.total_cost,gs.pricing_snapshot,
                (SELECT c.full_name FROM customers c WHERE c.id=$2 AND c.manager_id=$1 LIMIT 1) AS customer_name,
+               COALESCE((SELECT SUM(so.line_total) FROM session_orders so
+                 WHERE so.session_id=gs.id AND so.manager_id=gs.manager_id AND so.target_customer_id=$2),0) AS customer_buffet_cost,
+               COALESCE((SELECT json_agg(json_build_object(
+                 'product_name',so.product_name,'quantity',so.quantity,'price',so.unit_price,
+                 'unit_price',so.unit_price,'line_total',so.line_total,'created_at',so.created_at
+               ) ORDER BY so.created_at,so.id) FROM session_orders so
+                 WHERE so.session_id=gs.id AND so.manager_id=gs.manager_id AND so.target_customer_id=$2),'[]'::json) AS customer_orders,
                COALESCE((SELECT json_agg(json_build_object(
                  'customerId',sp.customer_id,'participantKey',sp.participant_key,
                  'participantName',sp.participant_name,'isGuest',sp.is_guest,
@@ -608,7 +615,11 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
           durationLimitMinutes:Number(snap.durationLimitMinutes||snap.duration_minutes||0),
           customerIdsStr:participantIds.join(','),
           customerNamesStr:participantNames.join(','),
-          currentGameCost:Number(row.game_cost||0),currentBuffetCost:Number(row.buffet_cost||0),
+          currentGameCost:Number(row.game_cost||0),
+          // The session aggregate is updated at checkout; the live customer view must use
+          // this customer's persisted order lines so buffet cost appears immediately.
+          currentBuffetCost:Number(row.customer_buffet_cost||0),
+          ordersJson:JSON.stringify(Array.isArray(row.customer_orders)?row.customer_orders:[]),
           hourlyRate:Number(snap.hourlyRate||snap.hourly_rate||0),sessionId:String(row.session_id)
         };
       });

@@ -6955,19 +6955,26 @@ loadSettings()
         // list, even though Android displayed a connection error. Reconcile against the
         // server's authoritative queue before reporting failure to the Manager.
         val result = if (directResult == null || !directResult.optBoolean("success", true)) {
-            kotlinx.coroutines.delay(350L)
-            val serverRows = SelfHostedManager.fetchManagerCustomerTransactions().orEmpty()
-            val confirmedResults = org.json.JSONArray()
-            var allConfirmed = decisions.isNotEmpty()
-            decisions.forEach { decision ->
+            // A reverse proxy can drop the POST response after PostgreSQL commits. One immediate
+            // GET can race the commit becoming visible, so poll the authoritative transaction
+            // queue briefly before telling the Manager that finalization failed.
+            var serverRows: List<CustomerTransaction>? = null
+            var confirmedResults = org.json.JSONArray()
+            var allConfirmed = false
+            for (attempt in 0 until 5) {
+                kotlinx.coroutines.delay(250L * (attempt + 1))
+                serverRows = SelfHostedManager.fetchManagerCustomerTransactions()
+                confirmedResults = org.json.JSONArray()
+                allConfirmed = decisions.isNotEmpty()
+                decisions.forEach { decision ->
                 val localId = decision.optLong("transactionId", 0L)
                 val customerId = decision.optLong("customerId", 0L)
                 val customerName = decision.optString("customerName", "").trim()
                 val expectedStatus = decision.optString("status", "REVIEWED").uppercase()
                     .let { if (it == "PARTIAL") "DEBTOR" else it }
-                val target = serverRows.firstOrNull { tx ->
+                val target = serverRows.orEmpty().firstOrNull { tx ->
                     tx.id == localId && (tx.sessionId == sessionId || tx.sessionId.isBlank())
-                } ?: serverRows.firstOrNull { tx ->
+                } ?: serverRows.orEmpty().firstOrNull { tx ->
                     tx.sessionId == sessionId &&
                         (if (customerId > 0L) tx.customerId == customerId else customerName.isNotBlank() && tx.customerName.trim() == customerName)
                 }
@@ -6985,6 +6992,8 @@ loadSettings()
                         put("earnedLp", target.earnedLp)
                     })
                 }
+                }
+                if (allConfirmed && confirmedResults.length() == decisions.size) break
             }
             if (!allConfirmed || confirmedResults.length() != decisions.size) {
                 android.util.Log.e("GameNetViewModel", "Invoice finalization response was unavailable and authoritative server status did not confirm every decision; session=$sessionId")
