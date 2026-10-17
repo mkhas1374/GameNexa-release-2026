@@ -1168,10 +1168,10 @@ object SelfHostedManager {
     }
 
     suspend fun fetchCustomerAppConfig(key: String): String? = withContext(Dispatchers.IO) {
-        if (NetworkClient.customerAuthToken.isNullOrBlank()) return@withContext null
+        if (key != "gn_payment_cards" || NetworkClient.customerAuthToken.isNullOrBlank()) return@withContext null
         try {
             val request = Request.Builder()
-                .url("$SERVER_URL/api/v1/customer/config/${java.net.URLEncoder.encode(key, "UTF-8")}")
+                .url("$SERVER_URL/api/v1/customer/config/gn_payment_cards")
                 .headers(getCustomerHeaders())
                 .get()
                 .build()
