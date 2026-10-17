@@ -6949,7 +6949,50 @@ loadSettings()
     suspend fun finalizeSettlementReview(sessionId: String, decisions: List<org.json.JSONObject>): Boolean = withContext(Dispatchers.IO) {
         // A successful HTTP response means the server committed the decision. Apply that
         // authoritative result to Room immediately so the queue changes without restarting.
-        val result = SelfHostedManager.finalizeSettlementReview(sessionId, decisions) ?: return@withContext false
+        val directResult = SelfHostedManager.finalizeSettlementReview(sessionId, decisions)
+        // The backend can commit successfully while the HTTP response is lost. Nginx logs
+        // showed HTTP 200 for review-finalize, followed by the updated Manager transaction
+        // list, even though Android displayed a connection error. Reconcile against the
+        // server's authoritative queue before reporting failure to the Manager.
+        val result = if (directResult == null || !directResult.optBoolean("success", true)) {
+            kotlinx.coroutines.delay(350L)
+            val serverRows = SelfHostedManager.fetchManagerCustomerTransactions().orEmpty()
+            val confirmedResults = org.json.JSONArray()
+            var allConfirmed = decisions.isNotEmpty()
+            decisions.forEach { decision ->
+                val localId = decision.optLong("transactionId", 0L)
+                val customerId = decision.optLong("customerId", 0L)
+                val customerName = decision.optString("customerName", "").trim()
+                val expectedStatus = decision.optString("status", "REVIEWED").uppercase()
+                    .let { if (it == "PARTIAL") "DEBTOR" else it }
+                val target = serverRows.firstOrNull { tx ->
+                    tx.id == localId && (tx.sessionId == sessionId || tx.sessionId.isBlank())
+                } ?: serverRows.firstOrNull { tx ->
+                    tx.sessionId == sessionId &&
+                        (if (customerId > 0L) tx.customerId == customerId else customerName.isNotBlank() && tx.customerName.trim() == customerName)
+                }
+                if (target == null || target.status.uppercase() != expectedStatus) {
+                    allConfirmed = false
+                } else {
+                    confirmedResults.put(org.json.JSONObject().apply {
+                        put("customerId", target.customerId)
+                        put("customerName", target.customerName)
+                        put("transactionId", target.id)
+                        put("localTransactionId", target.id)
+                        put("status", target.status)
+                        put("paidAmount", target.paidAmount)
+                        put("earnedGn", target.earnedGn)
+                        put("earnedLp", target.earnedLp)
+                    })
+                }
+            }
+            if (!allConfirmed || confirmedResults.length() != decisions.size) {
+                android.util.Log.e("GameNetViewModel", "Invoice finalization response was unavailable and authoritative server status did not confirm every decision; session=$sessionId")
+                return@withContext false
+            }
+            android.util.Log.w("GameNetViewModel", "Invoice finalization confirmed by authoritative server refresh after missing/ambiguous response; session=$sessionId")
+            org.json.JSONObject().put("success", true).put("sessionId", sessionId).put("results", confirmedResults)
+        } else directResult
         if (!result.optBoolean("success", true)) return@withContext false
         val results = result.optJSONArray("results") ?: org.json.JSONArray()
 
