@@ -1227,6 +1227,21 @@ fun ActiveStationLiveCard(
     val currentSegmentGameCost = (elapsedMs.toDouble() / (1000.0 * 3600.0)) * hourlyRate
     val committedSegmentGameCost = (cloudSt?.committedSegmentCost ?: 0L).coerceAtLeast(0L).toDouble()
     val calculatedGameCost = committedSegmentGameCost + currentSegmentGameCost
+    val committedSegmentSummaries = remember(cloudSt?.segmentEventsJson) {
+        val events = runCatching {
+            org.json.JSONArray(cloudSt?.segmentEventsJson ?: "[]")
+        }.getOrElse { org.json.JSONArray() }
+        (0 until events.length()).mapNotNull { index ->
+            val event = events.optJSONObject(index) ?: return@mapNotNull null
+            val payload = event.optJSONObject("payload") ?: org.json.JSONObject()
+            val eventType = event.optString("eventType", event.optString("event_type", ""))
+            val segment = payload.optInt("segmentIndex", index + 1)
+            val seconds = payload.optLong("durationSeconds", 0L).coerceAtLeast(0L)
+            val cost = payload.optLong("cost", 0L).coerceAtLeast(0L)
+            val action = if (eventType == "SEGMENT_CONTINUE") "ثبت بخش و ادامه" else "ثبت بخش و توقف"
+            "$action — بخش $segment — مدت ${seconds / 60L} دقیقه و ${seconds % 60L} ثانیه — ${numberFormat.format(cost)} تومان"
+        }
+    }
 
     // Station Orders / Buffet calculation
     val stationOrdersMap by viewModel.stationOrdersMap.collectAsState()
@@ -1534,6 +1549,33 @@ fun ActiveStationLiveCard(
                                 Text("• $itemName (تعداد: $qty)", fontSize = 10.sp, color = Color(0xFF94A3B8))
                                 Text("${numberFormat.format(qty * price)} تومان", fontSize = 10.sp, color = Color(0xFF94A3B8))
                             }
+                        }
+                    }
+                }
+            }
+
+            if (committedSegmentSummaries.isNotEmpty()) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF1E293B),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            "بخش‌های ثبت‌شده در نشست زنده",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF93C5FD)
+                        )
+                        committedSegmentSummaries.forEach { summary ->
+                            Text(
+                                "• $summary",
+                                fontSize = 10.sp,
+                                color = Color(0xFFCBD5E1)
+                            )
                         }
                     }
                 }
