@@ -141,8 +141,11 @@ fun CustomerDashboardTab(
     val effectiveLpRate = if (lpTomanRate > 0L) lpTomanRate else 1000L
     val neededToman = neededLp * effectiveLpRate
 
+    // Convert before division: Long / Long performs integer division and kept every
+    // in-between loyalty balance at 0% until the exact next-level threshold was reached.
     val progressFraction = if (nextClubLevel != null && targetLp > levelStartLp) {
-        ((currentLp - levelStartLp) / (targetLp - levelStartLp)).toFloat().coerceIn(0f, 1f)
+        ((currentLp - levelStartLp).toFloat() / (targetLp - levelStartLp).toFloat())
+            .coerceIn(0f, 1f)
     } else {
         1f
     }

@@ -32,6 +32,10 @@ assert(customerUi.includes('list.clear()') && customerUi.includes('Server snapsh
   'customer UI must not let stale local order quantities override the live server snapshot');
 assert(customerUi.includes('cloudSt.currentBuffetCost.toDouble()'),
   'customer UI must use the server-allocated buffet share instead of total shared order cost');
+assert(customerUi.includes('(currentLp - levelStartLp).toFloat() / (targetLp - levelStartLp).toFloat()'),
+  'loyalty progress must use floating-point division instead of integer division');
+assert(managerApi.includes('Never leave an old server snapshot on the customer profile after a') && managerApi.includes('_allLiveStations.value = emptyList()'),
+  'failed customer live-session refresh must not preserve a stale active-session snapshot');
 const startGate = vm.indexOf('Do not let the optimistic local UI start a replacement session');
 const optimisticStart = vm.indexOf('repository.insertStationStateLocal(optimisticState)', startGate);
 assert(startGate >= 0 && optimisticStart > startGate,

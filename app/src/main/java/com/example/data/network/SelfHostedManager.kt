@@ -860,7 +860,9 @@ object SelfHostedManager {
             client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful || body.isBlank()) {
-                    if (response.code == 401 || response.code == 403) _allLiveStations.value = emptyList()
+                    // Never leave an old server snapshot on the customer profile after a
+                    // failed refresh; it can falsely show a previously stopped session as live.
+                    _allLiveStations.value = emptyList()
                     Log.w(TAG, "fetchCustomerLiveSessionFromCloud HTTP ${response.code}: ${body.take(180)}")
                     return@withContext false
                 }
@@ -875,6 +877,8 @@ object SelfHostedManager {
                 true
             }
         } catch (e: Exception) {
+            // A network/parse failure must not make a stale session look current.
+            _allLiveStations.value = emptyList()
             Log.w(TAG, "fetchCustomerLiveSessionFromCloud failed: ${e.message}")
             false
         }
