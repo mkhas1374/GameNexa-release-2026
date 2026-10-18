@@ -683,9 +683,18 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
           }
         }
         const nowMs=Date.now();
-        if(running&&String(row.status||'').toUpperCase()==='ACTIVE')
+        if(liveEvents.length===0){
+          const fallbackEnd=String(row.status||'').toUpperCase()==='PAUSED'
+            ?new Date(row.paused_at||row.started_at).getTime():nowMs;
+          segmentElapsedMs=Math.max(0,fallbackEnd-(Number.isFinite(startMs)?startMs:fallbackEnd));
+        } else if(running&&String(row.status||'').toUpperCase()==='ACTIVE'){
           segmentElapsedMs+=Math.max(0,nowMs-runningSince);
+        }
         const currentGameCost=Math.floor(Math.max(0,hourlyRate)*segmentElapsedMs/3600000);
+        const segmentEvents=liveEvents.filter(event=>{
+          const type=String(event.eventType||event.event_type||'').toUpperCase();
+          return type==='SEGMENT_PAUSE'||type==='SEGMENT_CONTINUE';
+        });
         const lastMs=nowMs;
         return {
           stationId:Number(row.station_id),status:row.status==='PAUSED'?'PAUSED':'RUNNING',
@@ -698,6 +707,7 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
           customerNamesStr:participantNames.join(','),
           currentGameCost:Number(currentGameCost||0),
           committedSegmentCost:Number(committedSegmentCost||0),
+          segmentEventsJson:JSON.stringify(segmentEvents),
           // The session aggregate is updated at checkout; the live customer view must use
           // this customer's persisted order lines so buffet cost appears immediately.
           currentBuffetCost:Number(customerBuffetShare||0),
