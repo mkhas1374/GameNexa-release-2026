@@ -687,8 +687,10 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
           const fallbackEnd=String(row.status||'').toUpperCase()==='PAUSED'
             ?new Date(row.paused_at||row.started_at).getTime():nowMs;
           segmentElapsedMs=Math.max(0,fallbackEnd-(Number.isFinite(startMs)?startMs:fallbackEnd));
-        } else if(running&&String(row.status||'').toUpperCase()==='ACTIVE'){
-          segmentElapsedMs+=Math.max(0,nowMs-runningSince);
+        } else if(running){
+          const endAt=String(row.status||'').toUpperCase()==='PAUSED'
+            ?new Date(row.paused_at||nowMs).getTime():nowMs;
+          segmentElapsedMs+=Math.max(0,endAt-runningSince);
         }
         const currentGameCost=Math.floor(Math.max(0,hourlyRate)*segmentElapsedMs/3600000);
         const segmentEvents=liveEvents.filter(event=>{
