@@ -40,7 +40,9 @@ assert(server.includes('function sessionEventActiveMillisAfter'), 'backend must 
 assert(server.includes('const completeSegmentLedger'), 'settlement must prefer exact committed segment costs when the ledger is complete');
 assert(server.includes('lastSegmentEvent.event_type === "SEGMENT_CONTINUE"'), 'settlement must count only the active tail after a continue boundary');
 assert(server.includes("event.eventType==='PAUSE' || event.eventType==='SEGMENT_PAUSE'"), 'live-session elapsed time must pause at segment boundaries');
-assert(vm.includes('if (commitSegment && elapsed > 0L) updated.getSegmentsList().lastOrNull()'), 'zero-length segment commits must never resend a previous segment cost');
+assert(vm.includes('val committed = if (elapsed > 0L) updated.getSegmentsList().lastOrNull() else null'), 'zero-length segment commits must never resend a previous segment cost');
+assert(vm.includes('session_boundary_pending_$stationId') && vm.includes('Persist the exact event BEFORE HTTP') && vm.includes('persistSessionEventToOutbox(boundarySessionId, boundaryEventId, boundaryEventType, now, boundaryPayload)') && vm.includes('eventId: String = java.util.UUID.randomUUID().toString()'), 'stop boundary must be durably queued before HTTP and recovered before a replacement session starts');
+assert(vm.includes('getActiveStationSession(stationId)') && vm.includes('نشست قبلی از سرور قابل شناسایی نیست'), 'replacement start must recover or block when the prior server session ID is missing');
 assert(server.includes('targetParticipantKey') && server.includes('SESSION_NOT_ACTIVE'), 'buffet order endpoint must support guest targets and reject closed sessions explicitly');
 assert(managerApi.includes('sessionId?.takeIf') && vm.includes('result.retryable'), 'Android must bind buffet retries to the original session and avoid retrying permanent 4xx errors');
 assert(vm.includes('BUFFET_ORDER_GUARD station='), 'buffet operation must catch failures without crashing the Manager screen');

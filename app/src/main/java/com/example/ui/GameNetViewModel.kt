@@ -24,6 +24,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.text.SimpleDateFormat
 import java.util.*
 import java.io.File
@@ -89,6 +91,9 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     // only prevents double taps and gives instant visual feedback while the authoritative
     // start request is in flight. It is always cleared in the coroutine finally block.
     private val _startingStationIds = MutableStateFlow<Set<Int>>(emptySet())
+    // Separate short local-write locking from network flush locking so Stop never waits for HTTP.
+    private val sessionOutboxWriteMutex = Mutex()
+    private val sessionOutboxFlushMutex = Mutex()
     val startingStationIds: StateFlow<Set<Int>> = _startingStationIds.asStateFlow()
 
     val consoleTypes: StateFlow<List<ConsoleType>> = repository.allConsoleTypes
@@ -341,27 +346,46 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
             }
     }
 
+    private suspend fun persistSessionEventToOutbox(
+        sessionId: String,
+        eventId: String,
+        eventType: String,
+        occurredAtMillis: Long,
+        payload: org.json.JSONObject
+    ) {
+        if (isTrialUser || sessionId.isBlank()) return
+        val key = "session_outbox_" + sessionId
+        sessionOutboxWriteMutex.withLock {
+            val current = repository.getSetting(key)
+            val array = try { if (current.isNullOrBlank()) org.json.JSONArray() else org.json.JSONArray(current) } catch (_: Exception) { org.json.JSONArray() }
+            val alreadyQueued = (0 until array.length()).any { index ->
+                array.optJSONObject(index)?.optString("eventId") == eventId
+            }
+            if (!alreadyQueued) {
+                array.put(org.json.JSONObject().apply {
+                    put("eventId", eventId)
+                    put("eventType", eventType)
+                    put("occurredAt", occurredAtMillis)
+                    put("payload", payload)
+                })
+                repository.saveSetting(key, array.toString())
+            }
+        }
+    }
+
     private suspend fun queueOrSendSessionEvent(
         sessionId: String,
         eventType: String,
         occurredAtMillis: Long,
-        payload: org.json.JSONObject = org.json.JSONObject()
+        payload: org.json.JSONObject = org.json.JSONObject(),
+        eventId: String = java.util.UUID.randomUUID().toString()
     ) {
-        // Trial sessions are intentionally local-only. Never emit operational API calls.
-        if (isTrialUser) return
-        val eventId = java.util.UUID.randomUUID().toString()
-        val sent = SelfHostedManager.sendSessionEvent(sessionId, eventId, eventType, occurredAtMillis, payload)
-        if (sent) return
-        val key = "session_outbox_" + sessionId
-        val current = repository.getSetting(key)
-        val array = try { if (current.isNullOrBlank()) org.json.JSONArray() else org.json.JSONArray(current) } catch (_: Exception) { org.json.JSONArray() }
-        array.put(org.json.JSONObject().apply {
-            put("eventId", eventId)
-            put("eventType", eventType)
-            put("occurredAt", occurredAtMillis)
-            put("payload", payload)
-        })
-        repository.saveSetting(key, array.toString())
+        // Persist the exact event BEFORE HTTP. Previously we attempted the request first and
+        // only wrote the outbox after failure. A rapid Start could settle the session while
+        // this request was still in flight, racing the segment boundary and leaving GN Customers
+        // attached to the previous session. The durable event ID also makes retries idempotent.
+        persistSessionEventToOutbox(sessionId, eventId, eventType, occurredAtMillis, payload)
+        flushSessionOutbox()
     }
 
     private suspend fun queueOrSettleSession(sessionId: String, stationId: Int, endedAtMillis: Long): Boolean {
@@ -511,25 +535,36 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private suspend fun flushSessionOutbox() {
+    private suspend fun flushSessionOutbox() = sessionOutboxFlushMutex.withLock {
         val settings = repository.getAllAppSettings()
         settings.filter { it.key.startsWith("session_outbox_") }.forEach { setting ->
             val sessionId = setting.key.removePrefix("session_outbox_")
-            val array = try { org.json.JSONArray(setting.value) } catch (_: Exception) { return@forEach }
-            val remaining = org.json.JSONArray()
-            for (i in 0 until array.length()) {
-                val item = array.optJSONObject(i) ?: continue
+            val snapshot = try { org.json.JSONArray(setting.value) } catch (_: Exception) { return@forEach }
+            val successfullySentIds = mutableSetOf<String>()
+            for (i in 0 until snapshot.length()) {
+                val item = snapshot.optJSONObject(i) ?: continue
+                val eventId = item.optString("eventId")
                 val ok = SelfHostedManager.sendSessionEvent(
                     sessionId = sessionId,
-                    eventId = item.optString("eventId"),
+                    eventId = eventId,
                     eventType = item.optString("eventType"),
                     occurredAtMillis = item.optLong("occurredAt"),
                     payload = item.optJSONObject("payload") ?: org.json.JSONObject()
                 )
-                if (!ok) remaining.put(item)
+                if (ok) successfullySentIds += eventId
             }
-            if (remaining.length() == 0) repository.saveSetting(setting.key, "")
-            else repository.saveSetting(setting.key, remaining.toString())
+            // Re-read after HTTP and remove only acknowledged IDs. Events queued while the
+            // request was in flight must remain in the outbox rather than being overwritten.
+            sessionOutboxWriteMutex.withLock {
+                val latestRaw = repository.getSetting(setting.key)
+                val latest = try { if (latestRaw.isNullOrBlank()) org.json.JSONArray() else org.json.JSONArray(latestRaw) } catch (_: Exception) { org.json.JSONArray() }
+                val remaining = org.json.JSONArray()
+                for (i in 0 until latest.length()) {
+                    val item = latest.optJSONObject(i) ?: continue
+                    if (item.optString("eventId") !in successfullySentIds) remaining.put(item)
+                }
+                repository.saveSetting(setting.key, if (remaining.length() == 0) "" else remaining.toString())
+            }
         }
     }
 
@@ -3025,15 +3060,76 @@ loadSettings()
                 ?: return@launch
             if (isTrialUser && !station.consoleType.equals("PlayStation 5", ignoreCase = true)) return@launch
 
+            // A stop action may still be persisting/sending its boundary event while the
+            // Manager quickly taps Start. Recover the exact event from the durable marker first;
+            // only then may we settle the previous session and create a new session ID.
+            val boundaryKey = "session_boundary_pending_$stationId"
+            val boundaryRaw = repository.getSetting(boundaryKey).orEmpty()
+            if (boundaryRaw.isNotBlank() && !isTrialUser) {
+                val boundary = runCatching { org.json.JSONObject(boundaryRaw) }.getOrNull()
+                if (boundary == null) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "شروع نشست جدید متوقف شد؛ اطلاعات رویداد توقف قبلی معتبر نیست.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+                val boundarySession = boundary.optString("sessionId").orEmpty()
+                val boundaryEventId = boundary.optString("eventId").orEmpty()
+                if (boundarySession.isBlank() || boundaryEventId.isBlank()) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "شروع نشست جدید متوقف شد؛ رویداد توقف قبلی نیازمند بررسی است.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+                queueOrSendSessionEvent(
+                    boundarySession,
+                    boundary.optString("eventType"),
+                    boundary.optLong("occurredAt"),
+                    boundary.optJSONObject("payload") ?: org.json.JSONObject(),
+                    boundaryEventId
+                )
+                val markerAfterReplay = runCatching { org.json.JSONObject(repository.getSetting(boundaryKey).orEmpty()) }.getOrNull()
+                if (markerAfterReplay?.optString("eventId") == boundaryEventId) repository.saveSetting(boundaryKey, "")
+                flushSessionOutbox()
+                val remainingBoundaryEvents = repository.getSetting("session_outbox_$boundarySession").orEmpty()
+                if (remainingBoundaryEvents.isNotBlank()) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "نشست جدید شروع نشد؛ ثبت توقف قبلی هنوز به سرور نرسیده است. دوباره تلاش کنید.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+            }
+
             // Starting a NEW session from a paused station means the previous server session
             // must be closed first. "ثبت بخش و توقف" records a segment and marks the session
             // PAUSED; it does not end that session. Without this transition, the old customer
             // remains attached to an ACTIVE/PAUSED game_sessions row and GN Customers keeps showing
             // the previous session even after a different customer/guest starts playing.
             if (!isTrialUser && station.status == "PAUSED") {
-                val priorSessionId = repository.getSetting("active_session_" + stationId).orEmpty().trim()
+                var priorSessionId = repository.getSetting("active_session_" + stationId).orEmpty().trim()
+                if (priorSessionId.isBlank()) {
+                    // Recover the canonical ID if local settings were cleared/recreated. A PAUSED
+                    // paid station must never start a replacement session while its previous server
+                    // session might still be ACTIVE; otherwise the customer profile can resurrect it.
+                    val pendingStart = runCatching {
+                        org.json.JSONObject(repository.getSetting("session_pending_start_$stationId").orEmpty())
+                    }.getOrNull()
+                    priorSessionId = pendingStart?.optString("sessionId").orEmpty().trim()
+                    if (priorSessionId.isBlank()) {
+                        val remoteActive = runCatching { SelfHostedManager.getActiveStationSession(stationId) }.getOrNull()
+                        priorSessionId = remoteActive?.optString("id").orEmpty().trim()
+                    }
+                    if (priorSessionId.isNotBlank()) {
+                        repository.saveSetting("active_session_$stationId", priorSessionId)
+                    } else {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(getApplication(), "نشست قبلی از سرور قابل شناسایی نیست؛ برای جلوگیری از نمایش/محاسبهٔ اشتباه، نشست جدید شروع نشد. ابتدا وضعیت سرور را همگام کنید.", Toast.LENGTH_LONG).show()
+                        }
+                        return@launch
+                    }
+                }
                 val pendingKey = "session_pending_settlement_" + stationId
-                if (priorSessionId.isNotBlank() && repository.getSetting(pendingKey).isNullOrBlank()) {
+                if (repository.getSetting(pendingKey).isNullOrBlank()) {
                     // Deliver the pause/segment boundary before finalizing, otherwise a race can
                     // make the server close the session before its last segment event arrives.
                     flushSessionOutbox()
@@ -3514,56 +3610,79 @@ loadSettings()
                     elapsedPlayingTimeMillis = if (commitSegment) 0L else elapsed,
                     segmentsJson = if (commitSegment) segments.toJson() else station.segmentsJson
                 )
-                // The Stop click is a local state transition. Never wait for HTTP, logging,
-                // alarms, or cloud serialization before the station becomes PAUSED/RUNNING.
-                // Stop is a safety-critical local UI action. Persist locally first and
-                // never invoke the network-backed station writer from the Stop coroutine.
-                // Cloud synchronization is explicitly best-effort afterwards.
+                // Mark the session boundary before publishing the paused state. Start checks
+                // this durable marker and replays its exact idempotent event before settlement,
+                // so a fast Stop -> Start sequence cannot close the session before its PAUSE /
+                // SEGMENT_PAUSE reaches the server.
+                val boundarySessionId = if (isTrialUser) "" else repository.getSetting("active_session_$stationId").orEmpty().trim()
+                val boundaryEventType = when {
+                    commitSegment && continueRunning -> "SEGMENT_CONTINUE"
+                    commitSegment -> "SEGMENT_PAUSE"
+                    else -> "PAUSE"
+                }
+                val boundaryEventId = java.util.UUID.randomUUID().toString()
+                val boundaryPayload = org.json.JSONObject()
+                if (commitSegment) {
+                    val committed = if (elapsed > 0L) updated.getSegmentsList().lastOrNull() else null
+                    if (committed != null) {
+                        boundaryPayload.put("segmentIndex", committed.segmentIndex)
+                        boundaryPayload.put("startTimeMs", committed.startTimeMs)
+                        boundaryPayload.put("endTimeMs", committed.endTimeMs)
+                        boundaryPayload.put("durationSeconds", committed.durationSeconds)
+                        boundaryPayload.put("cost", committed.cost)
+                        boundaryPayload.put("consoleType", committed.consoleType)
+                        boundaryPayload.put("controllerCount", committed.controllerCount)
+                        boundaryPayload.put("customerIds", org.json.JSONArray(committed.customerIds))
+                        boundaryPayload.put("customerNames", org.json.JSONArray(committed.customerNames))
+                        boundaryPayload.put("payerCustomerIds", org.json.JSONArray(committed.payerCustomerIds))
+                        boundaryPayload.put("payerCustomerNames", org.json.JSONArray(committed.payerCustomerNames))
+                    } else {
+                        boundaryPayload.put("segmentIndex", updated.getSegmentsList().size + 1)
+                        boundaryPayload.put("startTimeMs", now)
+                        boundaryPayload.put("endTimeMs", now)
+                        boundaryPayload.put("durationSeconds", 0)
+                        boundaryPayload.put("cost", 0)
+                        boundaryPayload.put("consoleType", station.consoleType)
+                        boundaryPayload.put("controllerCount", station.controllerCount)
+                        boundaryPayload.put("customerIds", org.json.JSONArray(station.getCustomerIds()))
+                        boundaryPayload.put("customerNames", org.json.JSONArray(station.getCustomerNames()))
+                        boundaryPayload.put("payerCustomerIds", org.json.JSONArray(payerCustomerIds))
+                        boundaryPayload.put("payerCustomerNames", org.json.JSONArray(payerCustomerNames))
+                    }
+                }
+                if (boundarySessionId.isNotBlank()) {
+                    repository.saveSetting("session_boundary_pending_$stationId", org.json.JSONObject().apply {
+                        put("sessionId", boundarySessionId)
+                        put("eventId", boundaryEventId)
+                        put("eventType", boundaryEventType)
+                        put("occurredAt", now)
+                        put("payload", boundaryPayload)
+                    }.toString())
+                }
+                // Persist the event to the local outbox before exposing the paused state. This
+                // is local-only (no HTTP wait), so Stop remains immediate while even a second rapid
+                // action cannot overwrite the first boundary before it becomes durable.
+                if (boundarySessionId.isNotBlank()) {
+                    persistSessionEventToOutbox(boundarySessionId, boundaryEventId, boundaryEventType, now, boundaryPayload)
+                }
                 repository.insertStationStateLocal(updated)
                 // The UI-critical Stop transaction ends here. Alarm cancellation, session-event
                 // logging, and cloud sync are detached from the state transition so none of
                 // their callbacks can invalidate the active StationCard composition.
                 runCatching { cancelAlarm(stationId) }
                 viewModelScope.launch(Dispatchers.IO) {
-                    runCatching {
-                        val sessionId = repository.getSetting("active_session_$stationId")?.takeIf { it.isNotBlank() }
-                        if (sessionId != null) {
-                            val committed = if (commitSegment && elapsed > 0L) updated.getSegmentsList().lastOrNull() else null
-                            val eventType = when {
-                                commitSegment && continueRunning -> "SEGMENT_CONTINUE"
-                                commitSegment -> "SEGMENT_PAUSE"
-                                else -> "PAUSE"
-                            }
-                            val payload = org.json.JSONObject()
-                            if (committed != null) {
-                                payload.put("segmentIndex", committed.segmentIndex)
-                                payload.put("startTimeMs", committed.startTimeMs)
-                                payload.put("endTimeMs", committed.endTimeMs)
-                                payload.put("durationSeconds", committed.durationSeconds)
-                                payload.put("cost", committed.cost)
-                                payload.put("consoleType", committed.consoleType)
-                                payload.put("controllerCount", committed.controllerCount)
-                                payload.put("customerIds", org.json.JSONArray(committed.customerIds))
-                                payload.put("customerNames", org.json.JSONArray(committed.customerNames))
-                                payload.put("payerCustomerIds", org.json.JSONArray(committed.payerCustomerIds))
-                                payload.put("payerCustomerNames", org.json.JSONArray(committed.payerCustomerNames))
-                            } else if (commitSegment) {
-                                // A zero-length boundary must not resend the previous segment's cost.
-                                payload.put("segmentIndex", updated.getSegmentsList().size + 1)
-                                payload.put("startTimeMs", now)
-                                payload.put("endTimeMs", now)
-                                payload.put("durationSeconds", 0)
-                                payload.put("cost", 0)
-                                payload.put("consoleType", station.consoleType)
-                                payload.put("controllerCount", station.controllerCount)
-                                payload.put("customerIds", org.json.JSONArray(station.getCustomerIds()))
-                                payload.put("customerNames", org.json.JSONArray(station.getCustomerNames()))
-                                payload.put("payerCustomerIds", org.json.JSONArray(payerCustomerIds))
-                                payload.put("payerCustomerNames", org.json.JSONArray(payerCustomerNames))
-                            }
-                            queueOrSendSessionEvent(sessionId, eventType, now, payload)
+                    try {
+                        if (boundarySessionId.isNotBlank()) {
+                            queueOrSendSessionEvent(boundarySessionId, boundaryEventType, now, boundaryPayload, boundaryEventId)
                         }
-                    }.onFailure { android.util.Log.e("GameNetViewModel", "Stop event sync failed for station $stationId", it) }
+                    } catch (t: Throwable) {
+                        android.util.Log.e("GameNetViewModel", "Stop event sync failed for station $stationId", t)
+                    } finally {
+                        // Do not erase a newer boundary marker created by a second rapid Stop.
+                        val markerKey = "session_boundary_pending_$stationId"
+                        val currentMarker = runCatching { org.json.JSONObject(repository.getSetting(markerKey).orEmpty()) }.getOrNull()
+                        if (currentMarker?.optString("eventId") == boundaryEventId) repository.saveSetting(markerKey, "")
+                    }
                     runCatching { saveAndSyncStationState(updated) }
                         .onFailure { android.util.Log.e("GameNetViewModel", "Stop background sync failed for station $stationId", it) }
                 }

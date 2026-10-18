@@ -660,7 +660,11 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
         // commits the segment and starts a fresh one immediately. Previously committed segment
         // costs remain in committedSegmentCost and are not lost when the current timer resets.
         let segmentElapsedMs=0, committedSegmentCost=0;
-        let running=String(row.status||'').toUpperCase()==='ACTIVE';
+        // Replay the event ledger from the session start, not from the current row status.
+        // Initializing `running` from status='PAUSED' loses elapsed time when importing older
+        // sessions whose event ledger has PAUSE but no START row. The PAUSE event then sees
+        // running=false and contributes zero, making every customer-profile amount appear zero.
+        let running=true;
         let runningSince=Number.isFinite(startMs)?startMs:Date.now();
         for(const event of liveEvents){
           const type=String(event.eventType||event.event_type||'').toUpperCase();

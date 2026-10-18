@@ -28,6 +28,8 @@ assert(liveRoute.includes("'eventType',se.event_type") && liveRoute.includes("AS
   'live feed must preserve committed segment costs/timeline and calculate the currently open segment from pause/resume/segment events');
 assert(liveRoute.includes("gs.status IN ('ACTIVE','PAUSED')"),
   'closed sessions must never appear as live sessions');
+assert(liveRoute.includes('let running=true;') && liveRoute.includes('Replay the event ledger from the session start'),
+  'paused sessions with legacy event ledgers missing START must still accumulate the PAUSE interval instead of resetting customer-profile elapsed time and cost to zero');
 assert(liveRoute.includes('(newer.started_at,newer.id) > (gs.started_at,gs.id)') &&
   liveRoute.includes('newer_sp.customer_id=$2') && liveRoute.includes('newer_claim.customer_id=$2') &&
   !liveRoute.includes('newer.station_id=gs.station_id'),
