@@ -23,8 +23,9 @@ assert(liveRoute.includes('active_session_customer_claims') && liveRoute.include
 assert(liveRoute.includes("'eventType',se.event_type") && liveRoute.includes("AS live_events") &&
   liveRoute.includes("type==='SEGMENT_PAUSE'||type==='SEGMENT_CONTINUE'") &&
   liveRoute.includes("committedSegmentCost:Number(committedSegmentCost||0)") &&
+  liveRoute.includes("segmentEventsJson:JSON.stringify(segmentEvents)") &&
   liveRoute.includes("elapsedPlayingTimeMillis:Math.max(0,segmentElapsedMs)"),
-  'live feed must preserve committed segment costs and calculate the currently open segment from pause/resume/segment events');
+  'live feed must preserve committed segment costs/timeline and calculate the currently open segment from pause/resume/segment events');
 assert(liveRoute.includes("gs.status IN ('ACTIVE','PAUSED')"),
   'closed sessions must never appear as live sessions');
 assert(liveRoute.includes('(newer.started_at,newer.id) > (gs.started_at,gs.id)') &&
