@@ -6,7 +6,7 @@ const invoice = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/u
 const backend = fs.readFileSync(__dirname + '/canonical_routes.js', 'utf8');
 const server = fs.readFileSync(__dirname + '/server.js', 'utf8');
 const managerApi = fs.readFileSync(__dirname + '/../app/src/main/java/com/example/data/network/SelfHostedManager.kt', 'utf8');
-assert(vm.includes('elapsedPlayingTimeMillis = if (commitSegment) 0L else station.elapsedPlayingTimeMillis + elapsed'), 'committing a segment must reset the live segment elapsed timer');
+assert(vm.includes('elapsedPlayingTimeMillis = if (commitSegment) 0L else elapsed'), 'committing a segment must reset the live segment elapsed timer without double-counting time accumulated before pause/resume');
 assert(vm.includes('val remainingMs = totalElapsed.coerceAtLeast(0L)'), 'final settlement must not subtract already-committed segments from current-segment elapsed time');
 assert(!vm.includes('customerGameCostMap.clear()'), 'final settlement must not redistribute every segment using only final payer selection');
 assert(!vm.includes('existingSegments[i] = existingSegments[i].copy('), 'final payer selection must not overwrite payer identity on historical segments');
