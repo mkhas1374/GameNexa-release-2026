@@ -22,6 +22,23 @@ import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
+data class CustomerSessionHistory(
+    val sessionId: String,
+    val stationId: Int,
+    val status: String,
+    val consoleType: String,
+    val controllerCount: Int,
+    val startTimeMillis: Long,
+    val endTimeMillis: Long,
+    val durationSeconds: Long,
+    val gameCost: Long,
+    val buffetCost: Long,
+    val totalCost: Long,
+    val participants: List<String>,
+    val eventSummary: List<String>,
+    val ordersSummary: List<String>
+)
+
 data class CloudLiveStation(
     val stationId: Int = 0,
     val status: String = "FREE", // "FREE", "RUNNING", "PAUSED"
@@ -1893,6 +1910,95 @@ object SelfHostedManager {
             }
             list.sortedByDescending { it.timestamp }
         } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /** Customer-token-only history for sessions that have ended. */
+    suspend fun fetchCustomerSessionHistory(): List<CustomerSessionHistory> = withContext(Dispatchers.IO) {
+        if (NetworkClient.customerAuthToken.isNullOrBlank()) return@withContext emptyList()
+        try {
+            val request = Request.Builder()
+                .url("$SERVER_URL/api/v1/customer/session-history")
+                .headers(getCustomerHeaders())
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful || body.isBlank()) {
+                    Log.w(TAG, "fetchCustomerSessionHistory HTTP ${response.code}: ${body.take(160)}")
+                    return@withContext emptyList()
+                }
+                val rows = JSONObject(body).optJSONArray("sessions") ?: JSONArray()
+                val result = ArrayList<CustomerSessionHistory>(rows.length())
+                val labels = mapOf("START" to "شروع نشست", "PAUSE" to "توقف موقت",
+                    "RESUME" to "ادامه نشست", "STOP" to "توقف نشست",
+                    "SEGMENT_PAUSE" to "ثبت بخش و توقف", "SEGMENT_CONTINUE" to "ثبت بخش و ادامه",
+                    "BUFFET_ORDER" to "ثبت سفارش بوفه")
+                fun epoch(item: JSONObject, name: String): Long =
+                    runCatching { java.time.OffsetDateTime.parse(item.optString(name)).toInstant().toEpochMilli() }.getOrDefault(0L)
+                for (i in 0 until rows.length()) {
+                    val item = rows.optJSONObject(i) ?: continue
+                    val participantsJson = item.optJSONArray("participants") ?: JSONArray()
+                    val participants = buildList {
+                        for (j in 0 until participantsJson.length()) {
+                            val name = participantsJson.optJSONObject(j)?.optString("name").orEmpty().trim()
+                            if (name.isNotBlank() && !contains(name)) add(name)
+                        }
+                    }
+                    val eventsJson = item.optJSONArray("events") ?: JSONArray()
+                    val events = buildList {
+                        for (j in 0 until eventsJson.length()) {
+                            val event = eventsJson.optJSONObject(j) ?: continue
+                            val type = event.optString("eventType")
+                            val label = labels[type] ?: type.replace('_', ' ')
+                            val payload = event.optJSONObject("payload")
+                            if (type == "SEGMENT_PAUSE" || type == "SEGMENT_CONTINUE") {
+                                val segment = payload?.optInt("segmentIndex", j + 1) ?: (j + 1)
+                                val controllers = payload?.optInt("controllerCount", 0) ?: 0
+                                val duration = payload?.optLong("durationSeconds", 0L) ?: 0L
+                                val cost = payload?.optLong("cost", -1L) ?: -1L
+                                val namesJson = payload?.optJSONArray("customerNames") ?: JSONArray()
+                                val names = (0 until namesJson.length()).mapNotNull { namesJson.optString(it).takeIf { name -> name.isNotBlank() } }
+                                val details = buildList {
+                                    add("بخش $segment")
+                                    if (controllers > 0) add("$controllers دسته")
+                                    if (names.isNotEmpty()) add("هم‌بازی‌ها: ${names.joinToString("، ")}")
+                                    if (duration > 0L) add("مدت: ${duration / 60L} دقیقه و ${duration % 60L} ثانیه")
+                                    if (cost >= 0L) add("هزینه: $cost تومان")
+                                }
+                                add("$label — ${details.joinToString(" · ")}")
+                            } else {
+                                val controllers = payload?.optInt("controllerCount", 0) ?: 0
+                                add(if (controllers > 0) "$label — $controllers دسته" else label)
+                            }
+                        }
+                    }
+                    val ordersJson = item.optJSONArray("orders") ?: JSONArray()
+                    val orders = buildList {
+                        for (j in 0 until ordersJson.length()) {
+                            val order = ordersJson.optJSONObject(j) ?: continue
+                            add("${order.optString("productName", "سفارش بوفه")} ×${order.optInt("quantity", 1)} — ${order.optLong("lineTotal", 0L)} تومان")
+                        }
+                    }
+                    result += CustomerSessionHistory(
+                        sessionId = item.optString("session_id", item.optString("sessionId", "")),
+                        stationId = item.optInt("station_id", item.optInt("stationId", 0)),
+                        status = item.optString("status", ""),
+                        consoleType = item.optString("console_type", item.optString("consoleType", "")),
+                        controllerCount = item.optInt("controller_count", item.optInt("controllerCount", 1)),
+                        startTimeMillis = epoch(item, "started_at"), endTimeMillis = epoch(item, "ended_at"),
+                        durationSeconds = item.optLong("duration_seconds", 0L),
+                        gameCost = item.optDouble("game_cost", 0.0).toLong(),
+                        buffetCost = item.optDouble("buffet_cost", 0.0).toLong(),
+                        totalCost = item.optDouble("total_cost", 0.0).toLong(),
+                        participants = participants, eventSummary = events, ordersSummary = orders
+                    )
+                }
+                result
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchCustomerSessionHistory failed: ${e.message}")
             emptyList()
         }
     }

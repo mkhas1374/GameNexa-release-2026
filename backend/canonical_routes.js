@@ -674,6 +674,51 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
     } catch(e){console.error('[customer-live-session]',e?.message||e);return res.status(500).json({error:'Customer live session lookup failed'});}
   });
 
+  // Customer-visible history: every stop/start has its own immutable session ID.
+  app.get('/api/v1/customer/session-history', requireCustomerAuth, async(req,res)=>{
+    try {
+      const mid=req.user.managerId, cid=Number(req.user.id);
+      const q=await pool.query(`
+        SELECT gs.id AS session_id,gs.station_id,gs.status,gs.console_type,gs.controller_count,
+               gs.started_at,gs.ended_at,gs.duration_seconds,gs.duration_minutes,
+               gs.game_cost,gs.buffet_cost,gs.total_cost,
+               COALESCE((SELECT json_agg(json_build_object(
+                 'customerId',sp.customer_id,'participantKey',sp.participant_key,
+                 'name',sp.participant_name,'isGuest',sp.is_guest,'isPayer',sp.is_payer,
+                 'prepaymentAmount',sp.prepayment_amount
+               ) ORDER BY sp.id) FROM session_participants sp
+                 WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id),'[]'::json) AS participants,
+               COALESCE((SELECT json_agg(json_build_object(
+                 'eventType',se.event_type,'occurredAt',se.occurred_at,'payload',se.payload
+               ) ORDER BY se.sequence_no) FROM session_events se
+                 WHERE se.session_id=gs.id AND se.manager_id=gs.manager_id),'[]'::json) AS events,
+               COALESCE((SELECT json_agg(json_build_object(
+                 'productName',so.product_name,'quantity',so.quantity,'lineTotal',so.line_total,
+                 'targetCustomerId',so.target_customer_id,'createdAt',so.created_at
+               ) ORDER BY so.created_at,so.id) FROM session_orders so
+                 WHERE so.session_id=gs.id AND so.manager_id=gs.manager_id),'[]'::json) AS orders
+        FROM game_sessions gs
+        WHERE gs.manager_id=$1 AND gs.status NOT IN ('ACTIVE','PAUSED')
+          AND (
+            EXISTS (SELECT 1 FROM session_participants sp
+              WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id
+                AND sp.customer_id=$2 AND sp.is_guest=FALSE)
+            OR EXISTS (SELECT 1 FROM invoices i
+              WHERE i.session_id=gs.id AND i.manager_id=gs.manager_id AND i.customer_id=$2)
+            OR EXISTS (SELECT 1 FROM customer_transactions ct
+              WHERE ct.session_id=gs.id AND ct.manager_id=gs.manager_id
+                AND ct.customer_id=$2 AND ct.status<>'DELETED')
+            OR EXISTS (SELECT 1 FROM session_events se
+              WHERE se.session_id=gs.id AND se.manager_id=gs.manager_id
+                AND COALESCE(se.payload->'customerIds','[]'::jsonb) @> jsonb_build_array($2::int))
+          )
+        ORDER BY COALESCE(gs.ended_at,gs.started_at) DESC,gs.id DESC LIMIT 100`,[mid,cid]);
+      return res.json({success:true,sessions:q.rows});
+    } catch(e) {
+      console.error('[customer-session-history]',e?.message||e);
+      return res.status(500).json({error:'Customer session history lookup failed'});
+    }
+  });
   app.get('/api/v1/customer/reservations', requireCustomerAuth, async(req,res)=>{try{const q=await pool.query('SELECT * FROM reservations WHERE customer_id=$1 AND manager_id=$2 ORDER BY start_time DESC',[req.user.id,req.user.managerId]);res.json(q.rows);}catch(e){res.status(500).json({error:'Internal server error'});} });
   app.get('/api/v1/customer/club/ledger', requireCustomerAuth, async(req,res)=>{try{const q=await pool.query('SELECT * FROM gn_ledger WHERE customer_id=$1 AND manager_id=$2 ORDER BY created_at DESC',[req.user.id,req.user.managerId]);res.json(q.rows);}catch(e){res.status(500).json({error:'Internal server error'});} });
   app.get('/api/v1/customer/club/lp-ledger', requireCustomerAuth, async(req,res)=>{try{const q=await pool.query('SELECT * FROM lp_ledger WHERE customer_id=$1 AND manager_id=$2 ORDER BY created_at DESC LIMIT 500',[req.user.id,req.user.managerId]);res.json(q.rows);}catch(e){res.status(500).json({error:'Customer LP ledger lookup failed'});} });

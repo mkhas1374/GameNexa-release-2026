@@ -59,4 +59,19 @@ assert(vm.includes('overrides.values.firstOrNull') && vm.includes('Room/server r
   'finalized invoice status must reconcile by session + payer identity when numeric local IDs change');
 assert(vm.includes('decisionCustomerId > 0L') && vm.includes('decisionCustomerName'),
   'invoice UI overlay must match a finalization result by payer identity when the local transaction ID is unavailable');
-console.log('PASS: customer live-session identity, shared buffet visibility/allocation, prior-session settlement gate, and identity-based invoice UI reconciliation');
+const historyStart = routes.indexOf("app.get('/api/v1/customer/session-history'");
+assert(historyStart >= 0, 'customer session-history endpoint must exist');
+const historyEnd = routes.indexOf("app.get('/api/v1/customer/reservations'", historyStart);
+const historyRoute = routes.slice(historyStart, historyEnd);
+assert(historyRoute.includes('requireCustomerAuth') && historyRoute.includes("gs.status NOT IN ('ACTIVE','PAUSED')"),
+  'history must be authenticated as the customer and must not duplicate active sessions');
+assert(historyRoute.includes('session_participants') && historyRoute.includes('controller_count') &&
+  historyRoute.includes('session_events') && historyRoute.includes("se.payload->'customerIds'") && historyRoute.includes('session_orders') &&
+  historyRoute.includes('ORDER BY COALESCE(gs.ended_at,gs.started_at) DESC'),
+  'history must return distinct sessions with controllers, participant roster, timeline events and buffet orders');
+assert(managerApi.includes('/api/v1/customer/session-history') && managerApi.includes('fetchCustomerSessionHistory'),
+  'Android must load history using the customer-scoped endpoint');
+assert(customerUi.includes('سابقه نشست‌های شما') && customerUi.includes('هم‌بازی‌ها:') &&
+  customerUi.includes('اتفاقات نشست:') && customerUi.includes('history.controllerCount'),
+  'customer profile must show active session above historical sessions with per-session details');
+console.log('PASS: customer live-session identity, customer session history, per-session participants/controller counts/timeline, shared buffet visibility/allocation, and invoice reconciliation');

@@ -22,6 +22,12 @@ assert(routes.includes('status:retryStatus,paidAmount:retryPaid,idempotent:true'
 assert(routes.indexOf('const byId=new Map') > routes.indexOf('Historical segment payers can be missing'), 'payer indexes must be built after merging historical invoice payers');
 assert(manager.includes('o.has("local_id") && !o.isNull("local_id")'), 'hydration must preserve local_id as Room identity');
 assert(viewModel.includes('A refresh replaces Room rows and can race the optimistic update') && viewModel.includes('Keep this off the critical path so the dialog closes now'), 'post-finalization refresh must reconcile after the dialog closes without blocking the UI');
+const invoiceUi = screen;
+const refundEffectStart = invoiceUi.indexOf('LaunchedEffect(refundRequested)');
+const finalizeCall = invoiceUi.indexOf('viewModel.finalizeSettlementReview(transaction.sessionId', refundEffectStart);
+const consumeTrigger = invoiceUi.indexOf('refundRequested = false', refundEffectStart);
+assert(refundEffectStart >= 0 && finalizeCall > refundEffectStart && consumeTrigger > finalizeCall,
+  'refundRequested must not be reset before the finalize request; changing a LaunchedEffect key cancels in-flight UI reconciliation');
 const finalizeFn = viewModel.indexOf('suspend fun finalizeSettlementReview(sessionId: String');
 const overlayPublish = viewModel.indexOf('finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + immediateOverrides', finalizeFn);
 const backgroundReconcile = viewModel.indexOf('viewModelScope.launch(Dispatchers.IO) {', overlayPublish);

@@ -490,117 +490,147 @@ fun CustomerDashboardTab(
         }
 
         // -------------------------------------------------------------
-        // SECTION 2: ACTIVE STATION REAL-TIME COUNTER
+        // SECTION 2: ACTIVE SESSION (SERVER AUTHORITATIVE)
         // -------------------------------------------------------------
         if (activeStation != null) {
-            ActiveStationLiveCard(station = activeStation, viewModel = viewModel, sessionId = activeLiveSession?.sessionId.orEmpty())
+            ActiveStationLiveCard(
+                station = activeStation,
+                viewModel = viewModel,
+                sessionId = activeLiveSession?.sessionId.orEmpty()
+            )
         } else {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                    modifier = Modifier.fillMaxWidth()
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.SportsEsports,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(32.dp)
+                    Icon(
+                        Icons.Default.SportsEsports,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(32.dp)
+                    )
+                    Column {
+                        Text(
+                            text = "هیچ نشست فعالی در حال حاضر برای شما ثبت نشده است",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
-                        Column {
+                        Text(
+                            text = "نشست‌های پایان‌یافته در بخش سابقه نشست‌ها نمایش داده می‌شوند.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+
+        // Independent server history: never infer a session from the most recent invoice.
+        val sessionHistory by androidx.compose.runtime.produceState<List<com.example.data.network.CustomerSessionHistory>>(
+            initialValue = emptyList(),
+            key1 = customer.id
+        ) {
+            if (customer.id > 0L) {
+                while (isActive) {
+                    value = com.example.data.network.SelfHostedManager.fetchCustomerSessionHistory()
+                    kotlinx.coroutines.delay(15000L)
+                }
+            } else {
+                value = emptyList()
+            }
+        }
+
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "📚 سابقه نشست‌های شما",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                    Text(
+                        text = "${sessionHistory.size} نشست",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Text(
+                    text = "هر بار توقف و شروع مجدد، یک نشست جداگانه است. نشست جدید بالا و نشست‌های قبلی در این فهرست باقی می‌مانند.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (sessionHistory.isEmpty()) {
+                    Text(
+                        text = "هنوز سابقه نشست پایان‌یافته‌ای برای این حساب ثبت نشده است.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    sessionHistory.forEachIndexed { index, history ->
+                        if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text(
-                                text = "هیچ نشست فعالی در حال حاضر برای شما ثبت نشده است",
-                                style = MaterialTheme.typography.bodyMedium,
+                                text = "نشست ${sessionHistory.size - index} · جایگاه ${history.stationId} · ${history.consoleType.ifBlank { "کنسول" }}",
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.primary
                             )
+                            val dateFormatter = java.text.SimpleDateFormat("yyyy/MM/dd HH:mm", java.util.Locale.US)
                             Text(
-                                text = "پس از شروع بازی توسط مدیریت، تایمر و هزینه لحظه‌ای اینجا فعال می‌شود.",
+                                text = "شروع: ${if (history.startTimeMillis > 0L) dateFormatter.format(java.util.Date(history.startTimeMillis)) else "نامشخص"}   |   پایان: ${if (history.endTimeMillis > 0L) dateFormatter.format(java.util.Date(history.endTimeMillis)) else "ثبت نشده"}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                        }
-                    }
-                }
-
-                // Show Last Finished Session details if exists
-                val lastSession by androidx.compose.runtime.produceState<com.example.data.CustomerTransaction?>(initialValue = null, key1 = customer.id) {
-                    if (customer.id > 0) {
-                        try {
-                            val txs = com.example.data.network.SelfHostedManager.fetchCustomerTransactionsForCustomer(customer.id)
-                            value = txs.maxByOrNull { if (it.id > 0) it.id else it.timestamp }
-                        } catch (e: Exception) { android.util.Log.e("GameNexa", "Suppressed exception in CustomerAppContent.kt", e) }
-                    }
-                }
-                if (lastSession != null) {
-                    Card(
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "🏁 آخرین نشست بازی ثبت شده شما:",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = java.text.SimpleDateFormat("yyyy/MM/dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(lastSession!!.timestamp)),
-                                    fontSize = 10.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("🎮 کنسول و جایگاه:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(lastSession!!.title, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                            }
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("🕹️ هزینه بازی:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("${numberFormat.format(lastSession!!.gameCost)} تومان", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-
-                            if (lastSession!!.foodCost > 0) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text("🍿 هزینه بوفه:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text("${numberFormat.format(lastSession!!.foodCost)} تومان", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFD97706))
+                            Text(
+                                text = "دسته‌ها: ${history.controllerCount}   ·   مدت بازی: ${history.durationSeconds / 60L} دقیقه",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "هم‌بازی‌ها: ${history.participants.joinToString("، ").ifBlank { "اطلاعات ثبت نشده" }}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                text = "بازی: ${numberFormat.format(history.gameCost)} تومان   ·   بوفه: ${numberFormat.format(history.buffetCost)} تومان",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                text = "مجموع نشست: ${numberFormat.format(history.totalCost)} تومان",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.tertiary
+                            )
+                            if (history.eventSummary.isNotEmpty()) {
+                                Text("اتفاقات نشست:", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                                history.eventSummary.forEach { event ->
+                                    Text("• $event", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("💰 کل هزینه نشست:", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                                Text("${numberFormat.format(lastSession!!.amount)} تومان", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF2E7D32))
+                            if (history.ordersSummary.isNotEmpty()) {
+                                Text("سفارش‌های بوفه:", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                                history.ordersSummary.forEach { order ->
+                                    Text("• $order", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                             }
                         }
                     }

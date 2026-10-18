@@ -1128,7 +1128,8 @@ fun CustomerTransactionCard(
 
     LaunchedEffect(refundRequested) {
         if (refundRequested) {
-            refundRequested = false
+            // Do not reset this key at the beginning: changing a LaunchedEffect key cancels
+            // the coroutine, which can cancel UI reconciliation after the server has committed.
             val review = settlementReview
             if (review != null) {
                 val decisions = org.json.JSONArray()
@@ -1199,6 +1200,9 @@ fun CustomerTransactionCard(
                 isSubmitting = false
                 android.widget.Toast.makeText(viewModel.getApplication(), "جزئیات فاکتور از سرور دریافت نشد؛ دیالوگ بسته نشد تا اطلاعات مالی از دست نرود. دوباره تلاش کنید.", android.widget.Toast.LENGTH_LONG).show()
             }
+            // Consume the one-shot event only after success/failure state has been applied.
+            // This state change may cancel this effect, so it must be the final operation.
+            refundRequested = false
         }
     }
 
