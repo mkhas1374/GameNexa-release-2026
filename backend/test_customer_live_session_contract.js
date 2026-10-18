@@ -32,4 +32,14 @@ assert(customerUi.includes('list.clear()') && customerUi.includes('Server snapsh
   'customer UI must not let stale local order quantities override the live server snapshot');
 assert(customerUi.includes('cloudSt.currentBuffetCost.toDouble()'),
   'customer UI must use the server-allocated buffet share instead of total shared order cost');
-console.log('PASS: customer live-session identity, shared buffet visibility/allocation, and authoritative order snapshot contract');
+const startGate = vm.indexOf('Do not let the optimistic local UI start a replacement session');
+const optimisticStart = vm.indexOf('repository.insertStationStateLocal(optimisticState)', startGate);
+assert(startGate >= 0 && optimisticStart > startGate,
+  'new session must reconcile pending prior settlement before optimistic local start');
+assert(vm.includes('httpCode !in 200..299'),
+  'new session must be blocked unless prior settlement receives a confirmed successful HTTP response');
+assert(vm.includes('overrides.values.firstOrNull') && vm.includes('Room/server refresh can re-key a legacy transaction'),
+  'finalized invoice status must reconcile by session + payer identity when numeric local IDs change');
+assert(vm.includes('decisionCustomerId > 0L') && vm.includes('decisionCustomerName'),
+  'invoice UI overlay must match a finalization result by payer identity when the local transaction ID is unavailable');
+console.log('PASS: customer live-session identity, shared buffet visibility/allocation, prior-session settlement gate, and identity-based invoice UI reconciliation');

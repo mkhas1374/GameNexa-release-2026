@@ -108,7 +108,16 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
         repository.allCustomerTransactions,
         finalizedTransactionOverrides
     ) { rows, overrides ->
-        rows.map { row -> overrides[row.id] ?: row }
+        rows.map { row ->
+            overrides[row.id] ?: overrides.values.firstOrNull { finalized ->
+                // Room/server refresh can re-key a legacy transaction from its server ID to
+                // local_id (or vice versa). Keep the committed decision visible by stable
+                // session + payer identity instead of requiring a numeric ID match.
+                finalized.sessionId == row.sessionId && finalized.sessionId.isNotBlank() &&
+                    if (finalized.customerId > 0L) row.customerId == finalized.customerId
+                    else row.customerId <= 0L && row.customerName.trim() == finalized.customerName.trim()
+            } ?: row
+        }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val unreviewedTransactions = customerTransactions.map { list ->
@@ -3015,6 +3024,38 @@ loadSettings()
                 ?: stationStates.value.find { it.id == stationId }
                 ?: return@launch
             if (isTrialUser && !station.consoleType.equals("PlayStation 5", ignoreCase = true)) return@launch
+
+            // Do not let the optimistic local UI start a replacement session while the previous
+            // session's asynchronous settlement is still pending. Otherwise the server can reject
+            // START with ACTIVE_SESSION_EXISTS while Android displays a locally-running new session,
+            // leaving GN Customers stuck on the old server session until a process restart.
+            if (!isTrialUser) {
+                val pendingSettlementKey = "session_pending_settlement_" + stationId
+                val pendingSettlementRaw = repository.getSetting(pendingSettlementKey)
+                if (!pendingSettlementRaw.isNullOrBlank()) {
+                    val pendingSettlement = runCatching { org.json.JSONObject(pendingSettlementRaw) }.getOrNull()
+                    val pendingSessionId = pendingSettlement?.optString("sessionId").orEmpty()
+                    val pendingEndedAt = pendingSettlement?.optLong("endedAt", 0L)?.takeIf { it > 0L }
+                        ?: System.currentTimeMillis()
+                    if (pendingSessionId.isBlank()) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(getApplication(), "تسویه نشست قبلی هنوز تعیین تکلیف نشده است؛ ابتدا وضعیت آن را بررسی کنید.", Toast.LENGTH_LONG).show()
+                        }
+                        return@launch
+                    }
+                    val finalized = queueOrSettleSession(pendingSessionId, stationId, pendingEndedAt)
+                    val httpCode = SelfHostedManager.lastSettlementHttpCode
+                    if (!finalized || httpCode !in 200..299) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(getApplication(), "نشست جدید شروع نشد؛ سرور هنوز پایان نشست قبلی را تأیید نکرده است. اتصال را بررسی و دوباره تلاش کنید.", Toast.LENGTH_LONG).show()
+                        }
+                        return@launch
+                    }
+                    repository.saveSetting(pendingSettlementKey, "")
+                    repository.saveSetting("settlement_pending_" + pendingSessionId, "")
+                    flushPendingCustomerTransactions()
+                }
+            }
 
             // STRICT BUSINESS RULE: A customer cannot have concurrent active sessions in multiple stations
             val assignedCustomerIds = (selectedCustomerIds ?: station.getCustomerIds()).filter { it > 0 }
@@ -7018,13 +7059,24 @@ loadSettings()
         val immediateOverrides = mutableMapOf<Long, CustomerTransaction>()
         decisions.forEach { decision ->
             val localId = decision.optLong("transactionId", 0L)
-            if (localId <= 0L) return@forEach
+            val decisionCustomerId = decision.optLong("customerId", 0L)
+            val decisionCustomerName = decision.optString("customerName", "").trim()
             val target = visibleRows.firstOrNull { tx ->
-                tx.id == localId && tx.status != "DELETED" &&
+                localId > 0L && tx.id == localId && tx.status != "DELETED" &&
                     (tx.sessionId == sessionId || tx.sessionId.isBlank())
+            } ?: visibleRows.firstOrNull { tx ->
+                tx.status != "DELETED" && (tx.sessionId == sessionId || tx.sessionId.isBlank()) &&
+                    if (decisionCustomerId > 0L) tx.customerId == decisionCustomerId
+                    else tx.customerId <= 0L && decisionCustomerName.isNotBlank() &&
+                        tx.customerName.trim() == decisionCustomerName
             } ?: return@forEach
             val serverResult = (0 until results.length()).mapNotNull { results.optJSONObject(it) }
-                .firstOrNull { it.optLong("localTransactionId", 0L) == localId }
+                .firstOrNull { result ->
+                    (localId > 0L && result.optLong("localTransactionId", 0L) == localId) ||
+                        (decisionCustomerId > 0L && result.optLong("customerId", 0L) == decisionCustomerId) ||
+                        (decisionCustomerId <= 0L && decisionCustomerName.isNotBlank() &&
+                            result.optString("customerName", "").trim() == decisionCustomerName)
+                }
             val requestedStatus = decision.optString("status", "REVIEWED").uppercase()
             val status = serverResult?.optString("status", requestedStatus)?.uppercase()
                 ?: requestedStatus.let { if (it == "PARTIAL") "DEBTOR" else it }
@@ -7136,9 +7188,13 @@ loadSettings()
                 if (repository.syncCustomerTransactionsFromServer()) {
                     applyFinalResultsToLocalRows()
                     // Drop the overlay only after Room contains the same committed server state.
-                    val serverRows = repository.getAllCustomerTransactionsLocal().associateBy { it.id }
+                    val serverRows = repository.getAllCustomerTransactionsLocal()
                     finalizedTransactionOverrides.value = finalizedTransactionOverrides.value.filter { (id, override) ->
-                        val serverRow = serverRows[id]
+                        val serverRow = serverRows.firstOrNull { it.id == id } ?: serverRows.firstOrNull { row ->
+                            row.sessionId == override.sessionId && row.sessionId.isNotBlank() &&
+                                if (override.customerId > 0L) row.customerId == override.customerId
+                                else row.customerId <= 0L && row.customerName.trim() == override.customerName.trim()
+                        }
                         serverRow == null || serverRow.status != override.status || serverRow.paidAmount != override.paidAmount
                     }
                 }
