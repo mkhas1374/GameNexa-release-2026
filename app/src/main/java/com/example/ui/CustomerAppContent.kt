@@ -1212,6 +1212,9 @@ fun ActiveStationLiveCard(
         // 2. From cloud live station ordersJson (critical for customer app synced from manager)
         if (cloudSt != null && cloudSt.ordersJson.isNotBlank()) {
             try {
+                // Server snapshots are authoritative; cached local quantities must not mask
+                // live changes made in the Manager app.
+                list.clear()
                 val arr = org.json.JSONArray(cloudSt.ordersJson)
                 for (i in 0 until arr.length()) {
                     val obj = arr.getJSONObject(i)
@@ -1227,10 +1230,7 @@ fun ActiveStationLiveCard(
                     if (name.isNotBlank()) {
                         val existingIdx = list.indexOfFirst { it.first.trim().equals(name.trim(), ignoreCase = true) }
                         if (existingIdx >= 0) {
-                            val currentPair = list[existingIdx]
-                            val finalPrice: Double = if (currentPair.second.second > 0.0) currentPair.second.second else price
-                            val finalQty: Int = if (currentPair.second.first > 0) currentPair.second.first else qty
-                            list[existingIdx] = Pair(currentPair.first, Pair(finalQty, finalPrice))
+                            list[existingIdx] = Pair(name, Pair(qty, price))
                         } else {
                             list.add(Pair(name, Pair(qty, price)))
                         }
@@ -1244,7 +1244,11 @@ fun ActiveStationLiveCard(
     }
 
     val calculatedBuffetSum = ordersForStation.sumOf { it.second.first * it.second.second }
-    val totalBuffetCost: Double = if (calculatedBuffetSum > 0.0) calculatedBuffetSum else (cloudSt?.currentBuffetCost ?: 0L).toDouble()
+    // The server feed returns this customer's allocated buffet share, while ordersJson
+    // contains visible shared lines plus this customer's direct lines. Do not replace
+    // the allocation with the full shared order total on the client.
+    val totalBuffetCost: Double = if (cloudSt != null) cloudSt.currentBuffetCost.toDouble()
+        else if (calculatedBuffetSum > 0.0) calculatedBuffetSum else 0.0
     val totalSessionCost = calculatedGameCost + totalBuffetCost
     val numberFormat = remember { DecimalFormat("#,###") }
 

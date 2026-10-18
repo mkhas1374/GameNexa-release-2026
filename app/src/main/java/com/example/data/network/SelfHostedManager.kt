@@ -2444,6 +2444,9 @@ object SelfHostedManager {
         prepaymentAmount: Long = 0L,
         durationLimitMinutes: Int = 0,
         customerPrepayments: Map<Long, Long> = emptyMap(),
+        splitMode: String = "ALL",
+        payerCustomerIds: List<Long> = emptyList(),
+        payerCustomerNames: List<String> = emptyList(),
         idempotencyKey: String = ""
     ): Pair<String, Long>? = withContext(Dispatchers.IO) {
         lastStationStartWasTransportFailure = false
@@ -2476,6 +2479,9 @@ object SelfHostedManager {
                     }
                 })
                 put("participants", participants)
+                put("splitMode", splitMode.uppercase(java.util.Locale.ROOT))
+                put("payerCustomerIds", JSONArray().apply { payerCustomerIds.filter { it > 0L }.distinct().forEach { put(it) } })
+                put("payerCustomerNames", JSONArray().apply { payerCustomerNames.map { it.trim() }.filter { it.isNotBlank() }.distinct().forEach { put(it) } })
             }
             val request = Request.Builder()
                 .url("$SERVER_URL/api/station/start")

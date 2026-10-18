@@ -3116,6 +3116,9 @@ loadSettings()
                     prepaymentAmount = requestedPrepayment,
                     durationLimitMinutes = durationMinutes,
                     customerPrepayments = finalPrepaymentsMap,
+                    splitMode = station.splitMode,
+                    payerCustomerIds = station.getPayerCustomerIds(),
+                    payerCustomerNames = station.getPayerCustomerNames(),
                     idempotencyKey = startIdempotencyKey
                 )
                 if (sessionStart == null && !SelfHostedManager.lastStationStartWasTransportFailure) {

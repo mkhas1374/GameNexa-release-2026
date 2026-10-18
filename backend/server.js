@@ -1222,6 +1222,9 @@ app.post("/api/station/start", requireManagerAuth, requireActiveEntitlement, rat
             initialPrepaymentAmount:requestedPrepayment,
             durationLimitMinutes,
             customerPrepayments:normalizedCustomerPrepayments,
+            splitMode:String(req.body?.splitMode||'ALL').toUpperCase(),
+            payerCustomerIds:Array.isArray(req.body?.payerCustomerIds)?req.body.payerCustomerIds.map(Number).filter(n=>Number.isInteger(n)&&n>0):[],
+            payerCustomerNames:Array.isArray(req.body?.payerCustomerNames)?req.body.payerCustomerNames.map(v=>String(v||'').trim()).filter(Boolean):[],
             capturedAt:now.toISOString()
         };
         const created = await client.query(
@@ -1344,7 +1347,7 @@ app.post("/api/station/offline-start", requireManagerAuth, requireActiveEntitlem
         const nowMs = Date.now();
         if (startTimeMillis > nowMs + 5 * 60 * 1000 || startTimeMillis < nowMs - 24 * 60 * 60 * 1000) { await client.query("ROLLBACK"); return res.status(422).json({success:false,code:"OFFLINE_START_OUTSIDE_ALLOWED_WINDOW"}); }
         const startedAt = new Date(startTimeMillis);
-        const pricingSnapshot = {source:"MANAGER_CONFIGURATION_REVISION",configurationRevisionId:configuration.id,configurationVersion:configuration.version_number,currency:configuration.settings?.currency || "IRT",consoleType:canonicalConsoleType,controllerCount,hourlyRate:configuredRate,initialPrepaymentAmount:requestedPrepayment,durationLimitMinutes,customerPrepayments:normalizedCustomerPrepayments,capturedAt:new Date().toISOString(),offlineReconciled:true};
+        const pricingSnapshot = {source:"MANAGER_CONFIGURATION_REVISION",configurationRevisionId:configuration.id,configurationVersion:configuration.version_number,currency:configuration.settings?.currency || "IRT",consoleType:canonicalConsoleType,controllerCount,hourlyRate:configuredRate,initialPrepaymentAmount:requestedPrepayment,durationLimitMinutes,customerPrepayments:normalizedCustomerPrepayments,splitMode:String(req.body?.splitMode||'ALL').toUpperCase(),payerCustomerIds:Array.isArray(req.body?.payerCustomerIds)?req.body.payerCustomerIds.map(Number).filter(n=>Number.isInteger(n)&&n>0):[],payerCustomerNames:Array.isArray(req.body?.payerCustomerNames)?req.body.payerCustomerNames.map(v=>String(v||'').trim()).filter(Boolean):[],capturedAt:new Date().toISOString(),offlineReconciled:true};
         await client.query("INSERT INTO game_sessions(id,manager_id,station_id,status,console_type,controller_count,started_at,pricing_snapshot) VALUES($1,$2,$3,'ACTIVE',$4,$5,$6,$7::jsonb)",[sessionId,managerId,stationId,canonicalConsoleType,controllerCount,startedAt.toISOString(),JSON.stringify(pricingSnapshot)]);
         await client.query("INSERT INTO session_events(manager_id,session_id,event_id,event_type,occurred_at,payload,sequence_no) VALUES($1,$2,$3,'START',$4,$5::jsonb,1)",[managerId,sessionId,key,startedAt.toISOString(),JSON.stringify({consoleType:canonicalConsoleType,controllerCount,offlineReconciled:true})]);
         for (const [participantIndex, part] of participants.entries()) {

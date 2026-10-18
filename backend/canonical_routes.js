@@ -576,12 +576,17 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
                gs.started_at,gs.paused_at,gs.game_cost,gs.buffet_cost,gs.total_cost,gs.pricing_snapshot,
                (SELECT c.full_name FROM customers c WHERE c.id=$2 AND c.manager_id=$1 LIMIT 1) AS customer_name,
                COALESCE((SELECT SUM(so.line_total) FROM session_orders so
-                 WHERE so.session_id=gs.id AND so.manager_id=gs.manager_id AND so.target_customer_id=$2),0) AS customer_buffet_cost,
+                 WHERE so.session_id=gs.id AND so.manager_id=gs.manager_id
+                   AND (so.target_customer_id=$2 OR so.target_customer_id IS NULL)),0) AS visible_buffet_cost,
                COALESCE((SELECT json_agg(json_build_object(
                  'product_name',so.product_name,'quantity',so.quantity,'price',so.unit_price,
-                 'unit_price',so.unit_price,'line_total',so.line_total,'created_at',so.created_at
+                 'unit_price',so.unit_price,'line_total',so.line_total,'created_at',so.created_at,
+                 'target_customer_id',so.target_customer_id,
+                 'target_customer_name',COALESCE(so.product_snapshot->>'targetCustomerName',''),
+                 'is_shared',(so.target_customer_id IS NULL)
                ) ORDER BY so.created_at,so.id) FROM session_orders so
-                 WHERE so.session_id=gs.id AND so.manager_id=gs.manager_id AND so.target_customer_id=$2),'[]'::json) AS customer_orders,
+                 WHERE so.session_id=gs.id AND so.manager_id=gs.manager_id
+                   AND (so.target_customer_id=$2 OR so.target_customer_id IS NULL)),'[]'::json) AS customer_orders,
                COALESCE((SELECT json_agg(json_build_object(
                  'customerId',sp.customer_id,'participantKey',sp.participant_key,
                  'participantName',sp.participant_name,'isGuest',sp.is_guest,
@@ -619,6 +624,16 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
         const participantNames=participants.map(p=>String(p.participantName||'').trim()).filter(Boolean);
         if(!own && String(row.customer_name||'').trim() && !participantNames.includes(String(row.customer_name).trim())) participantNames.push(String(row.customer_name).trim());
         const snap=row.pricing_snapshot && typeof row.pricing_snapshot==='object'?row.pricing_snapshot:{};
+        const splitMode=String(snap.splitMode||snap.split_mode||'ALL').toUpperCase();
+        const payerIds=Array.isArray(snap.payerCustomerIds)?snap.payerCustomerIds.map(Number).filter(n=>Number.isInteger(n)&&n>0):[];
+        const payerNames=Array.isArray(snap.payerCustomerNames)?snap.payerCustomerNames.map(v=>String(v||'').trim()).filter(Boolean):[];
+        const customerOrders=Array.isArray(row.customer_orders)?row.customer_orders:[];
+        const sharedTotal=customerOrders.filter(o=>o.is_shared===true).reduce((sum,o)=>sum+Number(o.line_total||0),0);
+        const directTotal=customerOrders.filter(o=>o.is_shared!==true).reduce((sum,o)=>sum+Number(o.line_total||0),0);
+        const eligibleCount=splitMode==='SINGLE'?1:(splitMode==='CUSTOM'?Math.max(1,payerIds.length||payerNames.length):Math.max(1,participants.length));
+        const eligible=splitMode==='ALL'||(payerIds.length?payerIds.includes(cid):payerNames.includes(String(row.customer_name||'')));
+        const isSinglePayer=splitMode!=='SINGLE'||(payerIds.length?payerIds[0]===cid:(payerNames[0]||'')===String(row.customer_name||''));
+        const customerBuffetShare=directTotal+(eligible&&isSinglePayer?Math.floor(sharedTotal/eligibleCount):0);
         const startMs=new Date(row.started_at).getTime();
         const lastMs=new Date(row.paused_at||row.started_at).getTime();
         return {
@@ -633,8 +648,11 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
           currentGameCost:Number(row.game_cost||0),
           // The session aggregate is updated at checkout; the live customer view must use
           // this customer's persisted order lines so buffet cost appears immediately.
-          currentBuffetCost:Number(row.customer_buffet_cost||0),
-          ordersJson:JSON.stringify(Array.isArray(row.customer_orders)?row.customer_orders:[]),
+          currentBuffetCost:Number(customerBuffetShare||0),
+          ordersJson:JSON.stringify(customerOrders),
+          splitMode,
+          payerCustomerIdsStr:payerIds.join(','),
+          payerCustomerNamesStr:payerNames.join(','),
           hourlyRate:Number(snap.hourlyRate||snap.hourly_rate||0),sessionId:String(row.session_id)
         };
       });
