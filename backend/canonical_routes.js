@@ -592,7 +592,11 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
                  'participantName',sp.participant_name,'isGuest',sp.is_guest,
                  'isPayer',sp.is_payer,'prepaymentAmount',sp.prepayment_amount
                ) ORDER BY sp.id) FROM session_participants sp
-                 WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id),'[]'::json) AS participants
+                 WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id),'[]'::json) AS participants,
+               COALESCE((SELECT json_agg(json_build_object(
+                 'eventType',se.event_type,'occurredAt',se.occurred_at,'payload',se.payload
+               ) ORDER BY se.sequence_no) FROM session_events se
+                 WHERE se.session_id=gs.id AND se.manager_id=gs.manager_id),'[]'::json) AS live_events
         FROM game_sessions gs
         WHERE gs.manager_id=$1 AND gs.status IN ('ACTIVE','PAUSED')
           -- Historic transactions/invoices must never resurrect a previous live session.
@@ -649,17 +653,51 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
         const isSinglePayer=splitMode!=='SINGLE'||(payerIds.length?payerIds[0]===cid:(payerNames[0]||'')===String(row.customer_name||''));
         const customerBuffetShare=directTotal+(eligible&&isSinglePayer?Math.floor(sharedTotal/eligibleCount):0);
         const startMs=new Date(row.started_at).getTime();
-        const lastMs=new Date(row.paused_at||row.started_at).getTime();
+        const liveEvents=Array.isArray(row.live_events)?row.live_events:[];
+        const hourlyRate=Number(snap.hourlyRate||snap.hourly_rate||0);
+        // Track only the currently open segment. PAUSE/RESUME preserves its elapsed time;
+        // SEGMENT_PAUSE commits the segment and leaves the session paused; SEGMENT_CONTINUE
+        // commits the segment and starts a fresh one immediately. Previously committed segment
+        // costs remain in committedSegmentCost and are not lost when the current timer resets.
+        let segmentElapsedMs=0, committedSegmentCost=0;
+        let running=String(row.status||'').toUpperCase()==='ACTIVE';
+        let runningSince=Number.isFinite(startMs)?startMs:Date.now();
+        for(const event of liveEvents){
+          const type=String(event.eventType||event.event_type||'').toUpperCase();
+          const eventMs=new Date(event.occurredAt||event.occurred_at||0).getTime();
+          if(!Number.isFinite(eventMs)||eventMs<=0) continue;
+          const payload=event.payload&&typeof event.payload==='object'?event.payload:{};
+          if(type==='START'){
+            running=true; runningSince=eventMs;
+          } else if(type==='PAUSE'){
+            if(running) segmentElapsedMs+=Math.max(0,eventMs-runningSince);
+            running=false; runningSince=0;
+          } else if(type==='RESUME'){
+            running=true; runningSince=eventMs;
+          } else if(type==='SEGMENT_PAUSE'||type==='SEGMENT_CONTINUE'){
+            if(running) segmentElapsedMs+=Math.max(0,eventMs-runningSince);
+            committedSegmentCost+=Math.max(0,Number(payload.cost||0));
+            segmentElapsedMs=0;
+            running=type==='SEGMENT_CONTINUE';
+            runningSince=running?eventMs:0;
+          }
+        }
+        const nowMs=Date.now();
+        if(running&&String(row.status||'').toUpperCase()==='ACTIVE')
+          segmentElapsedMs+=Math.max(0,nowMs-runningSince);
+        const currentGameCost=Math.floor(Math.max(0,hourlyRate)*segmentElapsedMs/3600000);
+        const lastMs=nowMs;
         return {
           stationId:Number(row.station_id),status:row.status==='PAUSED'?'PAUSED':'RUNNING',
           consoleType:String(row.console_type||''),controllerCount:Number(row.controller_count||1),
           startTimeMillis:Number.isFinite(startMs)?startMs:0,
           lastStateChangeMillis:Number.isFinite(lastMs)?lastMs:0,
-          elapsedPlayingTimeMillis:0,prepaymentAmount:Number(own?.prepaymentAmount||0),
+          elapsedPlayingTimeMillis:Math.max(0,segmentElapsedMs),prepaymentAmount:Number(own?.prepaymentAmount||0),
           durationLimitMinutes:Number(snap.durationLimitMinutes||snap.duration_minutes||0),
           customerIdsStr:participantIds.join(','),
           customerNamesStr:participantNames.join(','),
-          currentGameCost:Number(row.game_cost||0),
+          currentGameCost:Number(currentGameCost||0),
+          committedSegmentCost:Number(committedSegmentCost||0),
           // The session aggregate is updated at checkout; the live customer view must use
           // this customer's persisted order lines so buffet cost appears immediately.
           currentBuffetCost:Number(customerBuffetShare||0),
