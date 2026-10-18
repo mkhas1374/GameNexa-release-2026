@@ -1239,7 +1239,7 @@ fun ActiveStationLiveCard(
             val seconds = payload.optLong("durationSeconds", 0L).coerceAtLeast(0L)
             val cost = payload.optLong("cost", 0L).coerceAtLeast(0L)
             val action = if (eventType == "SEGMENT_CONTINUE") "ثبت بخش و ادامه" else "ثبت بخش و توقف"
-            "$action — بخش $segment — مدت ${seconds / 60L} دقیقه و ${seconds % 60L} ثانیه — ${numberFormat.format(cost)} تومان"
+            "$action — بخش $segment — مدت ${seconds / 60L} دقیقه و ${seconds % 60L} ثانیه — ${String.format(Locale.US, "%,d", cost)} تومان"
         }
     }
 
