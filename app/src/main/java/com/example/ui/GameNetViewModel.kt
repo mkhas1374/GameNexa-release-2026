@@ -3025,6 +3025,40 @@ loadSettings()
                 ?: return@launch
             if (isTrialUser && !station.consoleType.equals("PlayStation 5", ignoreCase = true)) return@launch
 
+            // Starting a NEW session from a paused station means the previous server session
+            // must be closed first. "ثبت بخش و توقف" records a segment and marks the session
+            // PAUSED; it does not end that session. Without this transition, the old customer
+            // remains attached to an ACTIVE/PAUSED game_sessions row and GN Customers keeps showing
+            // the previous session even after a different customer/guest starts playing.
+            if (!isTrialUser && station.status == "PAUSED") {
+                val priorSessionId = repository.getSetting("active_session_" + stationId).orEmpty().trim()
+                val pendingKey = "session_pending_settlement_" + stationId
+                if (priorSessionId.isNotBlank() && repository.getSetting(pendingKey).isNullOrBlank()) {
+                    // Deliver the pause/segment boundary before finalizing, otherwise a race can
+                    // make the server close the session before its last segment event arrives.
+                    flushSessionOutbox()
+                    val queuedEvents = repository.getSetting("session_outbox_" + priorSessionId)
+                    if (!queuedEvents.isNullOrBlank()) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(getApplication(), "نشست جدید شروع نشد؛ ثبت بخش قبلی هنوز به سرور نرسیده است. دوباره تلاش کنید.", Toast.LENGTH_LONG).show()
+                        }
+                        return@launch
+                    }
+                    val endedAt = System.currentTimeMillis()
+                    val finalized = queueOrSettleSession(priorSessionId, stationId, endedAt)
+                    val httpCode = SelfHostedManager.lastSettlementHttpCode
+                    if (!finalized || httpCode !in 200..299) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(getApplication(), "نشست جدید شروع نشد؛ پایان نشست قبلی هنوز از سرور تأیید نشده است. اتصال را بررسی و دوباره تلاش کنید.", Toast.LENGTH_LONG).show()
+                        }
+                        return@launch
+                    }
+                    repository.saveSetting(pendingKey, "")
+                    repository.saveSetting("settlement_pending_" + priorSessionId, "")
+                    flushPendingCustomerTransactions()
+                }
+            }
+
             // Do not let the optimistic local UI start a replacement session while the previous
             // session's asynchronous settlement is still pending. Otherwise the server can reject
             // START with ACTIVE_SESSION_EXISTS while Android displays a locally-running new session,

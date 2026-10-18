@@ -548,6 +548,7 @@ fun CustomerDashboardTab(
             }
         }
 
+        var sessionHistoryExpanded by remember(customer.id) { mutableStateOf(false) }
         Card(
             shape = RoundedCornerShape(18.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -559,27 +560,41 @@ fun CustomerDashboardTab(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { sessionHistoryExpanded = !sessionHistoryExpanded }
+                        .padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(
-                        text = "📚 سابقه نشست‌های شما",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.ExtraBold
-                    )
-                    Text(
-                        text = "${sessionHistory.size} نشست",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "📚 سابقه نشست‌های شما",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Text(
+                            text = "${sessionHistory.size} نشست پایان‌یافته · برای مشاهده لمس کنید",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Icon(
+                        imageVector = if (sessionHistoryExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = if (sessionHistoryExpanded) "بستن سابقه نشست‌ها" else "نمایش سابقه نشست‌ها",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(30.dp)
                     )
                 }
-                Text(
-                    text = "هر بار توقف و شروع مجدد، یک نشست جداگانه است. نشست جدید بالا و نشست‌های قبلی در این فهرست باقی می‌مانند.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (sessionHistory.isEmpty()) {
+                AnimatedVisibility(visible = sessionHistoryExpanded) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "هر بار که نشست قبلی پایان می‌یابد و نشست جدیدی شروع می‌شود، هر کدام جداگانه در این فهرست ثبت می‌شوند.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (sessionHistory.isEmpty()) {
                     Text(
                         text = "هنوز سابقه نشست پایان‌یافته‌ای برای این حساب ثبت نشده است.",
                         style = MaterialTheme.typography.bodyMedium,
@@ -632,6 +647,8 @@ fun CustomerDashboardTab(
                                     Text("• $order", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
+                        }
+                    }
                         }
                     }
                 }

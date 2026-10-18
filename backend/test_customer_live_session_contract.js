@@ -55,6 +55,12 @@ assert(vm.includes('httpCode !in 200..299'),
   'new session must be blocked unless prior settlement receives a confirmed successful HTTP response');
 assert(vm.includes('if (pendingStation?.optString("sessionId") == sessionId)') && vm.includes('repository.saveSetting(pendingStationKey, "")'),
   'successful stop settlement must clear its matching station-level pending marker');
+assert(vm.includes('Starting a NEW session from a paused station') &&
+  vm.includes('if (!isTrialUser && station.status == "PAUSED")') &&
+  vm.includes('flushSessionOutbox()') &&
+  vm.includes('queueOrSettleSession(priorSessionId, stationId, endedAt)') &&
+  vm.includes('httpCode !in 200..299'),
+  'starting a new session from a paused station must flush its segment events and confirm prior-session settlement before replacing the session');
 assert(vm.includes('overrides.values.firstOrNull') && vm.includes('Room/server refresh can re-key a legacy transaction'),
   'finalized invoice status must reconcile by session + payer identity when numeric local IDs change');
 assert(vm.includes('decisionCustomerId > 0L') && vm.includes('decisionCustomerName'),
@@ -74,4 +80,9 @@ assert(managerApi.includes('/api/v1/customer/session-history') && managerApi.inc
 assert(customerUi.includes('سابقه نشست‌های شما') && customerUi.includes('هم‌بازی‌ها:') &&
   customerUi.includes('اتفاقات نشست:') && customerUi.includes('history.controllerCount'),
   'customer profile must show active session above historical sessions with per-session details');
+assert(customerUi.includes('sessionHistoryExpanded by remember(customer.id)') &&
+  customerUi.includes('clickable { sessionHistoryExpanded = !sessionHistoryExpanded }') &&
+  customerUi.includes('AnimatedVisibility(visible = sessionHistoryExpanded)') &&
+  customerUi.includes('Icons.Default.KeyboardArrowDown'),
+  'customer session history must be collapsed by default and expandable from a downward-arrow header');
 console.log('PASS: customer live-session identity, customer session history, per-session participants/controller counts/timeline, shared buffet visibility/allocation, and invoice reconciliation');
