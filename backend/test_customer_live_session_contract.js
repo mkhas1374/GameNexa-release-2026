@@ -20,6 +20,11 @@ assert(liveRoute.includes('customerBuffetShare') && liveRoute.includes('payerCus
   'feed must return a per-customer allocated buffet cost and payer metadata');
 assert(liveRoute.includes('active_session_customer_claims') && liveRoute.includes('session_participants'),
   'feed must find the current session through either participant membership or active claim');
+assert(liveRoute.includes("'eventType',se.event_type") && liveRoute.includes("AS live_events") &&
+  liveRoute.includes("type==='SEGMENT_PAUSE'||type==='SEGMENT_CONTINUE'") &&
+  liveRoute.includes("committedSegmentCost:Number(committedSegmentCost||0)") &&
+  liveRoute.includes("elapsedPlayingTimeMillis:Math.max(0,segmentElapsedMs)"),
+  'live feed must preserve committed segment costs and calculate the currently open segment from pause/resume/segment events');
 assert(liveRoute.includes("gs.status IN ('ACTIVE','PAUSED')"),
   'closed sessions must never appear as live sessions');
 assert(liveRoute.includes('(newer.started_at,newer.id) > (gs.started_at,gs.id)') &&
@@ -61,6 +66,9 @@ assert(vm.includes('Starting a NEW session from a paused station') &&
   vm.includes('queueOrSettleSession(priorSessionId, stationId, endedAt)') &&
   vm.includes('httpCode !in 200..299'),
   'starting a new session from a paused station must flush its segment events and confirm prior-session settlement before replacing the session');
+assert(vm.includes('elapsedPlayingTimeMillis = if (commitSegment) 0L else elapsed') &&
+  vm.includes('double-counts time after pause/resume'),
+  'ordinary pause must preserve accumulated current-segment time exactly once; segment commit must reset it');
 assert(vm.includes('overrides.values.firstOrNull') && vm.includes('Room/server refresh can re-key a legacy transaction'),
   'finalized invoice status must reconcile by session + payer identity when numeric local IDs change');
 assert(vm.includes('decisionCustomerId > 0L') && vm.includes('decisionCustomerName'),
@@ -80,6 +88,12 @@ assert(managerApi.includes('/api/v1/customer/session-history') && managerApi.inc
 assert(customerUi.includes('سابقه نشست‌های شما') && customerUi.includes('هم‌بازی‌ها:') &&
   customerUi.includes('اتفاقات نشست:') && customerUi.includes('history.controllerCount'),
   'customer profile must show active session above historical sessions with per-session details');
+assert(customerUi.includes('committedSegmentGameCost') && customerUi.includes('currentSegmentGameCost') &&
+  customerUi.includes('بخش‌های ثبت‌شده + جاری') && customerUi.includes('cloudSt?.committedSegmentCost'),
+  'customer live profile must show accumulated committed segments separately from the resettable current segment');
+assert(managerApi.includes('committedSegmentCost = obj.optLong("committedSegmentCost"') &&
+  managerApi.includes('elapsedPlayingTimeMillis = obj.optLong("elapsedPlayingTimeMillis"'),
+  'customer client must parse the server segment aggregate and current-segment timer');
 assert(customerUi.includes('sessionHistoryExpanded by remember(customer.id)') &&
   customerUi.includes('clickable { sessionHistoryExpanded = !sessionHistoryExpanded }') &&
   customerUi.includes('AnimatedVisibility(visible = sessionHistoryExpanded)') &&
