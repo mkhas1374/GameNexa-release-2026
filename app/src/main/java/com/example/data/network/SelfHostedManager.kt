@@ -55,6 +55,7 @@ data class CloudLiveStation(
     val hourlyRate: Long = 0L,
     val currentGameCost: Long = 0L,
     val committedSegmentCost: Long = 0L,
+    val segmentEventsJson: String = "[]",
     val currentBuffetCost: Long = 0L,
     val splitMode: String = "ALL", // "ALL", "SINGLE", "CUSTOM"
     val payerCustomerIdsStr: String = "",
@@ -920,6 +921,7 @@ object SelfHostedManager {
             hourlyRate = obj.optLong("hourlyRate", obj.optLong("hourly_rate", 0L)),
             currentGameCost = obj.optLong("currentGameCost", obj.optLong("current_game_cost", 0L)),
             committedSegmentCost = obj.optLong("committedSegmentCost", obj.optLong("committed_segment_cost", 0L)),
+            segmentEventsJson = obj.optJSONArray("segmentEvents")?.toString() ?: obj.optString("segmentEventsJson", "[]"),
             currentBuffetCost = obj.optLong("currentBuffetCost", obj.optLong("current_buffet_cost", 0L)),
             splitMode = obj.optString("splitMode", obj.optString("split_mode", "ALL")),
             payerCustomerIdsStr = obj.optString("payerCustomerIdsStr", obj.optString("payer_customer_ids_str", "")),
