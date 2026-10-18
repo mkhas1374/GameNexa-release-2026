@@ -3509,7 +3509,9 @@ loadSettings()
                 val updated = station.copy(
                     status = if (continueRunning) "RUNNING" else "PAUSED",
                     lastStateChangeTimeMillis = now,
-                    elapsedPlayingTimeMillis = if (commitSegment) 0L else station.elapsedPlayingTimeMillis + elapsed,
+                    // elapsed already includes the previously accumulated time plus this RUNNING interval.
+                    // Adding station.elapsedPlayingTimeMillis again double-counts time after pause/resume.
+                    elapsedPlayingTimeMillis = if (commitSegment) 0L else elapsed,
                     segmentsJson = if (commitSegment) segments.toJson() else station.segmentsJson
                 )
                 // The Stop click is a local state transition. Never wait for HTTP, logging,
