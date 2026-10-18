@@ -4004,6 +4004,14 @@ loadSettings()
                 val settled = queueOrSettleSession(sessionId, stationId, now)
                 if (settled) {
                     repository.saveSetting("settlement_pending_" + sessionId, "")
+                    // Clear the per-station gate at the same time as the per-session outbox;
+                    // otherwise a successful stop leaves a stale pending marker until next START.
+                    val pendingStationKey = "session_pending_settlement_" + stationId
+                    val pendingStationRaw = repository.getSetting(pendingStationKey)
+                    val pendingStation = runCatching { org.json.JSONObject(pendingStationRaw.orEmpty()) }.getOrNull()
+                    if (pendingStation?.optString("sessionId") == sessionId) {
+                        repository.saveSetting(pendingStationKey, "")
+                    }
                     flushPendingCustomerTransactions()
                     val code = SelfHostedManager.lastSettlementHttpCode
                     val pending = code == 0 || code == 408 || code == 503 || code >= 500

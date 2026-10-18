@@ -22,6 +22,8 @@ assert(liveRoute.includes('active_session_customer_claims') && liveRoute.include
   'feed must find the current session through either participant membership or active claim');
 assert(liveRoute.includes("gs.status IN ('ACTIVE','PAUSED')"),
   'closed sessions must never appear as live sessions');
+assert(liveRoute.includes('(newer.started_at,newer.id) > (gs.started_at,gs.id)'),
+  'the live feed must deterministically suppress the prior session when stop/start timestamps tie');
 assert(server.includes('splitMode:String(req.body?.splitMode||\'ALL\').toUpperCase()'),
   'online and offline session starts must persist split mode in the server snapshot');
 assert(managerApi.includes('put("splitMode", splitMode.uppercase'),
@@ -36,12 +38,16 @@ assert(customerUi.includes('(currentLp - levelStartLp).toFloat() / (targetLp - l
   'loyalty progress must use floating-point division instead of integer division');
 assert(managerApi.includes('Never leave an old server snapshot on the customer profile after a') && managerApi.includes('_allLiveStations.value = emptyList()'),
   'failed customer live-session refresh must not preserve a stale active-session snapshot');
+assert(managerApi.includes('val managerToken = NetworkClient.managerAuthToken?.takeIf { it.isNotBlank() }') && managerApi.includes('.add("Authorization", "Bearer $managerToken")'),
+  'Manager diagnostics must use an actual Manager token and skip requests from Customer sessions');
 const startGate = vm.indexOf('Do not let the optimistic local UI start a replacement session');
 const optimisticStart = vm.indexOf('repository.insertStationStateLocal(optimisticState)', startGate);
 assert(startGate >= 0 && optimisticStart > startGate,
   'new session must reconcile pending prior settlement before optimistic local start');
 assert(vm.includes('httpCode !in 200..299'),
   'new session must be blocked unless prior settlement receives a confirmed successful HTTP response');
+assert(vm.includes('if (pendingStation?.optString("sessionId") == sessionId)') && vm.includes('repository.saveSetting(pendingStationKey, "")'),
+  'successful stop settlement must clear its matching station-level pending marker');
 assert(vm.includes('overrides.values.firstOrNull') && vm.includes('Room/server refresh can re-key a legacy transaction'),
   'finalized invoice status must reconcile by session + payer identity when numeric local IDs change');
 assert(vm.includes('decisionCustomerId > 0L') && vm.includes('decisionCustomerName'),

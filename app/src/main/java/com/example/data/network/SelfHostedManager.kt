@@ -1610,9 +1610,17 @@ object SelfHostedManager {
 
     suspend fun fetchServerDiagnostics(): List<NetworkLogEntry> = withContext(Dispatchers.IO) {
         try {
+            // Diagnostics is Manager-only. Do not issue a guaranteed 401 from a Customer
+            // session or when the in-memory Manager token has not been restored.
+            val managerToken = NetworkClient.managerAuthToken?.takeIf { it.isNotBlank() }
+                ?: return@withContext emptyList()
+            val headers = getBaseHeaders().newBuilder()
+                .removeAll("Authorization")
+                .add("Authorization", "Bearer $managerToken")
+                .build()
             val request = Request.Builder()
                 .url("$SERVER_URL/api/v1/manager/diagnostics")
-                .headers(getBaseHeaders())
+                .headers(headers)
                 .get()
                 .build()
             client.newCall(request).execute().use { response ->

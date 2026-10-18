@@ -613,7 +613,10 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
           AND NOT EXISTS (
             SELECT 1 FROM game_sessions newer
             WHERE newer.manager_id=gs.manager_id AND newer.station_id=gs.station_id
-              AND newer.status IN ('ACTIVE','PAUSED') AND newer.started_at>gs.started_at
+              AND newer.status IN ('ACTIVE','PAUSED')
+              -- Compare a deterministic tuple, not only started_at: rapid stop/start flows
+              -- can persist equal timestamps, which otherwise lets the previous session win.
+              AND (newer.started_at,newer.id) > (gs.started_at,gs.id)
           )
         ORDER BY gs.started_at DESC`,[mid,cid]);
       const stations=q.rows.map(row=>{
