@@ -1221,7 +1221,14 @@ fun ActiveStationLiveCard(
 
     val rateFromVm = viewModel.getHourlyRateSync(station.consoleType, station.controllerCount)
     val hourlyRate: Double = if ((cloudSt?.hourlyRate ?: 0L) > 0L) (cloudSt!!.hourlyRate).toDouble() else if (rateFromVm > 0) rateFromVm.toDouble() else 60000.0
-    val calculatedGameCost = (elapsedMs.toDouble() / (1000.0 * 3600.0)) * hourlyRate
+    // The server snapshot is authoritative for the currently open segment. In particular,
+    // SEGMENT_CONTINUE resets this segment to zero while earlier committed segments remain in
+    // the session timeline/history; do not reconstruct the current segment from a stale timer.
+    val calculatedGameCost = if (cloudSt != null) {
+        cloudSt.currentGameCost.coerceAtLeast(0L).toDouble()
+    } else {
+        (elapsedMs.toDouble() / (1000.0 * 3600.0)) * hourlyRate
+    }
 
     // Station Orders / Buffet calculation
     val stationOrdersMap by viewModel.stationOrdersMap.collectAsState()
