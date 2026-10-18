@@ -1221,14 +1221,12 @@ fun ActiveStationLiveCard(
 
     val rateFromVm = viewModel.getHourlyRateSync(station.consoleType, station.controllerCount)
     val hourlyRate: Double = if ((cloudSt?.hourlyRate ?: 0L) > 0L) (cloudSt!!.hourlyRate).toDouble() else if (rateFromVm > 0) rateFromVm.toDouble() else 60000.0
-    // The server snapshot is authoritative for the currently open segment. In particular,
-    // SEGMENT_CONTINUE resets this segment to zero while earlier committed segments remain in
-    // the session timeline/history; do not reconstruct the current segment from a stale timer.
-    val calculatedGameCost = if (cloudSt != null) {
-        cloudSt.currentGameCost.coerceAtLeast(0L).toDouble()
-    } else {
-        (elapsedMs.toDouble() / (1000.0 * 3600.0)) * hourlyRate
-    }
+    // The live API provides elapsed time for the currently open segment and the total
+    // already committed by SEGMENT_PAUSE / SEGMENT_CONTINUE events. Keep these separate:
+    // the current segment resets to zero on option 3, while the session total must not.
+    val currentSegmentGameCost = (elapsedMs.toDouble() / (1000.0 * 3600.0)) * hourlyRate
+    val committedSegmentGameCost = (cloudSt?.committedSegmentCost ?: 0L).coerceAtLeast(0L).toDouble()
+    val calculatedGameCost = committedSegmentGameCost + currentSegmentGameCost
 
     // Station Orders / Buffet calculation
     val stationOrdersMap by viewModel.stationOrdersMap.collectAsState()
@@ -1455,8 +1453,24 @@ fun ActiveStationLiveCard(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("🎮 هزینه زمان بازی:", fontSize = 11.sp, color = Color(0xFFCBD5E1))
+                        Text("🎮 هزینه کل بازی (بخش‌های ثبت‌شده + جاری):", fontSize = 11.sp, color = Color(0xFFCBD5E1))
                         Text("${numberFormat.format(calculatedGameCost)} تومان", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("بخش‌های ثبت‌شده:", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                        Text("${numberFormat.format(committedSegmentGameCost)} تومان", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFCBD5E1))
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("بخش جاری:", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                        Text("${numberFormat.format(currentSegmentGameCost)} تومان", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFCBD5E1))
                     }
 
                     Row(
