@@ -7105,110 +7105,110 @@ loadSettings()
             finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + immediateOverrides
         }
 
-        suspend fun applyFinalResultsToLocalRows() {
-            val all = repository.getAllCustomerTransactionsLocal()
-            for (i in 0 until results.length()) {
-                val r = results.optJSONObject(i) ?: continue
-                val cid = r.optLong("customerId", 0L)
-                val customerName = r.optString("customerName", "")
-                val status = r.optString("status", "REVIEWED").uppercase()
-                val responseLocalId = r.optLong("localTransactionId", 0L)
-                // Guest IDs may be normalized by the backend (legacy 0, synthetic negative
-                // ID, or payer ID reconstructed from an invoice). Match by the returned Room
-                // local_id first, then by exact payer name; customerId alone is not unique for
-                // historical walk-in invoices.
-                val matchedDecision = decisions.firstOrNull { d ->
-                    val decisionTransactionId = d.optLong("transactionId", 0L)
-                    (responseLocalId > 0L && decisionTransactionId == responseLocalId) ||
-                        (cid > 0L && d.optLong("customerId", 0L) == cid) ||
-                        (customerName.isNotBlank() && d.optString("customerName", "") == customerName)
-                }
-                val requestedLocalId = matchedDecision?.optLong("transactionId", 0L) ?: 0L
-                val idsMatch = { tx: CustomerTransaction ->
-                    (requestedLocalId > 0L && tx.id == requestedLocalId) ||
-                        (responseLocalId > 0L && tx.id == responseLocalId)
-                }
-                val participantMatches = { tx: CustomerTransaction ->
-                    if (cid > 0L) tx.customerId == cid || idsMatch(tx)
-                    else tx.customerId <= 0L && customerName.isNotBlank() && tx.customerName == customerName || idsMatch(tx)
-                }
-                val targets = all.filter { tx ->
-                    tx.status != "DELETED" && participantMatches(tx) &&
-                        (tx.sessionId == sessionId || idsMatch(tx) || tx.sessionId.isBlank())
-                }.distinctBy { it.id }
-                targets.forEach { tx ->
-                    val paid = r.optLong("paidAmount", if (status == "REVIEWED") tx.amount else tx.paidAmount)
-                    val updated = tx.copy(
-                        sessionId = sessionId,
-                        status = status,
-                        amount = r.optLong("amount", tx.amount),
-                        paidAmount = paid,
-                        gameCost = r.optLong("gameCost", tx.gameCost),
-                        foodCost = r.optLong("foodCost", tx.foodCost),
-                        earnedGn = r.optLong("earnedGn", tx.earnedGn),
-                        earnedLp = r.optLong("earnedLp", tx.earnedLp)
-                    )
-                    finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + (tx.id to updated)
-                    runCatching { repository.upsertCustomerTransactionLocal(updated) }
-                        .onFailure { android.util.Log.e("GameNetViewModel", "Room invoice cache update deferred for id=${tx.id}", it) }
-                }
-            }
-        }
-
-        // Server commit is already authoritative. Cache reconciliation is best-effort and
-        // must never suppress the success callback or leave the dialog permanently submitting.
-        runCatching { applyFinalResultsToLocalRows() }
-            .onFailure { android.util.Log.e("GameNetViewModel", "Invoice committed but initial Room reconciliation failed", it) }
-        // Older backend rows may return a normalized guest ID/name that cannot be joined to
-        // the original decision. Use exact Room transaction IDs as a final local join when available.
-        val committedRows = runCatching { repository.getAllCustomerTransactionsLocal() }
-            .onFailure { android.util.Log.e("GameNetViewModel", "Invoice committed but local rows could not be read", it) }
-            .getOrDefault(emptyList())
-        decisions.forEach { decision ->
-            val localId = decision.optLong("transactionId", 0L)
-            if (localId <= 0L) return@forEach
-            val decisionStatus = decision.optString("status", "REVIEWED").uppercase()
-                .let { if (it == "PARTIAL") "DEBTOR" else it }
-            val target = committedRows.firstOrNull { it.id == localId && it.status != "DELETED" && (it.sessionId == sessionId || it.sessionId.isBlank()) }
-                ?: return@forEach
-            val serverResult = (0 until results.length()).mapNotNull { results.optJSONObject(it) }
-                .firstOrNull { it.optLong("localTransactionId", 0L) == localId }
-            val finalStatus = serverResult?.optString("status", decisionStatus)?.uppercase() ?: decisionStatus
-            val finalPaid = serverResult?.optLong("paidAmount", decision.optLong("paidAmount", target.paidAmount))
-                ?: decision.optLong("paidAmount", target.paidAmount)
-            val updated = target.copy(
-                sessionId = sessionId,
-                status = finalStatus,
-                amount = serverResult?.optLong("amount", target.amount) ?: target.amount,
-                paidAmount = finalPaid,
-                gameCost = serverResult?.optLong("gameCost", target.gameCost) ?: target.gameCost,
-                foodCost = serverResult?.optLong("foodCost", target.foodCost) ?: target.foodCost,
-                earnedGn = serverResult?.optLong("earnedGn", target.earnedGn) ?: target.earnedGn,
-                earnedLp = serverResult?.optLong("earnedLp", target.earnedLp) ?: target.earnedLp
-            )
-            finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + (target.id to updated)
-            runCatching { repository.upsertCustomerTransactionLocal(updated) }
-                .onFailure { android.util.Log.e("GameNetViewModel", "Invoice committed but explicit Room update failed for id=$localId", it) }
-        }
-
-        // A refresh replaces Room rows and can race the optimistic update. Re-apply the
-        // final server decision after refresh completes, so no stale queue state survives
-        // until the next app launch. Keep this off the critical path so the dialog closes now.
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
-                if (repository.syncCustomerTransactionsFromServer()) {
-                    applyFinalResultsToLocalRows()
-                    // Drop the overlay only after Room contains the same committed server state.
-                    val serverRows = repository.getAllCustomerTransactionsLocal()
-                    finalizedTransactionOverrides.value = finalizedTransactionOverrides.value.filter { (id, override) ->
-                        val serverRow = serverRows.firstOrNull { it.id == id } ?: serverRows.firstOrNull { row ->
-                            row.sessionId == override.sessionId && row.sessionId.isNotBlank() &&
-                                if (override.customerId > 0L) row.customerId == override.customerId
-                                else row.customerId <= 0L && row.customerName.trim() == override.customerName.trim()
-                        }
-                        serverRow == null || serverRow.status != override.status || serverRow.paidAmount != override.paidAmount
+            suspend fun applyFinalResultsToLocalRows() {
+                val all = repository.getAllCustomerTransactionsLocal()
+                for (i in 0 until results.length()) {
+                    val r = results.optJSONObject(i) ?: continue
+                    val cid = r.optLong("customerId", 0L)
+                    val customerName = r.optString("customerName", "")
+                    val status = r.optString("status", "REVIEWED").uppercase()
+                    val responseLocalId = r.optLong("localTransactionId", 0L)
+                    // Guest IDs may be normalized by the backend (legacy 0, synthetic negative
+                    // ID, or payer ID reconstructed from an invoice). Match by the returned Room
+                    // local_id first, then by exact payer name; customerId alone is not unique for
+                    // historical walk-in invoices.
+                    val matchedDecision = decisions.firstOrNull { d ->
+                        val decisionTransactionId = d.optLong("transactionId", 0L)
+                        (responseLocalId > 0L && decisionTransactionId == responseLocalId) ||
+                            (cid > 0L && d.optLong("customerId", 0L) == cid) ||
+                            (customerName.isNotBlank() && d.optString("customerName", "") == customerName)
+                    }
+                    val requestedLocalId = matchedDecision?.optLong("transactionId", 0L) ?: 0L
+                    val idsMatch = { tx: CustomerTransaction ->
+                        (requestedLocalId > 0L && tx.id == requestedLocalId) ||
+                            (responseLocalId > 0L && tx.id == responseLocalId)
+                    }
+                    val participantMatches = { tx: CustomerTransaction ->
+                        if (cid > 0L) tx.customerId == cid || idsMatch(tx)
+                        else tx.customerId <= 0L && customerName.isNotBlank() && tx.customerName == customerName || idsMatch(tx)
+                    }
+                    val targets = all.filter { tx ->
+                        tx.status != "DELETED" && participantMatches(tx) &&
+                            (tx.sessionId == sessionId || idsMatch(tx) || tx.sessionId.isBlank())
+                    }.distinctBy { it.id }
+                    targets.forEach { tx ->
+                        val paid = r.optLong("paidAmount", if (status == "REVIEWED") tx.amount else tx.paidAmount)
+                        val updated = tx.copy(
+                            sessionId = sessionId,
+                            status = status,
+                            amount = r.optLong("amount", tx.amount),
+                            paidAmount = paid,
+                            gameCost = r.optLong("gameCost", tx.gameCost),
+                            foodCost = r.optLong("foodCost", tx.foodCost),
+                            earnedGn = r.optLong("earnedGn", tx.earnedGn),
+                            earnedLp = r.optLong("earnedLp", tx.earnedLp)
+                        )
+                        finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + (tx.id to updated)
+                        runCatching { repository.upsertCustomerTransactionLocal(updated) }
+                            .onFailure { android.util.Log.e("GameNetViewModel", "Room invoice cache update deferred for id=${tx.id}", it) }
                     }
                 }
+            }
+
+            // Server commit is already authoritative. Cache reconciliation is best-effort and
+            // must never suppress the success callback or leave the dialog permanently submitting.
+            runCatching { applyFinalResultsToLocalRows() }
+                .onFailure { android.util.Log.e("GameNetViewModel", "Invoice committed but initial Room reconciliation failed", it) }
+            // Older backend rows may return a normalized guest ID/name that cannot be joined to
+            // the original decision. Use exact Room transaction IDs as a final local join when available.
+            val committedRows = runCatching { repository.getAllCustomerTransactionsLocal() }
+                .onFailure { android.util.Log.e("GameNetViewModel", "Invoice committed but local rows could not be read", it) }
+                .getOrDefault(emptyList())
+            decisions.forEach { decision ->
+                val localId = decision.optLong("transactionId", 0L)
+                if (localId <= 0L) return@forEach
+                val decisionStatus = decision.optString("status", "REVIEWED").uppercase()
+                    .let { if (it == "PARTIAL") "DEBTOR" else it }
+                val target = committedRows.firstOrNull { it.id == localId && it.status != "DELETED" && (it.sessionId == sessionId || it.sessionId.isBlank()) }
+                    ?: return@forEach
+                val serverResult = (0 until results.length()).mapNotNull { results.optJSONObject(it) }
+                    .firstOrNull { it.optLong("localTransactionId", 0L) == localId }
+                val finalStatus = serverResult?.optString("status", decisionStatus)?.uppercase() ?: decisionStatus
+                val finalPaid = serverResult?.optLong("paidAmount", decision.optLong("paidAmount", target.paidAmount))
+                    ?: decision.optLong("paidAmount", target.paidAmount)
+                val updated = target.copy(
+                    sessionId = sessionId,
+                    status = finalStatus,
+                    amount = serverResult?.optLong("amount", target.amount) ?: target.amount,
+                    paidAmount = finalPaid,
+                    gameCost = serverResult?.optLong("gameCost", target.gameCost) ?: target.gameCost,
+                    foodCost = serverResult?.optLong("foodCost", target.foodCost) ?: target.foodCost,
+                    earnedGn = serverResult?.optLong("earnedGn", target.earnedGn) ?: target.earnedGn,
+                    earnedLp = serverResult?.optLong("earnedLp", target.earnedLp) ?: target.earnedLp
+                )
+                finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + (target.id to updated)
+                runCatching { repository.upsertCustomerTransactionLocal(updated) }
+                    .onFailure { android.util.Log.e("GameNetViewModel", "Invoice committed but explicit Room update failed for id=$localId", it) }
+            }
+
+            // A refresh replaces Room rows and can race the optimistic update. Re-apply the
+            // final server decision after refresh completes, so no stale queue state survives
+            // until the next app launch. Keep this off the critical path so the dialog closes now.
+            runCatching {
+                if (repository.syncCustomerTransactionsFromServer()) {
+                        applyFinalResultsToLocalRows()
+                        // Drop the overlay only after Room contains the same committed server state.
+                        val serverRows = repository.getAllCustomerTransactionsLocal()
+                        finalizedTransactionOverrides.value = finalizedTransactionOverrides.value.filter { (id, override) ->
+                            val serverRow = serverRows.firstOrNull { it.id == id } ?: serverRows.firstOrNull { row ->
+                                row.sessionId == override.sessionId && row.sessionId.isNotBlank() &&
+                                    if (override.customerId > 0L) row.customerId == override.customerId
+                                    else row.customerId <= 0L && row.customerName.trim() == override.customerName.trim()
+                            }
+                            serverRow == null || serverRow.status != override.status || serverRow.paidAmount != override.paidAmount
+                        }
+                    }
             }.onFailure {
                 android.util.Log.w("GameNetViewModel", "Post-finalize refresh deferred: ${it.message}")
             }

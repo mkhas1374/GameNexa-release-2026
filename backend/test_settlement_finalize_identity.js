@@ -22,6 +22,11 @@ assert(routes.includes('status:retryStatus,paidAmount:retryPaid,idempotent:true'
 assert(routes.indexOf('const byId=new Map') > routes.indexOf('Historical segment payers can be missing'), 'payer indexes must be built after merging historical invoice payers');
 assert(manager.includes('o.has("local_id") && !o.isNull("local_id")'), 'hydration must preserve local_id as Room identity');
 assert(viewModel.includes('A refresh replaces Room rows and can race the optimistic update') && viewModel.includes('Keep this off the critical path so the dialog closes now'), 'post-finalization refresh must reconcile after the dialog closes without blocking the UI');
+const finalizeFn = viewModel.indexOf('suspend fun finalizeSettlementReview(sessionId: String');
+const overlayPublish = viewModel.indexOf('finalizedTransactionOverrides.value = finalizedTransactionOverrides.value + immediateOverrides', finalizeFn);
+const backgroundReconcile = viewModel.indexOf('viewModelScope.launch(Dispatchers.IO) {', overlayPublish);
+const roomRead = viewModel.indexOf('suspend fun applyFinalResultsToLocalRows()', backgroundReconcile);
+assert(overlayPublish >= 0 && backgroundReconcile > overlayPublish && roomRead > backgroundReconcile, 'local Room reads/writes and server refresh must run after the server-confirmed StateFlow overlay, not block the UI callback');
 assert(viewModel.includes('        true\n    }'), 'successful server finalization must return success even if local row matching is incomplete');
 assert(!viewModel.includes('val exact = if (txId > 0L)'), 'server IDs must not be applied directly to unrelated Room rows');
 

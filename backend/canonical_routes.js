@@ -608,17 +608,28 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
                 AND claim.customer_id=$2
             )
           )
-          -- If a settlement response was lost and a new session started, expose only the newest
-          -- active session on that station to customer profiles.
+          -- A customer profile represents one current session, not every historical/stale
+          -- active row. Suppress any older session when this same customer is present in a
+          -- newer active session, even if the station changed between stop and restart.
           AND NOT EXISTS (
             SELECT 1 FROM game_sessions newer
-            WHERE newer.manager_id=gs.manager_id AND newer.station_id=gs.station_id
+            WHERE newer.manager_id=gs.manager_id
               AND newer.status IN ('ACTIVE','PAUSED')
-              -- Compare a deterministic tuple, not only started_at: rapid stop/start flows
-              -- can persist equal timestamps, which otherwise lets the previous session win.
               AND (newer.started_at,newer.id) > (gs.started_at,gs.id)
+              AND (
+                EXISTS (
+                  SELECT 1 FROM session_participants newer_sp
+                  WHERE newer_sp.session_id=newer.id AND newer_sp.manager_id=newer.manager_id
+                    AND newer_sp.customer_id=$2 AND newer_sp.is_guest=FALSE
+                )
+                OR EXISTS (
+                  SELECT 1 FROM active_session_customer_claims newer_claim
+                  WHERE newer_claim.session_id=newer.id AND newer_claim.manager_id=newer.manager_id
+                    AND newer_claim.customer_id=$2
+                )
+              )
           )
-        ORDER BY gs.started_at DESC`,[mid,cid]);
+        ORDER BY gs.started_at DESC,gs.id DESC`,[mid,cid]);
       const stations=q.rows.map(row=>{
         const participants=Array.isArray(row.participants)?row.participants:[];
         const own=participants.find(p=>Number(p.customerId||0)===cid);

@@ -79,8 +79,11 @@ fun CustomerDashboardTab(
 
     // The backend endpoint is already scoped to the authenticated customer. Never infer
     // an active session from stale local Manager station state or fuzzy name/phone matches.
-    val activeStation = remember(cloudLiveStations) {
-        cloudLiveStations.firstOrNull { it.status == "RUNNING" || it.status == "PAUSED" }?.let { live ->
+    val activeLiveSession = remember(cloudLiveStations) {
+        cloudLiveStations.firstOrNull { it.status == "RUNNING" || it.status == "PAUSED" }
+    }
+    val activeStation = remember(activeLiveSession) {
+        activeLiveSession?.let { live ->
             StationState(
                 id = live.stationId,
                 status = live.status,
@@ -490,7 +493,7 @@ fun CustomerDashboardTab(
         // SECTION 2: ACTIVE STATION REAL-TIME COUNTER
         // -------------------------------------------------------------
         if (activeStation != null) {
-            ActiveStationLiveCard(station = activeStation, viewModel = viewModel)
+            ActiveStationLiveCard(station = activeStation, viewModel = viewModel, sessionId = activeLiveSession?.sessionId.orEmpty())
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Surface(
@@ -1133,17 +1136,18 @@ fun CustomerLoyaltyProgressDialog(
 @Composable
 fun ActiveStationLiveCard(
     station: StationState,
-    viewModel: GameNetViewModel
+    viewModel: GameNetViewModel,
+    sessionId: String = ""
 ) {
     val isRunning = station.status == "RUNNING"
     val isPaused = station.status == "PAUSED"
 
-    var currentTimeMs by remember(station.id, station.startTimeMillis, station.status, station.lastStateChangeTimeMillis) {
+    var currentTimeMs by remember(station.id, sessionId, station.startTimeMillis, station.status, station.lastStateChangeTimeMillis) {
         mutableLongStateOf(System.currentTimeMillis())
     }
 
     // Local device timer ticking every 1s without any network request
-    LaunchedEffect(station.id, station.startTimeMillis, station.status, station.lastStateChangeTimeMillis) {
+    LaunchedEffect(station.id, sessionId, station.startTimeMillis, station.status, station.lastStateChangeTimeMillis) {
         while (station.status == "RUNNING") {
             currentTimeMs = System.currentTimeMillis()
             delay(1000L)

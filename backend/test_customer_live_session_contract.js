@@ -22,8 +22,10 @@ assert(liveRoute.includes('active_session_customer_claims') && liveRoute.include
   'feed must find the current session through either participant membership or active claim');
 assert(liveRoute.includes("gs.status IN ('ACTIVE','PAUSED')"),
   'closed sessions must never appear as live sessions');
-assert(liveRoute.includes('(newer.started_at,newer.id) > (gs.started_at,gs.id)'),
-  'the live feed must deterministically suppress the prior session when stop/start timestamps tie');
+assert(liveRoute.includes('(newer.started_at,newer.id) > (gs.started_at,gs.id)') &&
+  liveRoute.includes('newer_sp.customer_id=$2') && liveRoute.includes('newer_claim.customer_id=$2') &&
+  !liveRoute.includes('newer.station_id=gs.station_id'),
+  'the live feed must return only the newest active session for this customer across station changes and tied timestamps');
 assert(server.includes('splitMode:String(req.body?.splitMode||\'ALL\').toUpperCase()'),
   'online and offline session starts must persist split mode in the server snapshot');
 assert(managerApi.includes('put("splitMode", splitMode.uppercase'),
@@ -38,6 +40,11 @@ assert(customerUi.includes('(currentLp - levelStartLp).toFloat() / (targetLp - l
   'loyalty progress must use floating-point division instead of integer division');
 assert(managerApi.includes('Never leave an old server snapshot on the customer profile after a') && managerApi.includes('_allLiveStations.value = emptyList()'),
   'failed customer live-session refresh must not preserve a stale active-session snapshot');
+assert(managerApi.includes('sessionId = obj.optString(\"sessionId\", obj.optString(\"session_id\", \"\"))') &&
+  customerUi.includes('sessionId = activeLiveSession?.sessionId.orEmpty()') &&
+  customerUi.includes('remember(station.id, sessionId, station.startTimeMillis') &&
+  customerUi.includes('LaunchedEffect(station.id, sessionId, station.startTimeMillis'),
+  'customer live timer must reset on session identity change even if station/time keys collide');
 assert(managerApi.includes('val managerToken = NetworkClient.managerAuthToken?.takeIf { it.isNotBlank() }') && managerApi.includes('.add("Authorization", "Bearer $managerToken")'),
   'Manager diagnostics must use an actual Manager token and skip requests from Customer sessions');
 const startGate = vm.indexOf('Do not let the optimistic local UI start a replacement session');

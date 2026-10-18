@@ -40,7 +40,8 @@ data class CloudLiveStation(
     val currentBuffetCost: Long = 0L,
     val splitMode: String = "ALL", // "ALL", "SINGLE", "CUSTOM"
     val payerCustomerIdsStr: String = "",
-    val payerCustomerNamesStr: String = ""
+    val payerCustomerNamesStr: String = "",
+    val sessionId: String = ""
 )
 
 data class ManagerLpHistory(
@@ -903,7 +904,8 @@ object SelfHostedManager {
             currentBuffetCost = obj.optLong("currentBuffetCost", obj.optLong("current_buffet_cost", 0L)),
             splitMode = obj.optString("splitMode", obj.optString("split_mode", "ALL")),
             payerCustomerIdsStr = obj.optString("payerCustomerIdsStr", obj.optString("payer_customer_ids_str", "")),
-            payerCustomerNamesStr = obj.optString("payerCustomerNamesStr", obj.optString("payer_customer_names_str", ""))
+            payerCustomerNamesStr = obj.optString("payerCustomerNamesStr", obj.optString("payer_customer_names_str", "")),
+            sessionId = obj.optString("sessionId", obj.optString("session_id", ""))
         )
     }
 
