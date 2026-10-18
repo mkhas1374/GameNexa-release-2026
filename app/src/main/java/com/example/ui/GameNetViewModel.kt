@@ -7083,6 +7083,7 @@ loadSettings()
             val paid = serverResult?.optLong("paidAmount", decision.optLong("paidAmount", target.paidAmount))
                 ?: decision.optLong("paidAmount", if (status == "REVIEWED") target.amount else target.paidAmount)
             immediateOverrides[target.id] = target.copy(
+                sessionId = sessionId,
                 status = status,
                 amount = serverResult?.optLong("amount", target.amount) ?: target.amount,
                 paidAmount = paid,
@@ -7130,6 +7131,7 @@ loadSettings()
                 targets.forEach { tx ->
                     val paid = r.optLong("paidAmount", if (status == "REVIEWED") tx.amount else tx.paidAmount)
                     val updated = tx.copy(
+                        sessionId = sessionId,
                         status = status,
                         amount = r.optLong("amount", tx.amount),
                         paidAmount = paid,
@@ -7167,6 +7169,7 @@ loadSettings()
             val finalPaid = serverResult?.optLong("paidAmount", decision.optLong("paidAmount", target.paidAmount))
                 ?: decision.optLong("paidAmount", target.paidAmount)
             val updated = target.copy(
+                sessionId = sessionId,
                 status = finalStatus,
                 amount = serverResult?.optLong("amount", target.amount) ?: target.amount,
                 paidAmount = finalPaid,
