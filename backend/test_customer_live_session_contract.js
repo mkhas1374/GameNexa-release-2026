@@ -26,6 +26,10 @@ assert(liveRoute.includes("'eventType',se.event_type") && liveRoute.includes("AS
   liveRoute.includes("segmentEventsJson:JSON.stringify(segmentEvents)") &&
   liveRoute.includes("elapsedPlayingTimeMillis:Math.max(0,segmentElapsedMs)"),
   'live feed must preserve committed segment costs/timeline and calculate the currently open segment from pause/resume/segment events');
+assert(liveRoute.includes('const seenParticipantNames=new Set(participantNames.map') &&
+  liveRoute.includes('payload.customerNames') && liveRoute.includes('seenParticipantNames.has(normalized)') &&
+  liveRoute.includes('participantNames.push(name)'),
+  'GN Customers must reconcile participants from committed segment event payloads as well as session_participants, deduplicating repeated guests across segments');
 assert(liveRoute.includes("gs.status IN ('ACTIVE','PAUSED')"),
   'closed sessions must never appear as live sessions');
 assert(liveRoute.includes('let running=true;') && liveRoute.includes('Replay the event ledger from the session start'),

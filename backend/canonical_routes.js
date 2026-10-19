@@ -701,6 +701,29 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
           const type=String(event.eventType||event.event_type||'').toUpperCase();
           return type==='SEGMENT_PAUSE'||type==='SEGMENT_CONTINUE';
         });
+        // The Manager UI records the roster per committed segment. Older server writes may
+        // have persisted the segment event but failed to backfill session_participants. Build
+        // the customer-visible roster from BOTH canonical participants and the durable segment
+        // ledger so a guest shown in a committed segment cannot disappear from GN Customers.
+        // Names are deduplicated case-insensitively so a guest present in multiple segments is
+        // counted once in the session-wide current participants list.
+        const seenParticipantNames=new Set(participantNames.map(name=>String(name||'').trim().toLocaleLowerCase()).filter(Boolean));
+        for(const event of segmentEvents){
+          const payload=event.payload&&typeof event.payload==='object'?event.payload:{};
+          const names=Array.isArray(payload.customerNames)?payload.customerNames:[];
+          const ids=Array.isArray(payload.customerIds)?payload.customerIds:[];
+          for(let i=0;i<Math.max(names.length,ids.length);i++){
+            const id=Number(ids[i]||0);
+            const name=String(names[i]|| (id<0?'مهمان '+Math.abs(id):id>0?'مشتری '+id:'')).trim();
+            if(!name) continue;
+            const normalized=name.toLocaleLowerCase();
+            if(!seenParticipantNames.has(normalized)){
+              seenParticipantNames.add(normalized);
+              participantNames.push(name);
+            }
+            if(id>0&&!participantIds.includes(id)) participantIds.push(id);
+          }
+        }
         const lastMs=nowMs;
         return {
           stationId:Number(row.station_id),status:row.status==='PAUSED'?'PAUSED':'RUNNING',
