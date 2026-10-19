@@ -3038,7 +3038,9 @@ loadSettings()
         durationText: String = "",
         selectedCustomerIds: List<Long>? = null,
         selectedCustomerNames: List<String>? = null,
-        customerPrepaymentsMap: Map<Long, Long>? = null
+        customerPrepaymentsMap: Map<Long, Long>? = null,
+        consoleTypeOverride: String? = null,
+        controllerCountOverride: Int? = null
     ) {
         if (_startingStationIds.value.contains(stationId)) return
         _startingStationIds.update { it + stationId }
@@ -3058,7 +3060,12 @@ loadSettings()
             val station = repository.getStationStateByIdLocal(stationId)
                 ?: stationStates.value.find { it.id == stationId }
                 ?: return@launch
-            if (isTrialUser && !station.consoleType.equals("PlayStation 5", ignoreCase = true)) return@launch
+            // The Start sheet passes the exact console/controller values currently visible to
+            // the Manager. Do not let a fast tap race an asynchronous Room write and create a
+            // server session with the previous session's controller count or console type.
+            val startConsoleType = consoleTypeOverride?.trim()?.takeIf { it.isNotBlank() } ?: station.consoleType
+            val startControllerCount = (controllerCountOverride ?: station.controllerCount).coerceIn(1, 4)
+            if (isTrialUser && !startConsoleType.equals("PlayStation 5", ignoreCase = true)) return@launch
 
             // A stop action may still be persisting/sending its boundary event while the
             // Manager quickly taps Start. Recover the exact event from the durable marker first;
@@ -3227,13 +3234,13 @@ loadSettings()
             val manuallyRequestedDuration = durationText.toLongOrNull()?.coerceAtLeast(0L)?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: 0
             var durationMinutes = manuallyRequestedDuration
             if (requestedPrepayment == 0L && durationMinutes > 0) {
-                val hourlyRate = getHourlyRate(station.consoleType, station.controllerCount)
+                val hourlyRate = getHourlyRate(startConsoleType, startControllerCount)
                 if (hourlyRate > 0L) {
                     requestedPrepayment = ExactBilling.costForMinutes(hourlyRate, durationMinutes).setScale(0, java.math.RoundingMode.DOWN).longValueExact()
                 }
             }
             if (durationMinutes == 0 && requestedPrepayment > 0L) {
-                val hourlyRate = getHourlyRate(station.consoleType, station.controllerCount)
+                val hourlyRate = getHourlyRate(startConsoleType, startControllerCount)
                 if (hourlyRate > 0L) {
                     val exactMillis = exactPrepaymentDurationMillis(requestedPrepayment, hourlyRate, 0)
                     durationMinutes = ((exactMillis + 59_999L) / 60_000L).coerceAtLeast(1L).toInt()
@@ -3253,6 +3260,8 @@ loadSettings()
             // transport/5xx failure stays in the durable pending-start outbox.
             val optimisticState = station.copy(
                 status = "RUNNING",
+                consoleType = startConsoleType,
+                controllerCount = startControllerCount,
                 startTimeMillis = requestedStart,
                 lastStateChangeTimeMillis = requestedStart,
                 elapsedPlayingTimeMillis = 0L,
@@ -3280,10 +3289,10 @@ loadSettings()
                 val sessionStart = SelfHostedManager.startStationSession(
                     stationId = stationId,
                     startTimeMillis = requestedStart,
-                    hourlyRate = getHourlyRate(station.consoleType, station.controllerCount),
+                    hourlyRate = getHourlyRate(startConsoleType, startControllerCount),
                     selectedCustomers = selectedForServer,
-                    consoleType = station.consoleType,
-                    controllerCount = station.controllerCount,
+                    consoleType = startConsoleType,
+                    controllerCount = startControllerCount,
                     prepaymentAmount = requestedPrepayment,
                     durationLimitMinutes = durationMinutes,
                     customerPrepayments = finalPrepaymentsMap,
@@ -3293,72 +3302,29 @@ loadSettings()
                     idempotencyKey = startIdempotencyKey
                 )
                 if (sessionStart == null && !SelfHostedManager.lastStationStartWasTransportFailure) {
-                    val rejectedAsActive = SelfHostedManager.lastStationStartError.contains("ACTIVE_SESSION_EXISTS")
-                    if (rejectedAsActive) {
-                        // The server is authoritative. A local FREE/idle station can be stale after
-                        // app reinstall, process death, or login on another device. Recover the real
-                        // active session instead of asking the user to start a second session.
-                        val activeJson = SelfHostedManager.getActiveStationSession(stationId)
-                        if (activeJson != null) {
-                            val serverSessionId = activeJson.optString("id").takeIf { it.isNotBlank() }
-                            val serverStartedAt = activeJson.optString("started_at").toLongOrNull()
-                                ?: runCatching { java.time.Instant.parse(activeJson.optString("started_at")).toEpochMilli() }.getOrDefault(System.currentTimeMillis())
-                            val participants = activeJson.optJSONArray("participants") ?: org.json.JSONArray()
-                            val ids = mutableListOf<Long>()
-                            val names = mutableListOf<String>()
-                            val prepayments = mutableMapOf<Long, Long>()
-                            for (i in 0 until participants.length()) {
-                                val part = participants.optJSONObject(i) ?: continue
-                                val cid = part.optLong("customerId", 0L)
-                                if (cid > 0L) {
-                                    ids += cid
-                                    names += part.optString("participantName", "مشتری $cid")
-                                }
-                            }
-                            val snapshot = activeJson.optJSONObject("pricing_snapshot")
-                            val initialPrepayment = snapshot?.optLong("initialPrepaymentAmount", 0L) ?: 0L
-                            val snapshotCustomerPrepayments = snapshot?.optJSONObject("customerPrepayments")
-                            if (snapshotCustomerPrepayments != null) {
-                                snapshotCustomerPrepayments.keys().forEach { key ->
-                                    val cid = key.toLongOrNull() ?: 0L
-                                    val amount = snapshotCustomerPrepayments.optLong(key, 0L)
-                                    if (cid > 0L && amount > 0L) prepayments[cid] = amount
-                                }
-                            }
-                            if (serverSessionId != null) {
-                                sessionId = serverSessionId
-                                authoritativeStart = serverStartedAt
-                                val elapsed = (System.currentTimeMillis() - authoritativeStart).coerceAtLeast(0L)
-                                val recoveredState = station.copy(
-                                    status = "RUNNING",
-                                    controllerCount = activeJson.optInt("controller_count", station.controllerCount),
-                                    consoleType = activeJson.optString("console_type", station.consoleType),
-                                    startTimeMillis = authoritativeStart,
-                                    lastStateChangeTimeMillis = System.currentTimeMillis(),
-                                    elapsedPlayingTimeMillis = elapsed,
-                                    segmentsJson = "",
-                                    prepaymentAmount = initialPrepayment,
-                                    durationLimitMinutes = snapshot?.optInt("durationLimitMinutes", 0) ?: 0,
-                                    selectedCustomerIdsStr = ids.joinToString(","),
-                                    selectedCustomerNamesStr = names.joinToString(","),
-                                    customerPrepaymentsJson = prepayments.entries.joinToString(",") { "${it.key}:${it.value}" }
-                                )
-                                repository.saveSetting("active_session_" + stationId, sessionId)
-                                repository.saveSetting("active_session_start_" + stationId, authoritativeStart.toString())
-                                repository.saveSetting("station_sync_pending_" + stationId, "")
-                                saveAndSyncStationState(recoveredState)
-                                withContext(Dispatchers.Main) {
-                                    Toast.makeText(getApplication(), "این جایگاه از قبل دارای نشست فعال بود؛ نشست موجود از سرور بازیابی شد.", Toast.LENGTH_LONG).show()
-                                }
-                                return@launch
-                            }
-                        }
-                    }
+                    // A definitive server rejection is not a successful start. In particular,
+                    // do not silently adopt an arbitrary ACTIVE_SESSION_EXISTS session: that
+                    // would make the Manager believe the newly selected guest/controller count
+                    // was recorded when the server actually returned the previous session.
                     repository.saveSetting("station_sync_pending_" + stationId, "")
-                    repository.insertStationStateLocal(station)
+                    // Keep the user's latest selection available for retry after the stale server
+                    // session is resolved; rolling back must not erase the guest or controller
+                    // count that was just chosen in the Start sheet.
+                    repository.insertStationStateLocal(station.copy(
+                        consoleType = startConsoleType,
+                        controllerCount = startControllerCount,
+                        selectedCustomerIdsStr = effectiveCustomerIds.joinToString(","),
+                        selectedCustomerNamesStr = effectiveCustomerNames.joinToString(",")
+                    ))
+                    val rejectedAsActive = SelfHostedManager.lastStationStartError.contains("ACTIVE_SESSION_EXISTS")
                     withContext(Dispatchers.Main) {
                         val detail = SelfHostedManager.lastStationStartError.takeIf { it.isNotBlank() }?.let { " [$it]" } ?: ""
-                        Toast.makeText(getApplication(), "سرور شروع نشست را نپذیرفت؛ جایگاه به وضعیت قبلی بازگردانده شد.$detail", Toast.LENGTH_LONG).show()
+                        val message = if (rejectedAsActive) {
+                            "نشست جدید شروع نشد؛ سرور هنوز نشست قبلی این جایگاه را فعال می‌داند. برای جلوگیری از ثبت مهمان/دسته روی نشست اشتباه، وضعیت نشست قبلی را همگام و تعیین‌تکلیف کنید.$detail"
+                        } else {
+                            "سرور شروع نشست را نپذیرفت؛ جایگاه به وضعیت قبلی بازگردانده شد.$detail"
+                        }
+                        Toast.makeText(getApplication(), message, Toast.LENGTH_LONG).show()
                     }
                     return@launch
                 }
@@ -3372,9 +3338,9 @@ loadSettings()
                             put("idempotencyKey", startIdempotencyKey)
                             put("stationId", stationId)
                             put("startTimeMillis", requestedStart)
-                            put("consoleType", station.consoleType)
-                            put("controllerCount", station.controllerCount)
-                            put("hourlyRate", getHourlyRate(station.consoleType, station.controllerCount))
+                            put("consoleType", startConsoleType)
+                            put("controllerCount", startControllerCount)
+                            put("hourlyRate", getHourlyRate(startConsoleType, startControllerCount))
                             put("prepaymentAmount", requestedPrepayment)
                             put("durationLimitMinutes", durationMinutes)
                             put("customerPrepayments", org.json.JSONObject().apply {
@@ -3411,6 +3377,8 @@ loadSettings()
 
             val updated = station.copy(
                 status = "RUNNING",
+                consoleType = startConsoleType,
+                controllerCount = startControllerCount,
                 startTimeMillis = now,
                 lastStateChangeTimeMillis = now,
                 elapsedPlayingTimeMillis = 0L,

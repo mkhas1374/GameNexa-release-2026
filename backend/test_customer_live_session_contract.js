@@ -112,6 +112,14 @@ const mainScreen = fs.readFileSync(path.join(root, 'app/src/main/java/com/exampl
 const selectionDialog = fs.readFileSync(path.join(root, 'app/src/main/java/com/example/ui/CustomerDialogs.kt'), 'utf8');
 assert(mainScreen.includes('selectedCustomerSelection = ids.toList() to names.toList()') && mainScreen.includes('station.selectedCustomerIdsStr, station.selectedCustomerNamesStr'),
   'starting immediately after guest selection must use the confirmed current selection rather than a stale asynchronous Room snapshot');
+assert(mainScreen.includes('currentSelectedIds = selectedCustomerIds'),
+  'reopening guest selection must use the latest confirmed selection instead of the stale station snapshot');
+assert(mainScreen.includes('station.controllerCount)') && vm.includes('controllerCountOverride: Int? = null') && vm.includes('controllerCount = startControllerCount') && vm.includes('consoleType = startConsoleType'),
+  'the new session must send the controller count and console type currently visible in the Start sheet, not stale Room values');
+const startFunction = vm.slice(vm.indexOf('    fun startStation('), vm.indexOf('    private fun exactPrepaymentDurationMillis'));
+const definitiveReject = startFunction.slice(startFunction.indexOf('if (sessionStart == null && !SelfHostedManager.lastStationStartWasTransportFailure)'), startFunction.indexOf('if (sessionStart == null) {', startFunction.indexOf('if (sessionStart == null && !SelfHostedManager.lastStationStartWasTransportFailure)')));
+assert(definitiveReject.includes('do not silently adopt an arbitrary ACTIVE_SESSION_EXISTS session') && !definitiveReject.includes('SelfHostedManager.getActiveStationSession(stationId)') && definitiveReject.includes('selectedCustomerIdsStr = effectiveCustomerIds.joinToString') && definitiveReject.includes('controllerCount = startControllerCount'),
+  'a definitive ACTIVE_SESSION_EXISTS rejection must not be presented as a new session and must preserve the requested guest/controller selection for retry');
 assert(selectionDialog.includes('val selectedEntries = selectedMap.entries.toList()') && selectionDialog.includes('selectedEntries.map { it.key }') && selectionDialog.includes('selectedEntries.map { it.value.fullName }'),
   'guest IDs and names must be serialized from the same ordered entry list so their identities cannot become misaligned');
 

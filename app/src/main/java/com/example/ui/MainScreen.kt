@@ -285,8 +285,8 @@ fun MainScreen(
                             viewModel = viewModel,
                             hourlyRate = hourlyRate,
                             lang = lang,
-                            onStart = { payText, durationText, customerIds, customerNames, customerPrepayments ->
-                                viewModel.startStation(station.id, payText, durationText, customerIds, customerNames, customerPrepayments)
+                            onStart = { payText, durationText, customerIds, customerNames, customerPrepayments, consoleType, controllerCount ->
+                                viewModel.startStation(station.id, payText, durationText, customerIds, customerNames, customerPrepayments, consoleType, controllerCount)
                             },
                             onPause = { viewModel.pauseStation(station.id) },
                             onResume = { viewModel.resumeStation(station.id) },
@@ -317,7 +317,7 @@ fun StationCard(
     viewModel: GameNetViewModel,
     hourlyRate: Long,
     lang: String,
-    onStart: (String, String, List<Long>, List<String>, Map<Long, Long>) -> Unit,
+    onStart: (String, String, List<Long>, List<String>, Map<Long, Long>, String, Int) -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onFinish: () -> Unit,
@@ -617,7 +617,7 @@ fun StationCard(
                 CustomerSelectionDialog(
                     maxControllers = station.controllerCount,
                     maxSelectableCustomers = if (viewModel.isTrialUser) 4 else null,
-                    currentSelectedIds = station.getCustomerIds(),
+                    currentSelectedIds = selectedCustomerIds,
                     allCustomers = allCustomers,
                     occupiedCustomerStationMap = occupiedCustomerStationMap,
                     onDismiss = { showCustomerSelectionDialog = false },
@@ -1430,7 +1430,9 @@ fun StationCard(
                                     durationInput,
                                     selectedCustomerIds,
                                     selectedCustomerNames,
-                                    pendingCustomerPrepayments
+                                    pendingCustomerPrepayments,
+                                    station.consoleType,
+                                    station.controllerCount
                                 )
                                 viewModel.requestFirstStartServerClockWarning()
                                 payInput = ""
