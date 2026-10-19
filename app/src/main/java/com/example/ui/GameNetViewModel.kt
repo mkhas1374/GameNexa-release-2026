@@ -93,6 +93,7 @@ class GameNetViewModel(application: Application) : AndroidViewModel(application)
     private val _startingStationIds = MutableStateFlow<Set<Int>>(emptySet())
     // Separate short local-write locking from network flush locking so Stop never waits for HTTP.
     private val sessionOutboxWriteMutex = Mutex()
+    private val pendingSegmentRosterOverrides = java.util.concurrent.ConcurrentHashMap<Int, Pair<List<Long>, List<String>>>()
     private val sessionOutboxFlushMutex = Mutex()
     val startingStationIds: StateFlow<Set<Int>> = _startingStationIds.asStateFlow()
 
@@ -3474,6 +3475,7 @@ loadSettings()
     }
 
     fun updateStationSelectedCustomers(stationId: Int, customerIds: List<Long>, customerNames: List<String>) {
+        pendingSegmentRosterOverrides[stationId] = customerIds.toList() to customerNames.toList()
         viewModelScope.launch(Dispatchers.IO) {
             val station = repository.getStationStateByIdLocal(stationId)
                 ?: stationStates.value.find { it.id == stationId }
@@ -3621,8 +3623,10 @@ loadSettings()
                     // with the currently selected roster/configuration. Do not send the
                     // just-committed segment's old guest list as the live session roster.
                     if (continueRunning) {
-                        boundaryPayload.put("customerIds", org.json.JSONArray(updated.getCustomerIds()))
-                        boundaryPayload.put("customerNames", org.json.JSONArray(updated.getCustomerNames()))
+                        val nextRoster = pendingSegmentRosterOverrides.remove(stationId)
+                            ?: (updated.getCustomerIds() to updated.getCustomerNames())
+                        boundaryPayload.put("customerIds", org.json.JSONArray(nextRoster.first))
+                        boundaryPayload.put("customerNames", org.json.JSONArray(nextRoster.second))
                         boundaryPayload.put("consoleType", updated.consoleType)
                         boundaryPayload.put("controllerCount", updated.controllerCount)
                         boundaryPayload.put("payerCustomerIds", org.json.JSONArray(updated.getEffectivePayerIds()))
