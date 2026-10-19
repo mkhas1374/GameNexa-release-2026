@@ -34,6 +34,14 @@ assert(liveRoute.includes('(newer.started_at,newer.id) > (gs.started_at,gs.id)')
   liveRoute.includes('newer_sp.customer_id=$2') && liveRoute.includes('newer_claim.customer_id=$2') &&
   !liveRoute.includes('newer.station_id=gs.station_id'),
   'the live feed must return only the newest active session for this customer across station changes and tied timestamps');
+const sessionEventStart = server.indexOf('app.post("/api/station/event"');
+const sessionEventEnd = server.indexOf('app.post("/api/station/invoice/pay"', sessionEventStart);
+const sessionEventRoute = server.slice(sessionEventStart, sessionEventEnd);
+assert(sessionEventRoute.includes('eventType === "SEGMENT_PAUSE" || eventType === "SEGMENT_CONTINUE"') &&
+  sessionEventRoute.includes('payload.customerIds') && sessionEventRoute.includes('payload.customerNames') &&
+  sessionEventRoute.includes('INSERT INTO session_participants') &&
+  sessionEventRoute.includes('lower(btrim(participant_name))=lower(btrim($3))'),
+  'each committed segment must transactionally reconcile its exact guest/customer roster into canonical session_participants without duplicating guests across segments');
 assert(server.includes('splitMode:String(req.body?.splitMode||\'ALL\').toUpperCase()'),
   'online and offline session starts must persist split mode in the server snapshot');
 assert(managerApi.includes('put("splitMode", splitMode.uppercase'),

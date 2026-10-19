@@ -1555,6 +1555,31 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
             }
             const exists = await client.query("SELECT id FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND participant_key=$3 LIMIT 1", [sessionId, managerId, participant.participantKey]);
             if (!exists.rows.length) await client.query("INSERT INTO session_participants(manager_id,session_id,customer_id,participant_key,participant_name,is_guest,is_payer) VALUES($1,$2,$3,$4,$5,$6,TRUE)", [managerId,sessionId,participant.customerId,participant.participantKey,participant.participantName,participant.isGuest]);
+        } else if (eventType === "SEGMENT_PAUSE" || eventType === "SEGMENT_CONTINUE") {
+            // The segment roster is the exact set shown by Manager for this committed section.
+            // Persist it into the canonical participant table in the same transaction as the
+            // event, so GN Customers does not depend on the client having separately sent
+            // ADD_PARTICIPANT. Guest IDs are local negative IDs; identify those by normalized
+            // name within this session rather than creating duplicate guest rows per segment.
+            const rawIds = Array.isArray(payload.customerIds) ? payload.customerIds : [];
+            const rawNames = Array.isArray(payload.customerNames) ? payload.customerNames : [];
+            for (let i = 0; i < Math.max(rawIds.length, rawNames.length); i++) {
+                const numericId = Number(rawIds[i] ?? 0);
+                const customerId = Number.isInteger(numericId) && numericId > 0 ? numericId : null;
+                const participantName = String(rawNames[i] || (customerId ? "مشتری " + customerId : "مهمان " + (i + 1))).trim();
+                if (!participantName) continue;
+                if (customerId) {
+                    const customer = await client.query("SELECT id FROM customers WHERE id=$1 AND manager_id=$2", [customerId, managerId]);
+                    if (!customer.rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({success:false,code:"CUSTOMER_NOT_FOUND_IN_SEGMENT",customerId}); }
+                }
+                const existing = customerId
+                    ? await client.query("SELECT id FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND customer_id=$3 LIMIT 1", [sessionId,managerId,customerId])
+                    : await client.query("SELECT id FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND customer_id IS NULL AND lower(btrim(participant_name))=lower(btrim($3)) LIMIT 1", [sessionId,managerId,participantName]);
+                if (!existing.rows.length) {
+                    const participantKey = customerId ? "customer:" + customerId : "guest:name:" + participantName.toLocaleLowerCase();
+                    await client.query("INSERT INTO session_participants(manager_id,session_id,customer_id,participant_key,participant_name,is_guest,is_payer) VALUES($1,$2,$3,$4,$5,$6,TRUE)", [managerId,sessionId,customerId,participantKey,participantName,!customerId]);
+                }
+            }
         } else if (eventType === "REMOVE_PARTICIPANT") {
             const participantKey = String(payload.participantKey || "").trim();
             if (!participantKey) { await client.query("ROLLBACK"); return res.status(400).json({success:false,error:"participantKey is required"}); }
