@@ -26,6 +26,13 @@ assert(liveRoute.includes("'eventType',se.event_type") && liveRoute.includes("AS
   liveRoute.includes("segmentEventsJson:JSON.stringify(segmentEvents)") &&
   liveRoute.includes("elapsedPlayingTimeMillis:Math.max(0,segmentElapsedMs)"),
   'live feed must preserve committed segment costs/timeline and calculate the currently open segment from pause/resume/segment events');
+const eventRouteStart = server.indexOf('app.post("/api/station/event"');
+const eventRouteEnd = server.indexOf('app.post("/api/station/invoice/pay"', eventRouteStart);
+const eventRoute = server.slice(eventRouteStart, eventRouteEnd);
+assert(eventRoute.includes('UPDATE game_sessions SET console_type=$1,controller_count=$2') &&
+  eventRoute.includes('CUSTOMER_NOT_FOUND_IN_NEXT_SEGMENT') &&
+  eventRoute.includes('payload.customerNames') && eventRoute.includes('INSERT INTO session_participants'),
+  'SEGMENT_CONTINUE must atomically publish the next segment roster and controller configuration to customer profiles');
 assert(liveRoute.includes('const seenParticipantNames=new Set(participantNames.map') &&
   liveRoute.includes('payload.customerNames') && liveRoute.includes('seenParticipantNames.has(normalized)') &&
   liveRoute.includes('participantNames.push(name)'),
