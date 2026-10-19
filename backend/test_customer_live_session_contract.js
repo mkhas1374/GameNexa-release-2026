@@ -102,4 +102,17 @@ assert(customerUi.includes('sessionHistoryExpanded by remember(customer.id)') &&
   customerUi.includes('AnimatedVisibility(visible = sessionHistoryExpanded)') &&
   customerUi.includes('Icons.Default.KeyboardArrowDown'),
   'customer session history must be collapsed by default and expandable from a downward-arrow header');
+assert(server.includes('app.post("/api/station/order/remove"') && server.includes("'ORDER_REMOVE'") && server.includes('UPDATE session_orders SET quantity=quantity-1,line_total=(quantity-1)*unit_price'),
+  'correcting a duplicate buffet tap must decrement/delete the canonical session order under a session lock, not only mutate Room');
+assert(managerApi.includes('/api/station/order/remove') && managerApi.includes('removeBuffetOrderEvent'),
+  'Android must send buffet removal to the server using an idempotency key and the original session identity');
+assert(vm.includes('sendOrQueueBuffetRemoval') && vm.includes('station-order-remove:') && vm.includes('restoreRejectedBuffetRemoval'),
+  'buffet removal must be durably queued, retried idempotently, and rolled back locally on permanent server rejection');
+const mainScreen = fs.readFileSync(path.join(root, 'app/src/main/java/com/example/ui/MainScreen.kt'), 'utf8');
+const selectionDialog = fs.readFileSync(path.join(root, 'app/src/main/java/com/example/ui/CustomerDialogs.kt'), 'utf8');
+assert(mainScreen.includes('selectedCustomerSelection = ids.toList() to names.toList()') && mainScreen.includes('station.selectedCustomerIdsStr, station.selectedCustomerNamesStr'),
+  'starting immediately after guest selection must use the confirmed current selection rather than a stale asynchronous Room snapshot');
+assert(selectionDialog.includes('val selectedEntries = selectedMap.entries.toList()') && selectionDialog.includes('selectedEntries.map { it.key }') && selectionDialog.includes('selectedEntries.map { it.value.fullName }'),
+  'guest IDs and names must be serialized from the same ordered entry list so their identities cannot become misaligned');
+
 console.log('PASS: customer live-session identity, customer session history, per-session participants/controller counts/timeline, shared buffet visibility/allocation, and invoice reconciliation');

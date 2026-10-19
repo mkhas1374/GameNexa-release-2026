@@ -549,8 +549,16 @@ fun StationCard(
             // Customer Selection Row for Station
             val allStations by viewModel.stationStates.collectAsState()
             val allCustomers by viewModel.customers.collectAsState()
-            val selectedCustomerNames = station.getCustomerNames()
-            val selectedCustomerIds = station.getCustomerIds()
+            // Keep the most recently confirmed selection in Compose immediately. The Room
+            // write in updateStationSelectedCustomers is asynchronous; starting immediately
+            // after choosing a guest must not use the previous station snapshot.
+            var selectedCustomerSelection by remember(
+                station.id, station.selectedCustomerIdsStr, station.selectedCustomerNamesStr
+            ) {
+                mutableStateOf(station.getCustomerIds() to station.getCustomerNames())
+            }
+            val selectedCustomerIds = selectedCustomerSelection.first
+            val selectedCustomerNames = selectedCustomerSelection.second
             var pendingCustomerPrepayments by remember(station.id, station.customerPrepaymentsJson) {
                 mutableStateOf(station.getEffectiveCustomerPrepaymentsMap())
             }
@@ -614,6 +622,7 @@ fun StationCard(
                     occupiedCustomerStationMap = occupiedCustomerStationMap,
                     onDismiss = { showCustomerSelectionDialog = false },
                     onConfirm = { ids, names ->
+                        selectedCustomerSelection = ids.toList() to names.toList()
                         viewModel.updateStationSelectedCustomers(station.id, ids, names)
                         showCustomerSelectionDialog = false
                     }

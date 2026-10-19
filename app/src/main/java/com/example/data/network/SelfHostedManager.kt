@@ -2803,6 +2803,48 @@ object SelfHostedManager {
         }
     }
 
+    /** Remove one buffet unit from the server-owned session order ledger. */
+    suspend fun removeBuffetOrderEvent(
+        stationId: Any,
+        productName: String,
+        targetCustomerId: Long? = null,
+        targetCustomerName: String? = null,
+        idempotencyKey: String,
+        sessionId: String
+    ): BuffetOrderSyncResult = withContext(Dispatchers.IO) {
+        try {
+            if (_currentManagerId.isBlank()) return@withContext BuffetOrderSyncResult(false, true, "شناسه مدیر در دسترس نیست.")
+            val json = JSONObject().apply {
+                put("managerId", _currentManagerId)
+                put("stationId", stationId.toString())
+                put("sessionId", sessionId)
+                put("productName", productName)
+                put("targetCustomerId", targetCustomerId ?: 0L)
+                if (targetCustomerId != null && targetCustomerId < 0L) put("targetParticipantKey", "guest:" + targetCustomerId)
+                targetCustomerName?.takeIf { it.isNotBlank() }?.let { put("targetCustomerName", it) }
+            }
+            val request = Request.Builder()
+                .url(SERVER_URL + "/api/station/order/remove")
+                .headers(getBaseHeaders())
+                .header("Idempotency-Key", idempotencyKey)
+                .post(json.toString().toRequestBody(JSON_MEDIA))
+                .build()
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (response.isSuccessful) BuffetOrderSyncResult(true, false)
+                else {
+                    val message = runCatching { JSONObject(body).optString("error", body) }.getOrDefault(body)
+                    val retryable = response.code == 408 || response.code == 429 || response.code >= 500
+                    Log.w(TAG, "removeBuffetOrderEvent HTTP " + response.code + ": " + message.take(300))
+                    BuffetOrderSyncResult(false, retryable, message)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "removeBuffetOrderEvent error: " + e.message, e)
+            BuffetOrderSyncResult(false, true, e.message.orEmpty())
+        }
+    }
+
     /**
      * Action-Triggered API: Settle Station Event
      */

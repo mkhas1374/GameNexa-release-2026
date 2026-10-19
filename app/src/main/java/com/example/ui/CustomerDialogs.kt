@@ -338,8 +338,12 @@ fun CustomerSelectionDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    val ids = selectedMap.keys.toList()
-                    val names = selectedMap.values.map { it.fullName }
+                    // Build IDs and names from the same entries. Reading keys and values
+                    // independently can misalign a guest ID with another participant's name,
+                    // so the server session is created without the intended guest identity.
+                    val selectedEntries = selectedMap.entries.toList()
+                    val ids = selectedEntries.map { it.key }
+                    val names = selectedEntries.map { it.value.fullName }
                     onConfirm(ids, names)
                 },
                 shape = RoundedCornerShape(8.dp)

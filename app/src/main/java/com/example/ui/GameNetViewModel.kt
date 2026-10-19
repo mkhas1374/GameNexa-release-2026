@@ -4381,6 +4381,66 @@ loadSettings()
         }
     }
 
+    private suspend fun sendOrQueueBuffetRemoval(
+        stationId: Int,
+        productName: String,
+        targetCustomerId: Long?,
+        targetCustomerName: String?,
+        sessionId: String
+    ): Boolean {
+        if (sessionId.isBlank()) return false
+        val operationId = java.util.UUID.randomUUID().toString()
+        val key = "station_order_outbox_" + stationId
+        val current = repository.getSetting(key)
+        val array = try { if (current.isNullOrBlank()) org.json.JSONArray() else org.json.JSONArray(current) }
+            catch (_: Exception) { org.json.JSONArray() }
+        array.put(org.json.JSONObject().apply {
+            put("operation", "REMOVE")
+            put("operationId", operationId)
+            put("sessionId", sessionId)
+            put("productName", productName)
+            put("targetCustomerId", targetCustomerId ?: org.json.JSONObject.NULL)
+            put("targetCustomerName", targetCustomerName ?: "")
+            put("queuedAt", System.currentTimeMillis())
+        })
+        repository.saveSetting(key, array.toString())
+        val result = SelfHostedManager.removeBuffetOrderEvent(
+            stationId = stationId, productName = productName, targetCustomerId = targetCustomerId,
+            targetCustomerName = targetCustomerName, idempotencyKey = "station-order-remove:" + operationId,
+            sessionId = sessionId
+        )
+        return when {
+            result.accepted -> { removeBuffetOrderFromOutbox(key, operationId); true }
+            result.retryable -> true // Keep the exact idempotency key in the durable outbox.
+            else -> {
+                removeBuffetOrderFromOutbox(key, operationId)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "حذف خوراکی در سرور ثبت نشد: ${result.errorMessage.ifBlank { "خطای نامشخص" }}", Toast.LENGTH_LONG).show()
+                }
+                false
+            }
+        }
+    }
+
+    private suspend fun restoreRejectedBuffetRemoval(stationId: Int, item: org.json.JSONObject) {
+        val productName = item.optString("productName")
+        val targetId = if (item.isNull("targetCustomerId")) null else item.optLong("targetCustomerId").takeIf { it != 0L }
+        val targetName = item.optString("targetCustomerName").takeIf { it.isNotBlank() }
+        val existing = repository.getOrdersForStationSync(stationId).firstOrNull {
+            it.productName == productName && it.targetCustomerId == targetId &&
+                (targetName.isNullOrBlank() || it.targetCustomerName == targetName)
+        }
+        if (existing != null) repository.insertStationOrder(existing.copy(quantity = existing.quantity + 1))
+        else repository.insertStationOrder(
+            com.example.data.StationOrder(
+                id = if (targetId != null) "${stationId}_${productName}_${targetId}" else "${stationId}_${productName}",
+                stationId = stationId, productName = productName, quantity = 1,
+                targetCustomerId = targetId, targetCustomerName = targetName
+            )
+        )
+        refreshOrdersForStation(stationId)
+    }
+
     private suspend fun removeBuffetOrderFromOutbox(key: String, operationId: String) {
         val current = repository.getSetting(key)
         val array = try { org.json.JSONArray(current.orEmpty()) } catch (_: Exception) { org.json.JSONArray() }
@@ -4423,22 +4483,33 @@ loadSettings()
                     continue
                 }
                 val customer = if (item.isNull("targetCustomerId")) null else item.optLong("targetCustomerId").takeIf { it != 0L }
-                val result = SelfHostedManager.addBuffetOrderEvent(
-                    stationId = stationId,
-                    productName = item.optString("productName"),
-                    quantity = item.optInt("quantity", 1),
-                    price = item.optLong("price", 0L),
-                    targetCustomerId = customer,
-                    targetCustomerName = item.optString("targetCustomerName").takeIf { it.isNotBlank() },
-                    idempotencyKey = "station-order:" + operationId,
-                    sessionId = sessionId
-                )
+                val isRemoval = item.optString("operation").equals("REMOVE", ignoreCase = true)
+                val result = if (isRemoval) {
+                    SelfHostedManager.removeBuffetOrderEvent(
+                        stationId = stationId, productName = item.optString("productName"),
+                        targetCustomerId = customer,
+                        targetCustomerName = item.optString("targetCustomerName").takeIf { it.isNotBlank() },
+                        idempotencyKey = "station-order-remove:" + operationId, sessionId = sessionId
+                    )
+                } else {
+                    SelfHostedManager.addBuffetOrderEvent(
+                        stationId = stationId,
+                        productName = item.optString("productName"),
+                        quantity = item.optInt("quantity", 1),
+                        price = item.optLong("price", 0L),
+                        targetCustomerId = customer,
+                        targetCustomerName = item.optString("targetCustomerName").takeIf { it.isNotBlank() },
+                        idempotencyKey = "station-order:" + operationId,
+                        sessionId = sessionId
+                    )
+                }
                 when {
                     result.accepted -> Unit
                     result.retryable -> remaining.put(item)
                     else -> {
-                        android.util.Log.w("GameNetViewModel", "Discarding rejected buffet order: " + result.errorMessage)
-                        removeRejectedBuffetOrder(stationId, item)
+                        android.util.Log.w("GameNetViewModel", "Discarding rejected buffet operation: " + result.errorMessage)
+                        if (isRemoval) restoreRejectedBuffetRemoval(stationId, item)
+                        else removeRejectedBuffetOrder(stationId, item)
                     }
                 }
             }
@@ -4815,20 +4886,31 @@ loadSettings()
 
     fun decrementBuffetOrder(stationId: Int, productName: String, targetCustomerId: Long? = null, targetCustomerName: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
-            val existingId = if (targetCustomerId != null) "${stationId}_${productName}_${targetCustomerId}" else "${stationId}_${productName}"
-            val orders = repository.getOrdersForStationSync(stationId)
-            val matched = orders.find { it.productName == productName && it.targetCustomerId == targetCustomerId &&
-                (targetCustomerName.isNullOrBlank() || it.targetCustomerName == targetCustomerName) }
-            if (matched != null) {
+            try {
+                val matched = repository.getOrdersForStationSync(stationId).find {
+                    it.productName == productName && it.targetCustomerId == targetCustomerId &&
+                        (targetCustomerName.isNullOrBlank() || it.targetCustomerName == targetCustomerName)
+                } ?: return@launch
+                val sessionId = repository.getSetting("active_session_" + stationId)?.takeIf { it.isNotBlank() }
+                if (sessionId == null) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(getApplication(), "شناسه نشست فعال موجود نیست؛ حذف خوراکی ثبت نشد.", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+                val acceptedOrQueued = sendOrQueueBuffetRemoval(stationId, productName, targetCustomerId, targetCustomerName, sessionId)
+                if (!acceptedOrQueued) return@launch
                 val currentMap = _stationOrdersMap.value.toMutableMap()
                 val stationOrders = (currentMap[stationId] ?: emptyList()).toMutableList()
-                val idx = stationOrders.indexOfFirst { it.productName == productName }
-
+                val idx = stationOrders.indexOfFirst {
+                    it.productName == productName && it.targetCustomerId == targetCustomerId &&
+                        (targetCustomerName.isNullOrBlank() || it.targetCustomerName == targetCustomerName)
+                }
                 if (matched.quantity <= 1) {
                     if (idx >= 0) stationOrders.removeAt(idx)
                     currentMap[stationId] = stationOrders
                     _stationOrdersMap.value = currentMap
-                    repository.deleteStationOrder(existingId, stationId)
+                    repository.deleteStationOrder(matched.id)
                 } else {
                     val updated = matched.copy(quantity = matched.quantity - 1)
                     if (idx >= 0) stationOrders[idx] = updated
@@ -4837,10 +4919,12 @@ loadSettings()
                     repository.insertStationOrder(updated)
                 }
                 refreshOrdersForStation(stationId)
-
-                val st = repository.getStationStateByIdLocal(stationId)
-                if (st != null) {
-                    saveAndSyncStationState(st)
+                val state = repository.getStationStateByIdLocal(stationId)
+                if (state != null) saveAndSyncStationState(state)
+            } catch (t: Throwable) {
+                android.util.Log.e("GameNetViewModel", "BUFFET_DECREMENT_GUARD station=" + stationId, t)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(getApplication(), "حذف خوراکی انجام نشد؛ وضعیت سفارش حفظ شد.", Toast.LENGTH_LONG).show()
                 }
             }
         }

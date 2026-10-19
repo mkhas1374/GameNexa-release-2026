@@ -1448,6 +1448,62 @@ app.post("/api/station/order", requireManagerAuth, requireActiveEntitlement, rat
 });
 
 
+// Remove exactly one previously-added buffet unit from the canonical session ledger.
+// Local Room deletion alone is not authoritative: customer live profile and invoice totals
+// are derived from session_orders, so a Manager correction must update that table atomically.
+app.post("/api/station/order/remove", requireManagerAuth, requireActiveEntitlement, rateLimit({windowMs:60000,max:60}), async (req,res) => {
+    const managerId = sessionManagerId(req), stationId = Number(req.body?.stationId);
+    const sessionId = String(req.body?.sessionId || "").trim();
+    const productName = String(req.body?.productName || "").trim();
+    const rawTargetCustomerId = Number(req.body?.targetCustomerId || 0);
+    const targetCustomerId = rawTargetCustomerId > 0 ? rawTargetCustomerId : null;
+    const targetParticipantKey = String(req.body?.targetParticipantKey || (rawTargetCustomerId < 0 ? "guest:" + rawTargetCustomerId : "")).trim();
+    const targetCustomerName = String(req.body?.targetCustomerName || "").trim();
+    const idempotencyKey = String(req.headers["idempotency-key"] || req.body?.idempotencyKey || "").trim();
+    if (!managerId || !Number.isInteger(stationId) || stationId <= 0 || !sessionId || !productName || !idempotencyKey) {
+        return res.status(400).json({success:false,error:"Invalid buffet removal payload"});
+    }
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const session = await client.query("SELECT id,status FROM game_sessions WHERE id=$1 AND manager_id=$2 AND station_id=$3 FOR UPDATE",[sessionId,managerId,stationId]);
+        if (!session.rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({success:false,code:"SESSION_NOT_FOUND",error:"The session does not exist."}); }
+        const duplicate = await client.query("SELECT session_id FROM session_events WHERE manager_id=$1 AND event_id=$2 LIMIT 1",[managerId,idempotencyKey]);
+        if (duplicate.rows[0]) {
+            if (String(duplicate.rows[0].session_id) !== String(sessionId)) { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"IDEMPOTENCY_KEY_REUSED_FOR_DIFFERENT_SESSION"}); }
+            await client.query("COMMIT");
+            return res.json({success:true,duplicate:true,sessionId});
+        }
+        if (!["ACTIVE","PAUSED"].includes(String(session.rows[0].status))) { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"SESSION_NOT_ACTIVE",error:"The session is no longer active."}); }
+        const match = await client.query(`
+            SELECT id,quantity,unit_price FROM session_orders
+            WHERE session_id=$1 AND manager_id=$2 AND product_name=$3
+              AND (( $4::bigint IS NOT NULL AND target_customer_id=$4::bigint ) OR
+                   ( $4::bigint IS NULL AND target_customer_id IS NULL AND
+                     ( ($5<>'' AND product_snapshot->>'targetParticipantKey'=$5) OR
+                       ($6<>'' AND product_snapshot->>'targetCustomerName'=$6) OR
+                       ($5='' AND $6='') ) ))
+            ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+            [sessionId,managerId,productName,targetCustomerId,targetParticipantKey,targetCustomerName]);
+        if (!match.rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({success:false,code:"BUFFET_ORDER_NOT_FOUND",error:"No matching buffet item remains to remove."}); }
+        const order = match.rows[0];
+        if (Number(order.quantity) > 1) {
+            await client.query("UPDATE session_orders SET quantity=quantity-1,line_total=(quantity-1)*unit_price WHERE id=$1 AND manager_id=$2",[order.id,managerId]);
+        } else {
+            await client.query("DELETE FROM session_orders WHERE id=$1 AND manager_id=$2",[order.id,managerId]);
+        }
+        const last = await client.query("SELECT COALESCE(MAX(sequence_no),0)+1 seq FROM session_events WHERE session_id=$1 AND manager_id=$2",[sessionId,managerId]);
+        await client.query("INSERT INTO session_events(manager_id,session_id,event_id,event_type,occurred_at,payload,sequence_no) VALUES($1,$2,$3,'ORDER_REMOVE',NOW(),$4::jsonb,$5)",[
+            managerId,sessionId,idempotencyKey,JSON.stringify({productName,quantity:-1,targetCustomerId,targetParticipantKey:targetParticipantKey||null,targetCustomerName:targetCustomerName||null}),Number(last.rows[0].seq)]);
+        await client.query("COMMIT");
+        return res.json({success:true,sessionId,removedQuantity:1});
+    } catch(e) {
+        try { await client.query("ROLLBACK"); } catch(_) {}
+        console.error("Buffet order removal failed:",e?.message||e);
+        return res.status(500).json({success:false,error:"Buffet order removal failed"});
+    } finally { client.release(); }
+});
+
 app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rateLimit({windowMs:60000,max:60}), async (req,res) => {
     const managerId = sessionManagerId(req);
     const sessionId = String(req.body?.sessionId || "");
