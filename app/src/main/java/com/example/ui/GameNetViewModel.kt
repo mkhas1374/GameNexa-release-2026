@@ -3617,6 +3617,18 @@ loadSettings()
                         boundaryPayload.put("payerCustomerIds", org.json.JSONArray(payerCustomerIds))
                         boundaryPayload.put("payerCustomerNames", org.json.JSONArray(payerCustomerNames))
                     }
+                    // SEGMENT_CONTINUE closes the previous section but starts the next one
+                    // with the currently selected roster/configuration. Do not send the
+                    // just-committed segment's old guest list as the live session roster.
+                    if (continueRunning) {
+                        boundaryPayload.put("customerIds", org.json.JSONArray(updated.getCustomerIds()))
+                        boundaryPayload.put("customerNames", org.json.JSONArray(updated.getCustomerNames()))
+                        boundaryPayload.put("consoleType", updated.consoleType)
+                        boundaryPayload.put("controllerCount", updated.controllerCount)
+                        boundaryPayload.put("payerCustomerIds", org.json.JSONArray(updated.getEffectivePayerIds()))
+                        boundaryPayload.put("payerCustomerNames", org.json.JSONArray(updated.getPayerCustomerNames()))
+                        boundaryPayload.put("splitMode", updated.splitMode)
+                    }
                 }
                 if (boundarySessionId.isNotBlank()) {
                     repository.saveSetting("session_boundary_pending_$stationId", org.json.JSONObject().apply {

@@ -1609,6 +1609,47 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
         if (["PAUSE","RESUME","SEGMENT_PAUSE","SEGMENT_CONTINUE"].includes(eventType)) {
             const nextStatus = (eventType === "PAUSE" || eventType === "SEGMENT_PAUSE") ? "PAUSED" : "ACTIVE";
             await client.query("UPDATE game_sessions SET status=$1::varchar,paused_at=CASE WHEN $1::varchar='PAUSED' THEN $2::timestamptz ELSE NULL::timestamptz END,updated_at=NOW() WHERE id=$3 AND manager_id=$4",[nextStatus,occurredAt.toISOString(),sessionId,managerId]);
+            // SEGMENT_CONTINUE is also the authoritative start of a new section. Its payload
+            // carries the NEW section roster/config (not the old section that was just closed).
+            // Update the live session projection in the same transaction so customer profile
+            // reports the new guest and controller count immediately.
+            if (eventType === "SEGMENT_CONTINUE") {
+                const nextConsoleType = normalizeConsoleType(payload.consoleType);
+                const nextControllerCount = Number(payload.controllerCount);
+                if (!nextConsoleType || !Number.isInteger(nextControllerCount) || nextControllerCount < 1 || nextControllerCount > 4) {
+                    await client.query("ROLLBACK");
+                    return res.status(422).json({success:false,code:"INVALID_NEXT_SEGMENT_CONFIGURATION"});
+                }
+                const configuration = await getManagerConfiguration(client, managerId);
+                const nextHourlyRate = configuredHourlyRate(configuration, nextConsoleType, nextControllerCount);
+                if (!nextHourlyRate) {
+                    await client.query("ROLLBACK");
+                    return res.status(422).json({success:false,code:"NEXT_SEGMENT_PRICING_NOT_CONFIGURED"});
+                }
+                await client.query(
+                    "UPDATE game_sessions SET console_type=$1,controller_count=$2,pricing_snapshot=COALESCE(pricing_snapshot,'{}'::jsonb)||jsonb_build_object('consoleType',$1::text,'controllerCount',$2::int,'hourlyRate',$3::numeric,'splitMode',COALESCE($4::text,'ALL'),'payerCustomerIds',COALESCE($5::jsonb,'[]'::jsonb),'payerCustomerNames',COALESCE($6::jsonb,'[]'::jsonb),'capturedAt',$7::text),updated_at=NOW() WHERE id=$8 AND manager_id=$9",
+                    [nextConsoleType,nextControllerCount,nextHourlyRate,String(payload.splitMode||'ALL').toUpperCase(),JSON.stringify(Array.isArray(payload.payerCustomerIds)?payload.payerCustomerIds:[]),JSON.stringify(Array.isArray(payload.payerCustomerNames)?payload.payerCustomerNames:[]),occurredAt.toISOString(),sessionId,managerId]
+                );
+                const rawIds = Array.isArray(payload.customerIds) ? payload.customerIds : [];
+                const rawNames = Array.isArray(payload.customerNames) ? payload.customerNames : [];
+                for (let i = 0; i < Math.max(rawIds.length, rawNames.length); i++) {
+                    const numericId = Number(rawIds[i] ?? 0);
+                    const customerId = Number.isInteger(numericId) && numericId > 0 ? numericId : null;
+                    const participantName = String(rawNames[i] || (customerId ? "مشتری " + customerId : "مهمان " + (i + 1))).trim();
+                    if (!participantName) continue;
+                    if (customerId) {
+                        const customer = await client.query("SELECT id FROM customers WHERE id=$1 AND manager_id=$2", [customerId, managerId]);
+                        if (!customer.rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({success:false,code:"CUSTOMER_NOT_FOUND_IN_NEXT_SEGMENT",customerId}); }
+                    }
+                    const existing = customerId
+                        ? await client.query("SELECT id FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND customer_id=$3 LIMIT 1", [sessionId,managerId,customerId])
+                        : await client.query("SELECT id FROM session_participants WHERE session_id=$1 AND manager_id=$2 AND customer_id IS NULL AND lower(btrim(participant_name))=lower(btrim($3)) LIMIT 1", [sessionId,managerId,participantName]);
+                    if (!existing.rows.length) {
+                        const participantKey = customerId ? "customer:" + customerId : "guest:name:" + participantName.toLocaleLowerCase();
+                        await client.query("INSERT INTO session_participants(manager_id,session_id,customer_id,participant_key,participant_name,is_guest,is_payer) VALUES($1,$2,$3,$4,$5,$6,TRUE)", [managerId,sessionId,customerId,participantKey,participantName,!customerId]);
+                    }
+                }
+            }
         }
         await client.query("COMMIT");
         return res.json({success:true,sessionId,sequenceNo,serverTime:Date.now()});
