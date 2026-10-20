@@ -747,6 +747,7 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
           hourlyRate:Number(snap.hourlyRate||snap.hourly_rate||0),sessionId:String(row.session_id)
         };
       });
+      console.log('[GUEST_TRACE] customer_live_response',JSON.stringify({customerId:cid,stations:stations.map(st=>({sessionId:st.sessionId,stationId:st.stationId,status:st.status,consoleType:st.consoleType,controllerCount:st.controllerCount,customerIdsStr:st.customerIdsStr,customerNamesStr:st.customerNamesStr,segmentEvents:(()=>{try{return JSON.parse(st.segmentEventsJson||'[]').map(e=>({eventType:e.eventType||e.event_type,customerIds:e.payload?.customerIds||null,customerNames:e.payload?.customerNames||null,controllerCount:e.payload?.controllerCount??null,consoleType:e.payload?.consoleType??null}))}catch(_){return []}})()}))}));
       return res.json({success:true,stations});
     } catch(e){console.error('[customer-live-session]',e?.message||e);return res.status(500).json({error:'Customer live session lookup failed'});}
   });

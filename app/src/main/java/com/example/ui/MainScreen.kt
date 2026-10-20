@@ -591,6 +591,8 @@ fun StationCard(
             var pendingStopOption by remember { mutableStateOf<Int?>(null) }
             var pendingStopPayerIds by remember { mutableStateOf<List<Long>>(emptyList()) }
             var pendingStopPayerNames by remember { mutableStateOf<List<String>>(emptyList()) }
+            var pendingNextSegmentRoster by remember { mutableStateOf<Pair<List<Long>, List<String>>?>(null) }
+            var pendingNextSegmentConfiguration by remember { mutableStateOf<Pair<String, Int>?>(null) }
 
             LaunchedEffect(showStationPauseDialog, pendingStopOption) {
                 // Never execute the Stop mutation while the AlertDialog is still in the
@@ -600,16 +602,26 @@ fun StationCard(
                 val option = pendingStopOption ?: return@LaunchedEffect
                 val payerIds = pendingStopPayerIds.toList()
                 val payerNames = pendingStopPayerNames.toList()
+                val nextRoster = pendingNextSegmentRoster
+                val nextConfiguration = pendingNextSegmentConfiguration
                 // Clear the transient action before launching the ViewModel mutation so a
                 // recomposition can never execute it twice.
                 pendingStopOption = null
                 pendingStopPayerIds = emptyList()
                 pendingStopPayerNames = emptyList()
+                pendingNextSegmentRoster = null
+                pendingNextSegmentConfiguration = null
                 kotlinx.coroutines.yield()
                 when (option) {
                     1 -> viewModel.pauseStation(station.id)
                     2 -> viewModel.commitSegmentAndPause(station.id, payerIds, payerNames)
-                    3 -> viewModel.commitSegmentAndContinue(station.id, payerIds, payerNames)
+                    3 -> viewModel.commitSegmentAndContinue(
+                        station.id, payerIds, payerNames,
+                        nextRoster?.first ?: selectedCustomerIds,
+                        nextRoster?.second ?: selectedCustomerNames,
+                        nextConfiguration?.first ?: station.consoleType,
+                        nextConfiguration?.second ?: station.controllerCount
+                    )
                 }
             }
 
@@ -688,6 +700,11 @@ fun StationCard(
                         showStationPauseDialog = false
                         pendingStopPayerIds = payerIds.distinct()
                         pendingStopPayerNames = payerNames
+                        // Snapshot the exact UI-confirmed roster/config at the action boundary.
+                        // Do not let asynchronous Room writes decide which guests/controllers
+                        // are sent in SEGMENT_CONTINUE.
+                        pendingNextSegmentRoster = selectedCustomerIds.toList() to selectedCustomerNames.toList()
+                        pendingNextSegmentConfiguration = station.consoleType to station.controllerCount
                         pendingStopOption = 3
                     }
                 )

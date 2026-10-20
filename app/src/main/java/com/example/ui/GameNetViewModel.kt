@@ -3535,7 +3535,17 @@ loadSettings()
         }
     }
 
-    private fun applyStopStateLocally(stationId: Int, commitSegment: Boolean, continueRunning: Boolean, payerCustomerIds: List<Long> = emptyList(), payerCustomerNames: List<String> = emptyList()) {
+    private fun applyStopStateLocally(
+        stationId: Int,
+        commitSegment: Boolean,
+        continueRunning: Boolean,
+        payerCustomerIds: List<Long> = emptyList(),
+        payerCustomerNames: List<String> = emptyList(),
+        nextCustomerIds: List<Long>? = null,
+        nextCustomerNames: List<String>? = null,
+        nextConsoleType: String? = null,
+        nextControllerCount: Int? = null
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val station = repository.getStationStateByIdLocal(stationId)
@@ -3572,8 +3582,16 @@ loadSettings()
                         payerCustomerNames = payerCustomerNames.distinct()
                     ))
                 }
+                val selectedNextIds = nextCustomerIds?.toList() ?: station.getCustomerIds()
+                val selectedNextNames = nextCustomerNames?.toList() ?: station.getCustomerNames()
+                val selectedNextConsoleType = nextConsoleType?.takeIf { it.isNotBlank() } ?: station.consoleType
+                val selectedNextControllerCount = (nextControllerCount ?: station.controllerCount).coerceIn(1, 4)
                 val updated = station.copy(
                     status = if (continueRunning) "RUNNING" else "PAUSED",
+                    controllerCount = if (continueRunning) selectedNextControllerCount else station.controllerCount,
+                    consoleType = if (continueRunning) selectedNextConsoleType else station.consoleType,
+                    selectedCustomerIdsStr = if (continueRunning) selectedNextIds.joinToString(",") else station.selectedCustomerIdsStr,
+                    selectedCustomerNamesStr = if (continueRunning) selectedNextNames.joinToString(",") else station.selectedCustomerNamesStr,
                     lastStateChangeTimeMillis = now,
                     // elapsed already includes the previously accumulated time plus this RUNNING interval.
                     // Adding station.elapsedPlayingTimeMillis again double-counts time after pause/resume.
@@ -3623,12 +3641,16 @@ loadSettings()
                     // with the currently selected roster/configuration. Do not send the
                     // just-committed segment's old guest list as the live session roster.
                     if (continueRunning) {
-                        val nextRoster = pendingSegmentRosterOverrides.remove(stationId)
-                            ?: (updated.getCustomerIds() to updated.getCustomerNames())
+                        val nextRoster = if (nextCustomerIds != null || nextCustomerNames != null) {
+                            selectedNextIds to selectedNextNames
+                        } else {
+                            pendingSegmentRosterOverrides.remove(stationId)
+                                ?: (updated.getCustomerIds() to updated.getCustomerNames())
+                        }
                         boundaryPayload.put("customerIds", org.json.JSONArray(nextRoster.first))
                         boundaryPayload.put("customerNames", org.json.JSONArray(nextRoster.second))
-                        boundaryPayload.put("consoleType", updated.consoleType)
-                        boundaryPayload.put("controllerCount", updated.controllerCount)
+                        boundaryPayload.put("consoleType", selectedNextConsoleType)
+                        boundaryPayload.put("controllerCount", selectedNextControllerCount)
                         boundaryPayload.put("payerCustomerIds", org.json.JSONArray(updated.getEffectivePayerIds()))
                         boundaryPayload.put("payerCustomerNames", org.json.JSONArray(updated.getPayerCustomerNames()))
                         boundaryPayload.put("splitMode", updated.splitMode)
@@ -3686,8 +3708,20 @@ loadSettings()
     fun commitSegmentAndPause(stationId: Int, payerCustomerIds: List<Long>, payerCustomerNames: List<String>) =
         applyStopStateLocally(stationId, commitSegment = true, continueRunning = false, payerCustomerIds, payerCustomerNames)
 
-    fun commitSegmentAndContinue(stationId: Int, payerCustomerIds: List<Long>, payerCustomerNames: List<String>) =
-        applyStopStateLocally(stationId, commitSegment = true, continueRunning = true, payerCustomerIds, payerCustomerNames)
+    fun commitSegmentAndContinue(
+        stationId: Int,
+        payerCustomerIds: List<Long>,
+        payerCustomerNames: List<String>,
+        nextCustomerIds: List<Long>? = null,
+        nextCustomerNames: List<String>? = null,
+        nextConsoleType: String? = null,
+        nextControllerCount: Int? = null
+    ) = applyStopStateLocally(
+        stationId, commitSegment = true, continueRunning = true,
+        payerCustomerIds = payerCustomerIds, payerCustomerNames = payerCustomerNames,
+        nextCustomerIds = nextCustomerIds, nextCustomerNames = nextCustomerNames,
+        nextConsoleType = nextConsoleType, nextControllerCount = nextControllerCount
+    )
 
     fun resumeStation(stationId: Int) {
         viewModelScope.launch(Dispatchers.IO) {

@@ -1544,6 +1544,9 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
         if (eventType === "RESUME" && session.rows[0].status !== "PAUSED") { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"SESSION_NOT_PAUSED"}); }
         if (eventType === "SEGMENT_CONTINUE" && !["ACTIVE","PAUSED"].includes(session.rows[0].status)) { await client.query("ROLLBACK"); return res.status(409).json({success:false,code:"SESSION_NOT_CONTINUABLE"}); }
         const payload = req.body?.payload && typeof req.body.payload === "object" ? req.body.payload : {};
+        if (eventType === "SEGMENT_PAUSE" || eventType === "SEGMENT_CONTINUE" || eventType === "ADD_PARTICIPANT") {
+            console.log("[GUEST_TRACE] event_received", JSON.stringify({eventType,sessionId,managerId,eventId,occurredAt:occurredAt.toISOString(),customerIds:payload.customerIds||null,customerNames:payload.customerNames||null,controllerCount:payload.controllerCount??null,consoleType:payload.consoleType??null,participantKey:payload.participantKey??null,participantName:payload.participantName??null,customerId:payload.customerId??null}));
+        }
         if (eventType === "ADD_PARTICIPANT") {
             const participant = normalizeParticipant(payload, 0);
             if (participant.customerId) {
@@ -1652,6 +1655,10 @@ app.post("/api/station/event", requireManagerAuth, requireActiveEntitlement, rat
             }
         }
         await client.query("COMMIT");
+        if (eventType === "SEGMENT_PAUSE" || eventType === "SEGMENT_CONTINUE" || eventType === "ADD_PARTICIPANT") {
+            const roster = await pool.query("SELECT participant_key,participant_name,customer_id,is_guest FROM session_participants WHERE session_id=$1 AND manager_id=$2 ORDER BY id",[sessionId,managerId]);
+            console.log("[GUEST_TRACE] event_committed", JSON.stringify({eventType,sessionId,sequenceNo,status:(eventType === "SEGMENT_PAUSE" ? "PAUSED" : "ACTIVE"),roster:roster.rows.map(p=>({key:p.participant_key,name:p.participant_name,customerId:p.customer_id,isGuest:p.is_guest}))}));
+        }
         return res.json({success:true,sessionId,sequenceNo,serverTime:Date.now()});
     } catch(e) {
         try { await client.query("ROLLBACK"); } catch(_) {}
