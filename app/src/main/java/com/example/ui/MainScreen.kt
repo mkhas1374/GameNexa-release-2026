@@ -289,14 +289,8 @@ fun MainScreen(
                                 viewModel.startStation(station.id, payText, durationText, customerIds, customerNames, customerPrepayments, consoleType, controllerCount)
                             },
                             onPause = { viewModel.pauseStation(station.id) },
-                            onResume = {
-                                viewModel.resumeStation(
-                                    station.id,
-                                    selectedCustomerIds,
-                                    selectedCustomerNames,
-                                    station.consoleType,
-                                    station.controllerCount
-                                )
+                            onResume = { ids, names, console, controllers ->
+                                viewModel.resumeStation(station.id, ids, names, console, controllers)
                             },
                             onFinish = { viewModel.finishStation(station.id) },
                             onConsoleChange = { name -> viewModel.updateStationConsole(station.id, name) },
@@ -327,7 +321,7 @@ fun StationCard(
     lang: String,
     onStart: (String, String, List<Long>, List<String>, Map<Long, Long>, String, Int) -> Unit,
     onPause: () -> Unit,
-    onResume: () -> Unit,
+    onResume: (List<Long>, List<String>, String, Int) -> Unit,
     onFinish: () -> Unit,
     onConsoleChange: (String) -> Unit,
     onControllersChange: (Int) -> Unit,
@@ -1535,7 +1529,7 @@ fun StationCard(
                                     ).show()
                                     return@Button
                                 }
-                                onResume()
+                                onResume(selectedCustomerIds, selectedCustomerNames, station.consoleType, station.controllerCount)
                             },
                             modifier = Modifier.weight(1.2f).height(30.dp),
                             shape = RoundedCornerShape(6.dp),
