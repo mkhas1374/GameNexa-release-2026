@@ -289,7 +289,15 @@ fun MainScreen(
                                 viewModel.startStation(station.id, payText, durationText, customerIds, customerNames, customerPrepayments, consoleType, controllerCount)
                             },
                             onPause = { viewModel.pauseStation(station.id) },
-                            onResume = { viewModel.resumeStation(station.id) },
+                            onResume = {
+                                viewModel.resumeStation(
+                                    station.id,
+                                    selectedCustomerIds,
+                                    selectedCustomerNames,
+                                    station.consoleType,
+                                    station.controllerCount
+                                )
+                            },
                             onFinish = { viewModel.finishStation(station.id) },
                             onConsoleChange = { name -> viewModel.updateStationConsole(station.id, name) },
                             onControllersChange = { count -> viewModel.updateStationControllers(station.id, count) },

@@ -3723,12 +3723,55 @@ loadSettings()
         nextConsoleType = nextConsoleType, nextControllerCount = nextControllerCount
     )
 
-    fun resumeStation(stationId: Int) {
+    fun resumeStation(
+        stationId: Int,
+        selectedCustomerIds: List<Long>? = null,
+        selectedCustomerNames: List<String>? = null,
+        consoleTypeOverride: String? = null,
+        controllerCountOverride: Int? = null
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             val station = repository.getStationStateByIdLocal(stationId)
                 ?: stationStates.value.find { it.id == stationId }
                 ?: return@launch
             if (station.status != "PAUSED") return@launch
+
+            // A committed Stop/segment followed by changed guests/customers or controller
+            // count is NOT a resume of the old session. The legacy path sent only RESUME,
+            // leaving the old server roster and controller count authoritative forever.
+            // Start a genuinely new server session instead; startStation first settles the
+            // paused session and only then creates the replacement with the confirmed roster.
+            val requestedIds = (selectedCustomerIds ?: station.getCustomerIds()).toList()
+            val requestedNames = (selectedCustomerNames ?: station.getCustomerNames()).toList()
+            val requestedConsole = consoleTypeOverride?.takeIf { it.isNotBlank() } ?: station.consoleType
+            val requestedControllers = (controllerCountOverride ?: station.controllerCount).coerceIn(1, 4)
+            val lastCommittedSegment = station.getSegmentsList().lastOrNull()
+            val rosterChanged = lastCommittedSegment != null && (
+                requestedIds != lastCommittedSegment.customerIds ||
+                    requestedNames != lastCommittedSegment.customerNames
+                )
+            val configurationChanged = lastCommittedSegment != null && (
+                !requestedConsole.equals(lastCommittedSegment.consoleType, ignoreCase = true) ||
+                    requestedControllers != lastCommittedSegment.controllerCount
+                )
+            if (rosterChanged || configurationChanged) {
+                android.util.Log.i(
+                    "GameNetViewModel",
+                    "PAUSED_SESSION_REPLACEMENT station=$stationId rosterChanged=$rosterChanged configurationChanged=$configurationChanged"
+                )
+                withContext(Dispatchers.Main) {
+                    startStation(
+                        stationId = stationId,
+                        prepaymentText = "0",
+                        durationText = "",
+                        selectedCustomerIds = requestedIds,
+                        selectedCustomerNames = requestedNames,
+                        consoleTypeOverride = requestedConsole,
+                        controllerCountOverride = requestedControllers
+                    )
+                }
+                return@launch
+            }
 
             // STRICT BUSINESS RULE: Check for conflicts before resuming
             val assignedCustomerIds = station.getCustomerIds().filter { it > 0 }
