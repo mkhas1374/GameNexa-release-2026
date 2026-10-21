@@ -14,7 +14,7 @@ const routeEnd = routes.indexOf("app.get('/api/v1/customer/reservations'", route
 const liveRoute = routes.slice(routeStart, routeEnd);
 assert(liveRoute.includes('so.target_customer_id=$2 OR so.target_customer_id IS NULL'),
   'live feed must include directly assigned orders and shared orders');
-assert(liveRoute.includes("'is_shared',(so.target_customer_id IS NULL)"),
+assert(liveRoute.includes("'is_shared',(so.target_customer_id IS NULL AND COALESCE(so.product_snapshot->>'targetCustomerName','')='')"),
   'feed must identify shared buffet lines');
 assert(liveRoute.includes('customerBuffetShare') && liveRoute.includes('payerCustomerIdsStr'),
   'feed must return a per-customer allocated buffet cost and payer metadata');

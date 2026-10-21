@@ -583,7 +583,8 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
                  'unit_price',so.unit_price,'line_total',so.line_total,'created_at',so.created_at,
                  'target_customer_id',so.target_customer_id,
                  'target_customer_name',COALESCE(so.product_snapshot->>'targetCustomerName',''),
-                 'is_shared',(so.target_customer_id IS NULL)
+                 'target_participant_key',COALESCE(so.product_snapshot->>'targetParticipantKey',''),
+                 'is_shared',(so.target_customer_id IS NULL AND COALESCE(so.product_snapshot->>'targetCustomerName','')='')
                ) ORDER BY so.created_at,so.id) FROM session_orders so
                  WHERE so.session_id=gs.id AND so.manager_id=gs.manager_id
                    AND (so.target_customer_id=$2 OR so.target_customer_id IS NULL)),'[]'::json) AS customer_orders,
@@ -777,6 +778,7 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
                  WHERE so.session_id=gs.id AND so.manager_id=gs.manager_id),'[]'::json) AS orders
         FROM game_sessions gs
         WHERE gs.manager_id=$1 AND gs.status NOT IN ('ACTIVE','PAUSED')
+          AND EXISTS (SELECT 1 FROM invoices settled_invoice WHERE settled_invoice.manager_id=gs.manager_id AND settled_invoice.session_id=gs.id)
           AND (
             EXISTS (SELECT 1 FROM session_participants sp
               WHERE sp.session_id=gs.id AND sp.manager_id=gs.manager_id

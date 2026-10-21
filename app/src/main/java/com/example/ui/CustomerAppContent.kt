@@ -1546,7 +1546,24 @@ fun ActiveStationLiveCard(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("• $itemName (تعداد: $qty)", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("• $itemName (تعداد: $qty)", fontSize = 10.sp, color = Color(0xFFCBD5E1))
+                                    val orderResponsibility = runCatching {
+                                        val snapshot = org.json.JSONArray(cloudSt?.ordersJson.orEmpty())
+                                        (0 until snapshot.length()).mapNotNull { idx -> snapshot.optJSONObject(idx) }
+                                            .firstOrNull { it.optString("product_name").ifBlank { it.optString("productName") }.equals(itemName, ignoreCase = true) }
+                                            ?.let { order ->
+                                                val targetName = order.optString("target_customer_name").trim()
+                                                when {
+                                                    order.optBoolean("is_shared", false) -> "مسئول هزینه: مشترک بین افراد مشمول"
+                                                    targetName.isNotBlank() -> "مسئول هزینه: $targetName"
+                                                    order.optLong("target_customer_id", 0L) > 0L -> "مسئول هزینه: مشتری مشخص‌شده"
+                                                    else -> "مسئول هزینه: طبق فاکتور نهایی مدیریت"
+                                                }
+                                            }
+                                    }.getOrNull()
+                                    if (!orderResponsibility.isNullOrBlank()) Text(orderResponsibility, fontSize = 9.sp, color = Color(0xFF94A3B8))
+                                }
                                 Text("${numberFormat.format(qty * price)} تومان", fontSize = 10.sp, color = Color(0xFF94A3B8))
                             }
                         }
