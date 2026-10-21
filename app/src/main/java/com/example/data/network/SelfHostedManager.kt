@@ -1961,12 +1961,12 @@ object SelfHostedManager {
                             val payload = event.optJSONObject("payload")
                             if (type == "SEGMENT_PAUSE" || type == "SEGMENT_CONTINUE") {
                                 val segment = payload?.optInt("segmentIndex", j + 1) ?: (j + 1)
-                                val controllers = payload?.optInt("controllerCount", 0) ?: 0
+                                val controllers = payload?.optInt("committedControllerCount", payload.optInt("controllerCount", 0)) ?: 0
                                 val duration = payload?.optLong("durationSeconds", 0L) ?: 0L
                                 val cost = payload?.optLong("cost", -1L) ?: -1L
-                                val namesJson = payload?.optJSONArray("customerNames") ?: JSONArray()
+                                val namesJson = payload?.optJSONArray("committedCustomerNames") ?: payload?.optJSONArray("customerNames") ?: JSONArray()
                                 val names = (0 until namesJson.length()).mapNotNull { namesJson.optString(it).takeIf { name -> name.isNotBlank() } }
-                                val payerNamesJson = payload?.optJSONArray("payerCustomerNames") ?: JSONArray()
+                                val payerNamesJson = payload?.optJSONArray("committedPayerCustomerNames") ?: payload?.optJSONArray("payerCustomerNames") ?: JSONArray()
                                 val payerNames = (0 until payerNamesJson.length()).mapNotNull { payerNamesJson.optString(it).takeIf { name -> name.isNotBlank() } }
                                 val details = buildList {
                                     add("بخش $segment")

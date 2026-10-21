@@ -1245,10 +1245,10 @@ fun ActiveStationLiveCard(
             val segment = payload.optInt("segmentIndex", index + 1)
             val seconds = payload.optLong("durationSeconds", 0L).coerceAtLeast(0L)
             val cost = payload.optLong("cost", 0L).coerceAtLeast(0L)
-            val count = payload.optInt("controllerCount", 0)
-            val namesArray = payload.optJSONArray("customerNames") ?: org.json.JSONArray()
+            val count = payload.optInt("committedControllerCount", payload.optInt("controllerCount", 0))
+            val namesArray = payload.optJSONArray("committedCustomerNames") ?: payload.optJSONArray("customerNames") ?: org.json.JSONArray()
             val names = (0 until namesArray.length()).map { namesArray.optString(it).trim() }.filter { it.isNotBlank() }.distinct()
-            val payerArray = payload.optJSONArray("payerCustomerNames") ?: org.json.JSONArray()
+            val payerArray = payload.optJSONArray("committedPayerCustomerNames") ?: payload.optJSONArray("payerCustomerNames") ?: org.json.JSONArray()
             val payers = (0 until payerArray.length()).map { payerArray.optString(it).trim() }.filter { it.isNotBlank() }.distinct()
             buildString {
                 append("بخش $segment")

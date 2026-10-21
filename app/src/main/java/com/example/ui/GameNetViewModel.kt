@@ -3624,6 +3624,15 @@ loadSettings()
                         boundaryPayload.put("customerNames", org.json.JSONArray(committed.customerNames))
                         boundaryPayload.put("payerCustomerIds", org.json.JSONArray(committed.payerCustomerIds))
                         boundaryPayload.put("payerCustomerNames", org.json.JSONArray(committed.payerCustomerNames))
+                        // Keep the closed segment's immutable roster/config separate from the
+                        // next live roster, which SEGMENT_CONTINUE writes below.
+                        boundaryPayload.put("committedCustomerIds", org.json.JSONArray(committed.customerIds))
+                        boundaryPayload.put("committedCustomerNames", org.json.JSONArray(committed.customerNames))
+                        boundaryPayload.put("committedPayerCustomerIds", org.json.JSONArray(committed.payerCustomerIds))
+                        boundaryPayload.put("committedPayerCustomerNames", org.json.JSONArray(committed.payerCustomerNames))
+                        boundaryPayload.put("committedControllerCount", committed.controllerCount)
+                        boundaryPayload.put("committedConsoleType", committed.consoleType)
+                        boundaryPayload.put("committedHourlyRate", getHourlyRateSync(committed.consoleType, committed.controllerCount))
                         boundaryPayload.put("hourlyRate", getHourlyRateSync(committed.consoleType, committed.controllerCount))
                     } else {
                         boundaryPayload.put("segmentIndex", updated.getSegmentsList().size + 1)
