@@ -367,6 +367,13 @@ fun CustomerHistoryTab(viewModel: GameNetViewModel) {
     val customerName = matchedCustomer?.fullName ?: ""
 
     var refreshTrigger by remember { mutableLongStateOf(0L) }
+    // Canonical settled-session invoices include the committed section ledger, payer roster,
+    // orders, and server-awarded GN/LP. They are returned only after server settlement.
+    val settledSessionHistory by produceState<List<com.example.data.network.CustomerSessionHistory>>(
+        initialValue = emptyList(), key1 = customerId, key2 = refreshTrigger
+    ) {
+        value = if (customerId > 0L) SelfHostedManager.fetchCustomerSessionHistory() else emptyList()
+    }
 
     LaunchedEffect(customerId) {
         while (isActive && customerId > 0) {
@@ -459,6 +466,70 @@ fun CustomerHistoryTab(viewModel: GameNetViewModel) {
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             if (selectedFilter == 0 || selectedFilter == 1) {
+                if (settledSessionHistory.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "🧾 فاکتور نهایی نشست‌ها و جزئیات بخش‌ها:",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                    items(settledSessionHistory, key = { "settled_session_${it.sessionId}" }) { history ->
+                        Card(
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                                Text(
+                                    text = "جایگاه ${history.stationId} · ${history.consoleType.ifBlank { "کنسول" }} · ${history.controllerCount} دسته",
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    style = MaterialTheme.typography.titleSmall
+                                )
+                                Text(
+                                    text = "شروع: ${if (history.startTimeMillis > 0L) formatDate(history.startTimeMillis) else "نامشخص"} · پایان: ${if (history.endTimeMillis > 0L) formatDate(history.endTimeMillis) else "نامشخص"}",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text("افراد حاضر: ${history.participants.joinToString("، ").ifBlank { "اطلاعات ثبت نشده" }}", fontSize = 11.sp)
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("هزینه بازی", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("${numberFormat.format(history.gameCost)} تومان", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("هزینه بوفه", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("${numberFormat.format(history.buffetCost)} تومان", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFD97706))
+                                }
+                                history.eventSummary.forEach { event ->
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) { Text("• $event", modifier = Modifier.padding(8.dp), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                }
+                                if (history.ordersSummary.isNotEmpty()) {
+                                    Text("جزئیات بوفه:", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color(0xFFD97706))
+                                    history.ordersSummary.forEach { order -> Text("• $order", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                }
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Column {
+                                        Text("پاداش GN: +${numberFormat.format(history.earnedGn)}", fontSize = 10.sp, color = Color(0xFF3B82F6), fontWeight = FontWeight.Bold)
+                                        Text("پاداش LP: +${numberFormat.format(history.earnedLp)}", fontSize = 10.sp, color = Color(0xFF1565C0), fontWeight = FontWeight.Bold)
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text("فاکتور تسویه‌شده", fontSize = 10.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold)
+                                        Text("مجموع: ${numberFormat.format(history.totalCost)} تومان", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 if (customerTransactions.isNotEmpty()) {
                     item {
                         Text(
@@ -829,7 +900,7 @@ fun CustomerHistoryTab(viewModel: GameNetViewModel) {
                 }
             }
 
-            if (customerTransactions.isEmpty() && customerLedger.isEmpty() && customerBehaviorLogs.isEmpty() && customerPayments.isEmpty()) {
+            if (settledSessionHistory.isEmpty() && customerTransactions.isEmpty() && customerLedger.isEmpty() && customerBehaviorLogs.isEmpty() && customerPayments.isEmpty()) {
                 item {
                     Box(
                         modifier = Modifier.fillMaxWidth().padding(32.dp),
