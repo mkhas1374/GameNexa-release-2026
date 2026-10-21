@@ -101,6 +101,10 @@ const historyEnd = routes.indexOf("app.get('/api/v1/customer/reservations'", his
 const historyRoute = routes.slice(historyStart, historyEnd);
 assert(historyRoute.includes('requireCustomerAuth') && historyRoute.includes("gs.status NOT IN ('ACTIVE','PAUSED')"),
   'history must be authenticated as the customer and must not duplicate active sessions');
+assert(liveRoute.includes('payload.committedCustomerNames') && liveRoute.includes('payload.committedCustomerIds'),
+  'live profile roster must preserve the exact immutable roster from the committed segment payload, even when the next segment has different participants');
+assert(historyRoute.includes("l.reference_id LIKE ('SESSION_REVIEW_'||gs.id::text||'_CUST_'||$2::text||'%')"),
+  'LP history must recognize the same per-session reward reference format as GN history');
 assert(historyRoute.includes('session_participants') && historyRoute.includes('controller_count') && historyRoute.includes('earned_gn') && historyRoute.includes('earned_lp') &&
   historyRoute.includes('session_events') && historyRoute.includes("se.payload->'customerIds'") && historyRoute.includes('session_orders') &&
   historyRoute.includes('ORDER BY COALESCE(gs.ended_at,gs.started_at) DESC'),

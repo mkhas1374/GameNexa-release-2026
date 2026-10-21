@@ -711,8 +711,8 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
         const seenParticipantNames=new Set(participantNames.map(name=>String(name||'').trim().toLocaleLowerCase()).filter(Boolean));
         for(const event of segmentEvents){
           const payload=event.payload&&typeof event.payload==='object'?event.payload:{};
-          const names=Array.isArray(payload.customerNames)?payload.customerNames:[];
-          const ids=Array.isArray(payload.customerIds)?payload.customerIds:[];
+          const names=Array.isArray(payload.committedCustomerNames)?payload.committedCustomerNames:(Array.isArray(payload.customerNames)?payload.customerNames:[]);
+          const ids=Array.isArray(payload.committedCustomerIds)?payload.committedCustomerIds:(Array.isArray(payload.customerIds)?payload.customerIds:[]);
           for(let i=0;i<Math.max(names.length,ids.length);i++){
             const id=Number(ids[i]||0);
             const name=String(names[i]|| (id<0?'مهمان '+Math.abs(id):id>0?'مشتری '+id:'')).trim();
@@ -766,7 +766,7 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
                gs.started_at,gs.ended_at,gs.duration_seconds,gs.duration_minutes,
                gs.game_cost,gs.buffet_cost,gs.total_cost,
                COALESCE((SELECT SUM(g.amount) FROM gn_ledger g WHERE g.manager_id=gs.manager_id AND g.customer_id=$2 AND g.type='CREDIT' AND ((g.reference_type='SESSION_REVIEW' AND g.reference_id=gs.id::text) OR g.reference_id LIKE ('SESSION_REVIEW_'||gs.id::text||'_CUST_'||$2::text||'%') OR g.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=gs.manager_id AND i.session_id=gs.id AND i.customer_id=$2))),0)::bigint AS earned_gn,
-               COALESCE((SELECT SUM(l.amount) FROM lp_ledger l WHERE l.manager_id=gs.manager_id AND l.customer_id=$2 AND l.type='CREDIT' AND ((l.reference_type='SESSION_REVIEW' AND l.reference_id=gs.id::text) OR l.reference_id=gs.id::text OR l.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=gs.manager_id AND i.session_id=gs.id AND i.customer_id=$2))),0)::bigint AS earned_lp,
+               COALESCE((SELECT SUM(l.amount) FROM lp_ledger l WHERE l.manager_id=gs.manager_id AND l.customer_id=$2 AND l.type='CREDIT' AND ((l.reference_type='SESSION_REVIEW' AND l.reference_id=gs.id::text) OR l.reference_id=gs.id::text OR l.reference_id LIKE ('SESSION_REVIEW_'||gs.id::text||'_CUST_'||$2::text||'%') OR l.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=gs.manager_id AND i.session_id=gs.id AND i.customer_id=$2))),0)::bigint AS earned_lp,
                COALESCE((SELECT json_agg(json_build_object(
                  'customerId',sp.customer_id,'participantKey',sp.participant_key,
                  'name',sp.participant_name,'isGuest',sp.is_guest,'isPayer',sp.is_payer,

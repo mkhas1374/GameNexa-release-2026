@@ -1231,7 +1231,11 @@ fun ActiveStationLiveCard(
     // The live API provides elapsed time for the currently open segment and the total
     // already committed by SEGMENT_PAUSE / SEGMENT_CONTINUE events. Keep these separate:
     // the current segment resets to zero on option 3, while the session total must not.
-    val currentSegmentGameCost = (elapsedMs.toDouble() / (1000.0 * 3600.0)) * hourlyRate
+    // Match the backend's integer-Toman FLOOR calculation; formatting a fractional Double
+    // rounded some screens upward and made the total disagree with Manager's invoice.
+    val currentSegmentGameCost = kotlin.math.floor(
+        (elapsedMs.toDouble().coerceAtLeast(0.0) * hourlyRate.coerceAtLeast(0.0)) / (1000.0 * 3600.0)
+    ).coerceAtLeast(0.0)
     val committedSegmentGameCost = (cloudSt?.committedSegmentCost ?: 0L).coerceAtLeast(0L).toDouble()
     val calculatedGameCost = committedSegmentGameCost + currentSegmentGameCost
     val committedSegmentSummaries = remember(cloudSt?.segmentEventsJson) {
