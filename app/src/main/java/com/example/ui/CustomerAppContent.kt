@@ -570,12 +570,12 @@ fun CustomerDashboardTab(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "📚 سابقه نشست‌های شما",
+                            text = "📚 سابقه فاکتورهای تسویه‌شده",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.ExtraBold
                         )
                         Text(
-                            text = "${sessionHistory.size} نشست پایان‌یافته · برای مشاهده لمس کنید",
+                            text = "${sessionHistory.size} فاکتور نهایی‌شده · برای مشاهده لمس کنید",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -590,7 +590,7 @@ fun CustomerDashboardTab(
                 AnimatedVisibility(visible = sessionHistoryExpanded) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
-                            text = "هر بار که نشست قبلی پایان می‌یابد و نشست جدیدی شروع می‌شود، هر کدام جداگانه در این فهرست ثبت می‌شوند.",
+                            text = "بخش‌های هر جایگاه تا زمان تسویه در نشست زنده نمایش داده می‌شوند؛ پس از تسویه، خلاصه بخش‌ها و فاکتور نهایی اینجا ثبت می‌شود.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -635,6 +635,13 @@ fun CustomerDashboardTab(
                                 fontWeight = FontWeight.ExtraBold,
                                 color = MaterialTheme.colorScheme.tertiary
                             )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("💎 پاداش GN این فاکتور: ${numberFormat.format(history.earnedGn)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF60A5FA))
+                                Text("🏆 پاداش LP این فاکتور: ${numberFormat.format(history.earnedLp)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFFFBBF24))
+                            }
                             if (history.eventSummary.isNotEmpty()) {
                                 Text("اتفاقات نشست:", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
                                 history.eventSummary.forEach { event ->
@@ -1238,8 +1245,18 @@ fun ActiveStationLiveCard(
             val segment = payload.optInt("segmentIndex", index + 1)
             val seconds = payload.optLong("durationSeconds", 0L).coerceAtLeast(0L)
             val cost = payload.optLong("cost", 0L).coerceAtLeast(0L)
-            val action = if (eventType == "SEGMENT_CONTINUE") "ثبت بخش و ادامه" else "ثبت بخش و توقف"
-            "$action — بخش $segment — مدت ${seconds / 60L} دقیقه و ${seconds % 60L} ثانیه — ${String.format(Locale.US, "%,d", cost)} تومان"
+            val count = payload.optInt("controllerCount", 0)
+            val namesArray = payload.optJSONArray("customerNames") ?: org.json.JSONArray()
+            val names = (0 until namesArray.length()).map { namesArray.optString(it).trim() }.filter { it.isNotBlank() }.distinct()
+            val payerArray = payload.optJSONArray("payerCustomerNames") ?: org.json.JSONArray()
+            val payers = (0 until payerArray.length()).map { payerArray.optString(it).trim() }.filter { it.isNotBlank() }.distinct()
+            buildString {
+                append("بخش $segment")
+                if (count > 0) append(" · $count دسته")
+                append(" · ${seconds / 60L} دقیقه و ${seconds % 60L} ثانیه · ${String.format(Locale.US, "%,d", cost)} تومان")
+                if (names.isNotEmpty()) append(" · افراد: ${names.joinToString("، ")}")
+                if (payers.isNotEmpty()) append(" · بر عهده: ${payers.joinToString("، ")}")
+            }
         }
     }
 
@@ -1476,7 +1493,7 @@ fun ActiveStationLiveCard(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("بخش‌های ثبت‌شده:", fontSize = 10.sp, color = Color(0xFF94A3B8))
+                        Text("بخش‌های ثبت‌شده (تا تسویه):", fontSize = 10.sp, color = Color(0xFF94A3B8))
                         Text("${numberFormat.format(committedSegmentGameCost)} تومان", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFCBD5E1))
                     }
 

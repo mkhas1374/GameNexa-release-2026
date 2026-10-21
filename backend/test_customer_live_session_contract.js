@@ -101,16 +101,16 @@ const historyEnd = routes.indexOf("app.get('/api/v1/customer/reservations'", his
 const historyRoute = routes.slice(historyStart, historyEnd);
 assert(historyRoute.includes('requireCustomerAuth') && historyRoute.includes("gs.status NOT IN ('ACTIVE','PAUSED')"),
   'history must be authenticated as the customer and must not duplicate active sessions');
-assert(historyRoute.includes('session_participants') && historyRoute.includes('controller_count') &&
+assert(historyRoute.includes('session_participants') && historyRoute.includes('controller_count') && historyRoute.includes('earned_gn') && historyRoute.includes('earned_lp') &&
   historyRoute.includes('session_events') && historyRoute.includes("se.payload->'customerIds'") && historyRoute.includes('session_orders') &&
   historyRoute.includes('ORDER BY COALESCE(gs.ended_at,gs.started_at) DESC'),
   'history must return distinct sessions with controllers, participant roster, timeline events and buffet orders');
 assert(managerApi.includes('/api/v1/customer/session-history') && managerApi.includes('fetchCustomerSessionHistory'),
   'Android must load history using the customer-scoped endpoint');
-assert(customerUi.includes('سابقه نشست‌های شما') && customerUi.includes('هم‌بازی‌ها:') &&
+assert(customerUi.includes('سابقه فاکتورهای تسویه‌شده') && customerUi.includes('هم‌بازی‌ها:') &&
   customerUi.includes('اتفاقات نشست:') && customerUi.includes('history.controllerCount'),
   'customer profile must show active session above historical sessions with per-session details');
-assert(customerUi.includes('committedSegmentGameCost') && customerUi.includes('currentSegmentGameCost') &&
+assert(customerUi.includes('committedSegmentGameCost') && customerUi.includes('currentSegmentGameCost') && customerUi.includes('بر عهده:') &&
   customerUi.includes('بخش‌های ثبت‌شده + جاری') && customerUi.includes('cloudSt?.committedSegmentCost'),
   'customer live profile must show accumulated committed segments separately from the resettable current segment');
 assert(managerApi.includes('committedSegmentCost = obj.optLong("committedSegmentCost"') &&

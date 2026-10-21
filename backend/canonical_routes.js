@@ -726,9 +726,13 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
           }
         }
         const lastMs=nowMs;
+        const lastSegmentPayload=segmentEvents.length ? (segmentEvents[segmentEvents.length-1].payload||{}) : {};
+        const currentConsoleType=String(lastSegmentPayload.nextConsoleType||lastSegmentPayload.consoleType||row.console_type||'');
+        const currentControllerCount=Number(lastSegmentPayload.nextControllerCount||lastSegmentPayload.controllerCount||row.controller_count||1);
+        const currentHourlyRate=Number(lastSegmentPayload.nextHourlyRate||lastSegmentPayload.hourlyRate||snap.hourlyRate||snap.hourly_rate||0);
         return {
           stationId:Number(row.station_id),status:row.status==='PAUSED'?'PAUSED':'RUNNING',
-          consoleType:String(row.console_type||''),controllerCount:Number(row.controller_count||1),
+          consoleType:currentConsoleType,controllerCount:currentControllerCount,
           startTimeMillis:Number.isFinite(startMs)?startMs:0,
           lastStateChangeMillis:Number.isFinite(lastMs)?lastMs:0,
           elapsedPlayingTimeMillis:Math.max(0,segmentElapsedMs),prepaymentAmount:Number(own?.prepaymentAmount||0),
@@ -745,7 +749,7 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
           splitMode,
           payerCustomerIdsStr:payerIds.join(','),
           payerCustomerNamesStr:payerNames.join(','),
-          hourlyRate:Number(snap.hourlyRate||snap.hourly_rate||0),sessionId:String(row.session_id)
+          hourlyRate:currentHourlyRate,sessionId:String(row.session_id)
         };
       });
       console.log('[GUEST_TRACE] customer_live_response',JSON.stringify({customerId:cid,stations:stations.map(st=>({sessionId:st.sessionId,stationId:st.stationId,status:st.status,consoleType:st.consoleType,controllerCount:st.controllerCount,customerIdsStr:st.customerIdsStr,customerNamesStr:st.customerNamesStr,segmentEvents:(()=>{try{return JSON.parse(st.segmentEventsJson||'[]').map(e=>({eventType:e.eventType||e.event_type,customerIds:e.payload?.customerIds||null,customerNames:e.payload?.customerNames||null,controllerCount:e.payload?.controllerCount??null,consoleType:e.payload?.consoleType??null}))}catch(_){return []}})()}))}));
@@ -761,6 +765,8 @@ app.post('/api/v1/customer/reservations/:id/cancel', requireCustomerAuth, async(
         SELECT gs.id AS session_id,gs.station_id,gs.status,gs.console_type,gs.controller_count,
                gs.started_at,gs.ended_at,gs.duration_seconds,gs.duration_minutes,
                gs.game_cost,gs.buffet_cost,gs.total_cost,
+               COALESCE((SELECT SUM(g.amount) FROM gn_ledger g WHERE g.manager_id=gs.manager_id AND g.customer_id=$2 AND g.type='CREDIT' AND ((g.reference_type='SESSION_REVIEW' AND g.reference_id=gs.id::text) OR g.reference_id LIKE ('SESSION_REVIEW_'||gs.id::text||'_CUST_'||$2::text||'%') OR g.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=gs.manager_id AND i.session_id=gs.id AND i.customer_id=$2))),0)::bigint AS earned_gn,
+               COALESCE((SELECT SUM(l.amount) FROM lp_ledger l WHERE l.manager_id=gs.manager_id AND l.customer_id=$2 AND l.type='CREDIT' AND ((l.reference_type='SESSION_REVIEW' AND l.reference_id=gs.id::text) OR l.reference_id=gs.id::text OR l.reference_id IN (SELECT i.id::text FROM invoices i WHERE i.manager_id=gs.manager_id AND i.session_id=gs.id AND i.customer_id=$2))),0)::bigint AS earned_lp,
                COALESCE((SELECT json_agg(json_build_object(
                  'customerId',sp.customer_id,'participantKey',sp.participant_key,
                  'name',sp.participant_name,'isGuest',sp.is_guest,'isPayer',sp.is_payer,

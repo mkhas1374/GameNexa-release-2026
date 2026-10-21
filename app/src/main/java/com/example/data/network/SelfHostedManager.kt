@@ -34,6 +34,8 @@ data class CustomerSessionHistory(
     val gameCost: Long,
     val buffetCost: Long,
     val totalCost: Long,
+    val earnedGn: Long = 0L,
+    val earnedLp: Long = 0L,
     val participants: List<String>,
     val eventSummary: List<String>,
     val ordersSummary: List<String>
@@ -1964,10 +1966,13 @@ object SelfHostedManager {
                                 val cost = payload?.optLong("cost", -1L) ?: -1L
                                 val namesJson = payload?.optJSONArray("customerNames") ?: JSONArray()
                                 val names = (0 until namesJson.length()).mapNotNull { namesJson.optString(it).takeIf { name -> name.isNotBlank() } }
+                                val payerNamesJson = payload?.optJSONArray("payerCustomerNames") ?: JSONArray()
+                                val payerNames = (0 until payerNamesJson.length()).mapNotNull { payerNamesJson.optString(it).takeIf { name -> name.isNotBlank() } }
                                 val details = buildList {
                                     add("بخش $segment")
                                     if (controllers > 0) add("$controllers دسته")
-                                    if (names.isNotEmpty()) add("هم‌بازی‌ها: ${names.joinToString("، ")}")
+                                    if (names.isNotEmpty()) add("افراد: ${names.joinToString("، ")}")
+                                    if (payerNames.isNotEmpty()) add("هزینه بر عهده: ${payerNames.joinToString("، ")}")
                                     if (duration > 0L) add("مدت: ${duration / 60L} دقیقه و ${duration % 60L} ثانیه")
                                     if (cost >= 0L) add("هزینه: $cost تومان")
                                 }
@@ -1996,6 +2001,8 @@ object SelfHostedManager {
                         gameCost = item.optDouble("game_cost", 0.0).toLong(),
                         buffetCost = item.optDouble("buffet_cost", 0.0).toLong(),
                         totalCost = item.optDouble("total_cost", 0.0).toLong(),
+                        earnedGn = item.optLong("earned_gn", item.optLong("earnedGn", 0L)),
+                        earnedLp = item.optLong("earned_lp", item.optLong("earnedLp", 0L)),
                         participants = participants, eventSummary = events, ordersSummary = orders
                     )
                 }

@@ -3624,6 +3624,7 @@ loadSettings()
                         boundaryPayload.put("customerNames", org.json.JSONArray(committed.customerNames))
                         boundaryPayload.put("payerCustomerIds", org.json.JSONArray(committed.payerCustomerIds))
                         boundaryPayload.put("payerCustomerNames", org.json.JSONArray(committed.payerCustomerNames))
+                        boundaryPayload.put("hourlyRate", getHourlyRateSync(committed.consoleType, committed.controllerCount))
                     } else {
                         boundaryPayload.put("segmentIndex", updated.getSegmentsList().size + 1)
                         boundaryPayload.put("startTimeMs", now)
@@ -3636,6 +3637,7 @@ loadSettings()
                         boundaryPayload.put("customerNames", org.json.JSONArray(station.getCustomerNames()))
                         boundaryPayload.put("payerCustomerIds", org.json.JSONArray(payerCustomerIds))
                         boundaryPayload.put("payerCustomerNames", org.json.JSONArray(payerCustomerNames))
+                        boundaryPayload.put("hourlyRate", getHourlyRateSync(station.consoleType, station.controllerCount))
                     }
                     // SEGMENT_CONTINUE closes the previous section but starts the next one
                     // with the currently selected roster/configuration. Do not send the
@@ -3654,6 +3656,9 @@ loadSettings()
                         boundaryPayload.put("payerCustomerIds", org.json.JSONArray(updated.getEffectivePayerIds()))
                         boundaryPayload.put("payerCustomerNames", org.json.JSONArray(updated.getPayerCustomerNames()))
                         boundaryPayload.put("splitMode", updated.splitMode)
+                        boundaryPayload.put("nextHourlyRate", getHourlyRateSync(selectedNextConsoleType, selectedNextControllerCount))
+                        boundaryPayload.put("nextControllerCount", selectedNextControllerCount)
+                        boundaryPayload.put("nextConsoleType", selectedNextConsoleType)
                     }
                 }
                 if (boundarySessionId.isNotBlank()) {
